@@ -3,6 +3,7 @@
 .env.local
 .env.*
 !.env.example
+backend/.env copy
 
 # ===== Python =====
 __pycache__/
@@ -40,6 +41,10 @@ uploads/
 *.db
 *.sqlite3
 *.sqlite
+
+# ===== 本地模型（体积大，不入库）=====
+backend/models/
+models/
 
 # ===== IDE / 系统 =====
 .vscode/
