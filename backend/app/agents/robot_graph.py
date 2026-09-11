@@ -124,21 +124,50 @@ def route_intent(state: RobotState) -> str:
     # 工单号查询：WO-YYYYMMDD-XXX 或 6 位以上纯数字
     if re.search(r"WO[-_ ]?[\d-]{6,}", text, re.IGNORECASE) or re.search(r"\d{6,}", text):
         return "workorder"
-    # ---- LLM 分类：处理 todo / duty / inventory / repair 等自然语言 ----
+    # 库存意图快速通道：提前于 LLM 判定，避免库存类误被 LLM 打成 none 或 repair
+    try:
+        from app.agents.answer_generator import answer_generator
+        if answer_generator.is_inventory_query(text):
+            return "inventory"
+    except Exception:
+        pass
+    # 纯设备名快速通道：只有设备名、无故障现象、也不是库存 → 走 repair 引导
+    # （LLM 分类规则"描述模糊返回 none"会把纯设备名误打成 none，这里前置兜底）
+    try:
+        from app.agents.tools import get_device_terms
+        dev_terms = get_device_terms()
+        for t in sorted(dev_terms, key=len, reverse=True):
+            if text == t or text.strip() == t:  # 全文就是设备名本身
+                return "repair"
+    except Exception:
+        pass
+    # ---- LLM 分类：处理 todo / duty / repair 等自然语言 ----
     label = _classify_intent_llm(text)
     if label:
+        # LLM 返回 none 时再做一次设备命中判定：纯设备名（如"自动排水阀"）无故障描述但用户显然想了解设备，
+        # 不应当成闲聊，按 repair 放行让维修意图阀门做最终裁定
+        if label == "none":
+            try:
+                from app.agents.tools import get_device_terms
+                dev_terms = get_device_terms()
+                if any(t in text for t in dev_terms if t and len(t) >= 2):
+                    return "repair"
+            except Exception:
+                pass
         return label
     # ---- LLM 失败降级：规则兜底，默认追踪维修 ----
     if any(k in text for k in ("我的待办", "我的工单", "待办", "代办", "任务")):
         return "todo"
     if any(k in text for k in ("排班", "值班", "班表", "班次")):
         return "duty"
+    # LLM 失败时仍信任设备命中
     try:
-        from app.agents.answer_generator import answer_generator
-        if answer_generator.is_inventory_query(text):
-            return "inventory"
-    except Exception as e:
-        logger.warning(f"[RobotGraph] 库存意图判断异常，跳过: {e}")
+        from app.agents.tools import get_device_terms
+        dev_terms = get_device_terms()
+        if any(t in text for t in dev_terms if t and len(t) >= 2):
+            return "repair"
+    except Exception:
+        pass
     return "repair"
 
 
@@ -150,7 +179,32 @@ def help_node(state: RobotState) -> dict:
 
 
 def none_node(state: RobotState) -> dict:
-    """意图与所有功能无关：明确提示没有该功能并引导查看帮助"""
+    """LLM 与规则路由均判为 none 的输入。
+    策略：最后再做一次"像不像维修领域里备件查询/设备名"的保守兜底——
+    用户说的是备件名（短词+命中部件词）→ 引导走库存；
+    命中设备词 → 信任用户在问维修相关，交给 repair 节点里的维修意图阀门做最终裁定；
+    其余真正无关的，才明确回复无该功能并引导查看帮助。
+    """
+    text = (state.get("text") or "").strip()
+    # 备件名兜底：看起来像单独的一个部件名（短、字符像中文/字母连写，不整句）
+    try:
+        from app.agents.answer_generator import answer_generator
+        if answer_generator.is_inventory_query(text):
+            return inventory_node(state)
+        terms = answer_generator._extract_part_keywords(text)
+        if terms and 1 <= len(text) <= 12 and not any(c in text for c in "？?！!，,。.、~～"):
+            # 像备件/部件名的短输入，直接调库存查询（没库存会说没找到，比说"我没这功能"友好）
+            return inventory_node(state)
+    except Exception as e:
+        logger.warning(f"[RobotGraph] none_node 库存兜底异常: {e}")
+    # 设备兜底：命中设备词就走 repair（维修意图阀门是最后一道关，阀门判无关就统一说无关）
+    try:
+        from app.agents.tools import get_device_terms
+        dev_terms = get_device_terms()
+        if any(t in text for t in dev_terms if t and len(t) >= 2):
+            return repair_node(state)
+    except Exception as e:
+        logger.warning(f"[RobotGraph] none_node 设备兜底异常: {e}")
     return {"reply": (
         "抱歉，我暂时没有这个功能。\n"
         "我是维修助手，可以帮您：\n"
@@ -211,7 +265,8 @@ def repair_node(state: RobotState) -> dict:
             "另外我也能帮您查工单、待办、排班、库存，发送「帮助」看完整清单。"
         )}
     # 结构化追踪（联通复用追踪模式）：A/B/C 选项逐步排查；对话式 guided_repair_chat 保留给 MCP 工具
-    return {"reply": tools.guided_repair_track(state.get("staff_id") or "", text)}
+    from app.mcp.tools import guided_repair_track
+    return {"reply": guided_repair_track(state.get("staff_id") or "", text)}
 
 
 # ============================================================

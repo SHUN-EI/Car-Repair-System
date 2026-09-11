@@ -35,8 +35,8 @@
             <div class="shift-col shift-morning">
               <div class="shift-head">
                 <span class="shift-dot"></span>
-                <span class="shift-name">早班 MORNING</span>
-                <span class="shift-time">08:00 - 16:00</span>
+                <span class="shift-name">{{ shiftMeta.MORNING.name }} MORNING</span>
+                <span class="shift-time">{{ shiftMeta.MORNING.time_range }}</span>
               </div>
               <div class="shift-body">
                 <div v-if="!(dutyToday.MORNING || []).length" class="shift-empty">
@@ -45,14 +45,14 @@
                 </div>
                 <el-tag
                   v-for="u in (dutyToday.MORNING || [])"
-                  :key="u.id"
+                  :key="u.id || `M-${u.user_id}-${u.date}`"
                   size="large"
                   effect="light"
                   type="success"
                   class="duty-tag"
                 >
                   <el-avatar :size="22" icon="UserFilled" style="margin-right:6px;" />
-                  {{ u.real_name || u.name }}
+                  {{ u.real_name || u.name || u.user_name }}
                   <span class="duty-emp-id" v-if="u.employee_id">· {{ u.employee_id }}</span>
                 </el-tag>
               </div>
@@ -60,8 +60,8 @@
             <div class="shift-col shift-afternoon">
               <div class="shift-head">
                 <span class="shift-dot"></span>
-                <span class="shift-name">中班 AFTERNOON</span>
-                <span class="shift-time">16:00 - 00:00</span>
+                <span class="shift-name">{{ shiftMeta.AFTERNOON.name }} AFTERNOON</span>
+                <span class="shift-time">{{ shiftMeta.AFTERNOON.time_range }}</span>
               </div>
               <div class="shift-body">
                 <div v-if="!(dutyToday.AFTERNOON || []).length" class="shift-empty">
@@ -70,14 +70,14 @@
                 </div>
                 <el-tag
                   v-for="u in (dutyToday.AFTERNOON || [])"
-                  :key="u.id"
+                  :key="u.id || `A-${u.user_id}-${u.date}`"
                   size="large"
                   effect="light"
                   type="warning"
                   class="duty-tag"
                 >
                   <el-avatar :size="22" icon="UserFilled" style="margin-right:6px;" />
-                  {{ u.real_name || u.name }}
+                  {{ u.real_name || u.name || u.user_name }}
                   <span class="duty-emp-id" v-if="u.employee_id">· {{ u.employee_id }}</span>
                 </el-tag>
               </div>
@@ -85,8 +85,8 @@
             <div class="shift-col shift-night">
               <div class="shift-head">
                 <span class="shift-dot"></span>
-                <span class="shift-name">晚班 NIGHT</span>
-                <span class="shift-time">00:00 - 08:00</span>
+                <span class="shift-name">{{ shiftMeta.NIGHT.name }} NIGHT</span>
+                <span class="shift-time">{{ shiftMeta.NIGHT.time_range }}</span>
               </div>
               <div class="shift-body">
                 <div v-if="!(dutyToday.NIGHT || []).length" class="shift-empty">
@@ -95,14 +95,14 @@
                 </div>
                 <el-tag
                   v-for="u in (dutyToday.NIGHT || [])"
-                  :key="u.id"
+                  :key="u.id || `N-${u.user_id}-${u.date}`"
                   size="large"
                   effect="light"
                   type="info"
                   class="duty-tag"
                 >
                   <el-avatar :size="22" icon="UserFilled" style="margin-right:6px;" />
-                  {{ u.real_name || u.name }}
+                  {{ u.real_name || u.name || u.user_name }}
                   <span class="duty-emp-id" v-if="u.employee_id">· {{ u.employee_id }}</span>
                 </el-tag>
               </div>
@@ -497,6 +497,16 @@
                 <el-tag :type="leaveStatusTag(currentLeave.status)" effect="light">{{ leaveStatusText(currentLeave.status) }}</el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="请假理由" :span="2">{{ currentLeave.leave_reason || '（无）' }}</el-descriptions-item>
+              <el-descriptions-item label="审批人" v-if="currentLeave.approver_name || currentLeave.approver_id">
+                {{ currentLeave.approver_name || `用户#${currentLeave.approver_id}` }}
+              </el-descriptions-item>
+              <el-descriptions-item label="处理时间" v-if="currentLeave.handled_at">{{ formatDateTime(currentLeave.handled_at) }}</el-descriptions-item>
+              <el-descriptions-item label="指定顶岗人" v-if="currentLeave.substitute_name || currentLeave.substitute_user_id">
+                <el-tag type="warning" effect="light">
+                  {{ currentLeave.substitute_name || `用户#${currentLeave.substitute_user_id}` }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="审批备注" v-if="currentLeave.approver_comment" :span="2">{{ currentLeave.approver_comment }}</el-descriptions-item>
               <el-descriptions-item label="提交时间" :span="2">{{ formatDateTime(currentLeave.submitted_at) }}</el-descriptions-item>
             </el-descriptions>
 
@@ -607,6 +617,7 @@ import dayjs from 'dayjs'
 import request from '../api'
 import {
   listDutyToday,
+  getShiftMeta,
   createDutyBatch,
   listTechnicians,
   // Phase 2.1 新增：
@@ -644,28 +655,48 @@ const dutyToday = reactive({
   NIGHT: [],
 })
 
-const technicians = ref([])
+// 班次元数据（后端唯一真源），避免前后端又写出不一致的 8-16/12-18 这种分支
+const shiftMeta = reactive({
+  MORNING:   { name: '早班', time_range: '08:00 - 16:00' },
+  AFTERNOON: { name: '中班', time_range: '16:00 - 24:00' },
+  NIGHT:     { name: '晚班', time_range: '00:00 - 08:00' },
+  ALL_DAY:   { name: '全天', time_range: '—' },
+})
+
+const fetchShiftMeta = async () => {
+  try {
+    const arr = await getShiftMeta()
+    if (Array.isArray(arr)) {
+      arr.forEach(item => {
+        if (shiftMeta[item.key]) {
+          shiftMeta[item.key].name = item.name || shiftMeta[item.key].name
+          shiftMeta[item.key].time_range = item.time_range || shiftMeta[item.key].time_range
+        } else {
+          shiftMeta[item.key] = { name: item.name || item.key, time_range: item.time_range || '—' }
+        }
+      })
+    }
+  } catch (_) { /* 加载失败就回落到前端默认值 */ }
+}
 
 const fetchDutyToday = async () => {
   dutyLoading.value = true
   try {
+    // /today 已改为按分组返回结构：{ MORNING:[], AFTERNOON:[], NIGHT:[] }，不再需要扁平-分组再转换
     const res = await listDutyToday()
-    const data = Array.isArray(res) ? res : (res.items || res || [])
-    dutyToday.MORNING = []
-    dutyToday.AFTERNOON = []
-    dutyToday.NIGHT = []
-    data.forEach(d => {
-      const key = d.shift || d.shift_type
-      const user = d.user || d.technician || d
-      if (key === 'MORNING') dutyToday.MORNING.push(user)
-      else if (key === 'AFTERNOON') dutyToday.AFTERNOON.push(user)
-      else if (key === 'NIGHT') dutyToday.NIGHT.push(user)
-    })
+    const groups = res && typeof res === 'object' && !Array.isArray(res)
+      ? res
+      : { MORNING: [], AFTERNOON: [], NIGHT: [] }
+    dutyToday.MORNING = Array.isArray(groups.MORNING) ? groups.MORNING : []
+    dutyToday.AFTERNOON = Array.isArray(groups.AFTERNOON) ? groups.AFTERNOON : []
+    dutyToday.NIGHT = Array.isArray(groups.NIGHT) ? groups.NIGHT : []
   } catch {
   } finally {
     dutyLoading.value = false
   }
 }
+
+const technicians = ref([])
 
 const fetchTechnicians = async () => {
   try {
@@ -711,13 +742,9 @@ const activeTab = ref('calendar')
 const today = dayjs().format('YYYY-MM-DD')
 
 const shiftText = (s) => {
-  const map = {
-    MORNING: '早班',
-    AFTERNOON: '中班',
-    NIGHT: '晚班',
-    ALL_DAY: '全天',
-  }
-  return map[s] || s || '-'
+  const meta = s && shiftMeta[s]
+  if (meta) return meta.name
+  return s || '-'
 }
 
 const leaveTypeText = (t) => {
@@ -873,6 +900,10 @@ const setCellShift = async (shift) => {
     })
     ElMessage.success('排班已更新')
     await fetchWeekSchedule(weekStartDate.value)
+    // 排的是今天的班次时，同步刷新顶部「今日值班」
+    if (date === today) {
+      await fetchDutyToday()
+    }
   } catch {
     // 错误已由拦截器处理
   }
@@ -900,6 +931,9 @@ const clearCellShift = async () => {
     }
     ElMessage.success('已清除')
     await fetchWeekSchedule(weekStartDate.value)
+    if (date === today) {
+      await fetchDutyToday()
+    }
   } catch {
     // 错误已由拦截器处理
   }
@@ -1170,7 +1204,9 @@ const showLeaveDetail = async (row) => {
           (u) => u.id !== currentLeave.requester_id && u.is_active !== false,
         )
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[leave] 预检失败，跳过顶岗人提示', e?.response?.data?.detail || e?.message)
+    }
     detailVisible.value = true
   } catch {}
 }
@@ -1211,6 +1247,13 @@ const confirmApprove = async () => {
     // 同时刷新排班矩阵和今日值日（排班已变更）
     fetchWeekSchedule(weekStartDate.value)
     fetchDutyToday()
+  } catch (e) {
+    const detail = e?.response?.data?.detail
+    ElMessage.error(
+      typeof detail === 'string' && detail
+        ? detail
+        : '批准失败，请稍后重试'
+    )
   } finally {
     actionBusy.value = false
   }
@@ -1226,6 +1269,7 @@ watch(activeTab, (newVal) => {
 onBeforeUnmount(() => { stopPoll() })
 
 onMounted(() => {
+  fetchShiftMeta()
   fetchDutyToday()
   fetchTechnicians()
   // 自动加载本周排班矩阵

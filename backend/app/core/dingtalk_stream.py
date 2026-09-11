@@ -83,11 +83,16 @@ class RobotMessageCallbackHandler(CallbackHandler):
 
     async def process(self, message: CallbackMessage):
         try:
+            import time as _t
             payload = message.data or {}
             logger.info(f"[DingStream-SDK] 收到机器人消息 payload={str(payload)[:500]}")
+            _tnow = _t.strftime('%H:%M:%S')
+            print(f"[DINGSTREAM-RAW] @{_tnow} BOT-MSG keys={sorted(list(payload.keys()))}", flush=True)
             from app.core import robot_handler
             robot_handler.handle_robot_message(payload)
         except Exception as e:
+            import traceback
+            print(f"[DINGSTREAM-ERR] {e}\n{traceback.format_exc()}", flush=True)
             logger.exception(f"[DingStream-SDK] 机器人消息处理失败: {e}")
         return AckMessage.STATUS_OK, "OK"
 

@@ -11,8 +11,7 @@
   GET    /check-conflicts   预检：提交前先查未完成工单冲突 + 人数不足警告
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, or_, cast
-from sqlalchemy.types import Date as SA_Date
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime, timedelta
@@ -97,6 +96,25 @@ def _validate_shift(s: str) -> str:
     return s
 
 
+def _wo_overlap_dates(w: WorkOrder, d_min: date, d_max: date) -> Optional[date]:
+    """判断一张未完成工单的责任日期是否落在 [d_min, d_max] 请假区间里。
+
+    规则（保守、可解释、与 approve 预检一致）：
+    1) 有 start_time → 用 start_time.date()；
+    2) 无 start_time 但工单状态是 ACCEPTED/ARRIVED/IN_PROGRESS/DISPATCHED/PENDING_ASSIGN 等「维修在途」
+       → 以 created_at.date() 为参考，仅当它落在请假区间内才判冲突（不允许 created_at 早几天
+         也算冲突，否则 8/20 创建的开环未完成工单会把 8/23 请假误拦）；
+    3) created_at 也缺失 → 不加入冲突（信息不足，交给人工判断）。
+    """
+    if w.start_time:
+        wd = w.start_time.date()
+        return wd if d_min <= wd <= d_max else None
+    if w.created_at:
+        wd = w.created_at.date()
+        return wd if d_min <= wd <= d_max else None
+    return None
+
+
 def _is_leave_shift_overlap_shift(leave_shift: str, duty_shift: str) -> bool:
     """判断「请假班次」与「排班班次」是否有时间交叠。
     ALL_DAY ↔ 任何班次都算交叠；其余按字符串相等判断。
@@ -106,8 +124,19 @@ def _is_leave_shift_overlap_shift(leave_shift: str, duty_shift: str) -> bool:
     return leave_shift == duty_shift
 
 
-def _build_response(lr: LeaveRequest) -> Dict[str, Any]:
-    """ORM → response dict"""
+def _build_response(lr: LeaveRequest, db: Optional[Session] = None) -> Dict[str, Any]:
+    """ORM → response dict；若传入 db，会根据 approver_id/substitute_user_id 反查展示姓名。"""
+    approver_name = None
+    substitute_name = None
+    if db is not None:
+        if lr.approver_id:
+            a = db.query(User).filter(User.id == lr.approver_id).first()
+            if a:
+                approver_name = a.real_name or a.username
+        if lr.substitute_user_id:
+            s = db.query(User).filter(User.id == lr.substitute_user_id).first()
+            if s:
+                substitute_name = s.real_name or s.username
     return {
         "id": lr.id,
         "requester_id": lr.requester_id,
@@ -116,8 +145,10 @@ def _build_response(lr: LeaveRequest) -> Dict[str, Any]:
         "leave_reason": lr.leave_reason,
         "status": lr.status,
         "approver_id": lr.approver_id,
+        "approver_name": approver_name,
         "approver_comment": lr.approver_comment,
         "substitute_user_id": lr.substitute_user_id,
+        "substitute_name": substitute_name,
         "correlation_id": lr.correlation_id,
         "submitted_at": lr.submitted_at,
         "handled_at": lr.handled_at,
@@ -195,22 +226,15 @@ def check_leave_conflicts(
     ).all()
     pending_wo: List[Dict[str, Any]] = []
     for w in wo_q:
-        wo_created_date = cast(w.created_at, SA_Date) if w.created_at else None
-        # 近似判断：created_at 在请假区间里，或 start_time 交叠
-        overlap = False
-        if w.start_time:
-            s = w.start_time.date()
-            overlap = (d_min <= s <= d_max)
-        elif wo_created_date is not None:
-            # 无 start_time 则认为在创建日期之后几天都算未完成
-            overlap = (d_min <= wo_created_date <= d_max) or (wo_created_date < d_min)
-        if overlap:
+        overlap_date = _wo_overlap_dates(w, d_min, d_max)
+        if overlap_date is not None:
             pending_wo.append({
                 "work_order_id": w.id,
                 "work_order_no": w.work_order_no,
                 "status": w.status,
                 "fault_description": w.fault_description,
                 "start_time": w.start_time.isoformat() if w.start_time else None,
+                "overlap_date": overlap_date.isoformat(),
             })
 
     # 2) 每天剩余值班人数 = (当天总排班数 - 请假交叠班次条数），仅统计已排班师傅（MANUAL/WEEKLY_ROUTINE/未删除）
@@ -260,7 +284,7 @@ def submit_leave_request(
     exist = db.query(LeaveRequest).filter(LeaveRequest.correlation_id == payload.correlation_id).first()
     if exist:
         logger.info(f"[Leave] correlation_id 命中幂等: {payload.correlation_id} -> lr_id={exist.id}")
-        return _build_response(exist)
+        return _build_response(exist, db)
 
     # 2) 确定申请人
     requester_id = payload.requester_id or current_user.id
@@ -294,7 +318,7 @@ def submit_leave_request(
     db.commit()
     db.refresh(lr)
     logger.info(f"[Leave] 提交成功 lr_id={lr.id} requester={requester_id} 明细数={len(pairs)}")
-    return _build_response(lr)
+    return _build_response(lr, db)
 
 
 # ============================================================
@@ -335,7 +359,7 @@ def list_leave_requests(
     items = q.order_by(LeaveRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {
         "total": total,
-        "items": [_build_response(x) for x in items],
+        "items": [_build_response(x, db) for x in items],
         "page": page,
         "page_size": page_size,
     }
@@ -369,7 +393,7 @@ def get_leave_request(
     # 权限：申请人自己、或主管/管理员
     if lr.requester_id != current_user.id:
         _require_supervisor_or_admin(current_user)
-    resp = _build_response(lr)
+    resp = _build_response(lr, db)
     # 详情里带冲突工单 + 值班人数（前端审批页渲染）
     try:
         pc = check_leave_conflicts(
@@ -425,14 +449,8 @@ def approve_leave_request(
     ).all()
     conflict_wos = []
     for w in pending_wos:
-        w_date = None
-        if w.start_time:
-            w_date = w.start_time.date()
-        elif w.created_at:
-            w_date = w.created_at.date()
-        if w_date and (d_min <= w_date <= d_max):
-            conflict_wos.append(w)
-        elif not w_date:
+        overlap_date = _wo_overlap_dates(w, d_min, d_max)
+        if overlap_date is not None:
             conflict_wos.append(w)
     if conflict_wos:
         msg = "该师傅在请假日期内有未完成工单，请先转派工单再审批：" + "、".join(

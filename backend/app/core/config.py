@@ -90,7 +90,8 @@ class Settings(BaseSettings):
     # 检索链路参数
     RECALL_TOP_K: int = 30        # 各路召回 top-k（向量/BM25），RRF 融合后候选池
     FINAL_TOP_N: int = 10         # 重排后最终送 LLM 的条数
-    RETRIEVAL_COARSE_THRESHOLD: float = 0.15   # 粗筛：RRF 融合后向量相似度下限
+    RETRIEVAL_COARSE_THRESHOLD: float = 0.45   # 粗筛：RRF 融合后向量相似度下限（bge-m3 实测分布标定：无关~0.35、英文日志≥0.495）
+    SEMANTIC_RESCUE_THRESHOLD: float = 0.6     # 语义兜底：词法严格过滤为空时，保留向量语义分≥此值的候选（保住英文日志→中文手册的跨语言语义命中）
     RETRIEVAL_VECTOR_THRESHOLD: float = 0.3    # 单路向量检索阈值（quick/knowledge 搜索）
     DEDUP_CANDIDATE_THRESHOLD: float = 0.45    # 去重：向量候选召回阈值
     DEDUP_LLM_THRESHOLD: float = 0.55          # 去重：触发 LLM 判定阈值

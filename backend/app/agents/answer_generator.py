@@ -6,6 +6,7 @@
 - 返回结构化答案：分析回答 + 参考案例列表
 """
 import json
+import re
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 from loguru import logger
@@ -179,20 +180,32 @@ class AnswerGenerator:
                 sources_count=0,
             )
 
-        # 用 OR 条件查询匹配的备件
-        results = []
-        try:
-            query = db.query(SparePart)
+        # 用 OR 条件查询匹配的备件；未命中时用去头/去尾的宽松关键词重试，
+        # 规避「减震垫有多少库存」抽出「减震垫有」这类功能词粘连导致查不到
+        def _search_by_terms(terms: list) -> list:
+            if not terms:
+                return []
+            from sqlalchemy import or_
             conditions = []
-            for term in search_terms:
+            for term in terms:
                 conditions.append(SparePart.part_name.ilike(f"%{term}%"))
                 conditions.append(SparePart.part_code.ilike(f"%{term}%"))
                 conditions.append(SparePart.specification.ilike(f"%{term}%"))
                 conditions.append(SparePart.device_type.ilike(f"%{term}%"))
-            if conditions:
-                from sqlalchemy import or_
-                query = query.filter(or_(*conditions))
-            results = query.all()
+            return db.query(SparePart).filter(or_(*conditions)).all()
+
+        results = []
+        try:
+            results = _search_by_terms(search_terms)
+            if not results:
+                # 宽松重试：关键词分别去掉末字/首字再查（如「减震垫有」→「减震垫」）
+                relaxed = []
+                for t in search_terms:
+                    for v in (t[:-1], t[1:]):
+                        if len(v) >= 2 and v not in relaxed:
+                            relaxed.append(v)
+                if relaxed:
+                    results = _search_by_terms(relaxed)
         except Exception as e:
             logger.error(f"[AnswerGenerator] 库存查询失败: {e}")
             return AnswerResult(
@@ -242,7 +255,11 @@ class AnswerGenerator:
         )
 
     def _extract_part_keywords(self, question: str) -> list:
-        """从问题中提取可能的备件关键词"""
+        """从问题中提取可能的备件关键词。
+        策略：已知备件词表优先匹配；未命中时先整句删除噪声词再做分词，
+        避免「自动排水阀还有多少库存」被拆成独立小 token 后整段因噪声词
+        丢弃而只留下"自动/排水/阀"（分词边界依赖不可靠，不如整句过滤后保留连续词）。
+        """
         # 常见备件名称列表（可作为关键词索引）
         known_parts = [
             "保险丝", "传感器", "继电器", "轴承", "密封圈", "电机", "泵",
@@ -255,42 +272,68 @@ class AnswerGenerator:
         for kw in known_parts:
             if kw in question:
                 found.append(kw)
-        # 如果没有命中已知列表，尝试提取问题中的连续2-3字词作为搜索词
-        if not found:
-            import re
-            tokens = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9\-]+', question)
-            # 清理干扰词
-            noise_words = {"库存", "备件", "零件", "配件", "还有多少", "还剩多少",
-                          "查一下", "看一下", "帮我", "查询", "还有", "多少",
-                          "数量", "剩下", "够不够", "缺不缺", "有没有", "查"}
-            for t in tokens:
-                if len(t) >= 2 and t not in noise_words:
-                    found.append(t)
-
+        if found:
+            return found[:5]
+        # 未命中已知列表：先整句去噪声短语，再做 token 分词，避免"还有多少"被拆成多 token 污染结果
+        cleaned_q = (question or "").strip()
+        noise_phrases = [
+            "备件库存", "还有多少库存", "还有多少个", "还剩多少个", "还剩多少库存",
+            "查一下", "看一下", "帮我查", "帮我看", "帮我", "请查", "请帮我查",
+            "数量还有", "库存多少", "库存有多少", "有没有现货", "有多少现货",
+            "有多少", "有多少个", "还有没有", "有没有",
+            "库存", "备件", "零件", "配件", "还有多少", "还剩多少",
+            "查询", "还有", "多少", "数量", "剩下", "够不够", "缺不缺",
+            "查", "一下", "现货",
+        ]
+        import re
+        pattern = "|".join(re.escape(p) for p in sorted(noise_phrases, key=len, reverse=True))
+        cleaned_q = re.sub(rf"({pattern})", " ", cleaned_q)
+        # 替换空白、标点
+        cleaned_q = re.sub(r"[\s，。！？：；,.;:!?、【】\[\]()（）\"'《》<>/\\\-_]", " ", cleaned_q)
+        tokens = re.findall(r"[\u4e00-\u9fa5a-zA-Z0-9]+", cleaned_q)
+        for t in tokens:
+            if len(t) >= 2 and t not in found:
+                found.append(t)
         # 清理关键词：去掉末尾常见的干扰词，提升匹配准确率
         cleaned = []
         noise_suffixes = ["库存", "记录", "备件", "零件", "配件"]
+        # 中文助词/功能字：关键词首尾出现时剥离，避免「查一下减震垫的库存」抽出「减震垫的」、
+        # 「减震垫有多少库存」抽出「减震垫有」导致查不到（备件名不含这些字，剥离安全）
+        particles = "的了吗呢吧呀啊嘛么之有还和与或是在几"
         for term in found[:10]:
+            term = term.strip(particles)
             for suffix in noise_suffixes:
                 if term.endswith(suffix) and len(term) > len(suffix):
                     term = term[:-len(suffix)]
                     break
-            cleaned.append(term)
+            term = term.strip(particles)
+            if len(term) >= 2:
+                cleaned.append(term)
 
         return cleaned[:5]  # 最多5个搜索词
 
     _NON_TECHNICAL_KEYWORDS = [
         "你好", "你好吗", "你是谁", "你叫什么", "你能做什么", "你有什么功能",
-        "功能", "介绍", "帮助", "help", "hello", "hi", "你好",
-        "谢谢", "感谢", "再见", "拜拜", "测试",
+        "功能", "介绍", "帮助", "谢谢", "感谢", "再见", "拜拜", "测试",
     ]
+    # 英文问候/求助词：必须词边界匹配——子串匹配会让英文日志里的
+    # "Machine"（含 hi）、"which"（含 hi）、"helping" 误命中而整段被判非技术
+    _NON_TECHNICAL_EN_WORDS = ["hello", "hi", "help"]
 
     def _is_technical_query(self, question: str) -> bool:
         """判断用户问题是否为设备维修相关的技术问题"""
+        # 日志类输入（时间戳+级别词格式）必为技术问题：整段设备日志不可能是问候/闲聊，
+        # 直接放行（曾因日志中 "Machine#02" 含子串 "hi" 被误判为问候）
+        from app.agents.tools import parse_log_query
+        if parse_log_query(question) is not None:
+            return True
         q = question.strip().lower()
-        # 问候/功能询问/闲聊类直接拦截
+        # 问候/功能询问/闲聊类直接拦截（中文词无词边界问题，子串匹配安全）
         for kw in self._NON_TECHNICAL_KEYWORDS:
             if kw in q:
+                return False
+        for w in self._NON_TECHNICAL_EN_WORDS:
+            if re.search(rf"\b{w}\b", q):
                 return False
         # 明显非技术问题模式
         non_tech_patterns = ["你是", "你能", "你的", "功能有", "作用有", "介绍一下"]

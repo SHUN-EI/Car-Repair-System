@@ -132,7 +132,7 @@ if (-not $SkipDB) {
         if ($LASTEXITCODE -eq 0) { Ok "数据库表结构就绪" } else { Fail "迁移失败，请确认 PostgreSQL 已启动且 .env 配置正确" }
 
         Write-Host "  导入种子数据 ..."
-        foreach ($s in @("seed_knowledge", "seed_categories", "seed_fault_codes", "seed_data")) {
+        foreach ($s in @("init_categories")) {
             Write-Host "    - $s.py"
             & $VenvPython (Join-Path $BackendDir "scripts\$s.py") | Out-Host
             if ($LASTEXITCODE -eq 0) { Ok "$s 完成" } else { Warn "$s 执行异常（可忽略或稍后手动重跑）" }

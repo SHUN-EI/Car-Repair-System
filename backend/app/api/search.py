@@ -378,12 +378,15 @@ async def analyze_answer_stream(
 
         # 走 LangGraph 主图 + 子图：意图路由（聊天/库存/故障）→ 对应子图执行。
         from app.agents.qa_graph import invoke_qa
+        t_retrieve_start = time.monotonic()
         try:
             state = await asyncio.to_thread(
                 invoke_qa,
                 request.question, request.device_type, request.fault_code, request.top_k,
             )
         except Exception as e:
+            t_retrieve = (time.monotonic() - t_retrieve_start) * 1000
+            logger.error(f"[Answer/stream] 阶段=检索 异常耗时={t_retrieve:.0f}ms")
             logger.error(f"[Answer] 智能问答图执行失败: {e}")
             yield f"data: {json_module.dumps({'type': 'answer', 'content': f'服务异常: {e}'}, ensure_ascii=False)}\n\n"
             yield f"data: {json_module.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
@@ -418,25 +421,38 @@ async def analyze_answer_stream(
                 top_k=request.top_k or 8,
             )
             if chk["decision"] == "irrelevant":
+                logger.info(f"[Answer/stream] 阶段=意图阀门 判定=irrelevant")
                 yield f"data: {json_module.dumps({'type': 'answer', 'content': REPAIR_IRRELEVANT_REPLY}, ensure_ascii=False)}\n\n"
                 yield f"data: {json_module.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
                 return
             # 阀门判为 related 但 qa_graph cases 为空（罕见：不同参数下的差异），仍按原链路走
             cases = chk["cases"]
 
+        t_retrieve = (time.monotonic() - t_retrieve_start) * 1000
+        t_ref_start = time.monotonic()
+        logger.info(f"[Answer/stream] 阶段=检索 done 耗时={t_retrieve:.0f}ms cases={len(cases)} kind={kind}")
+
         if state.get("suggest_expert"):
             yield f"data: {json_module.dumps({'type': 'suggest_expert'}, ensure_ascii=False)}\n\n"
 
         references = [_to_reference(ref) for ref in cases[:8]]
         yield f"event: references\ndata: {json_module.dumps(references, ensure_ascii=False)}\n\n"
+        t_ref = (time.monotonic() - t_ref_start) * 1000
+        logger.info(f"[Answer/stream] 阶段=参考案例组装 done 耗时={t_ref:.0f}ms refs={len(references)}")
 
+        t_gen_start = time.monotonic()
         try:
             for sse_msg in answer_generator.stream_answer(request.question, cases):
                 yield sse_msg
         except Exception as e:
+            t_gen = (time.monotonic() - t_gen_start) * 1000
+            logger.error(f"[Answer/stream] 阶段=生成 异常耗时={t_gen:.0f}ms")
             logger.error(f"流式生成失败: {e}")
             yield f"data: {json_module.dumps({'type': 'answer', 'content': f'生成失败: {e}'}, ensure_ascii=False)}\n\n"
             yield f"data: {json_module.dumps({'type': 'done', 'confidence': 0, 'sources_count': len(references)}, ensure_ascii=False)}\n\n"
+        else:
+            t_gen = (time.monotonic() - t_gen_start) * 1000
+            logger.info(f"[Answer/stream] 阶段=生成 done 耗时={t_gen:.0f}ms")
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

@@ -71,6 +71,134 @@ def get_device_terms() -> set:
         logger.warning(f"[Tools] 知识库设备词加载失败，仅用静态表: {e}")
     return _DEVICE_TYPE_TERMS | _DB_DEVICE_TERMS
 
+
+# 知识库+手册库实际收录的设备类型（不含静态内置词，5 分钟缓存）
+_KB_DEVICE_TYPES: set = set()
+_KB_DEVICE_TYPES_LOADED_AT: float = 0.0
+_KB_DEVICE_TYPES_TTL = 300.0
+
+
+def get_kb_device_types() -> set:
+    """知识库（knowledge_items）+ 手册库（manual_code_entries）实际收录的设备类型
+
+    用于判断"提取到的设备是否有库可查"：日志常来自库中没有手册的设备（如 PLC），
+    此时设备精确匹配注定全灭，过滤层应退化为仅按故障现象关键词约束
+    （故障现象跨设备通用，如伺服过流在 CNC 车床/加工中心手册中同样适用）。
+    """
+    global _KB_DEVICE_TYPES, _KB_DEVICE_TYPES_LOADED_AT
+    import time as _time
+    if _KB_DEVICE_TYPES and (_time.time() - _KB_DEVICE_TYPES_LOADED_AT) < _KB_DEVICE_TYPES_TTL:
+        return _KB_DEVICE_TYPES
+    try:
+        from app.core.database import SessionLocal
+        from app.models.knowledge import KnowledgeItem
+        from app.models.manual_code import ManualCodeEntry
+        db = SessionLocal()
+        try:
+            s = {r[0].strip() for r in db.query(KnowledgeItem.device_type).filter(
+                KnowledgeItem.device_type.isnot(None)).distinct().all()
+                if r[0] and r[0].strip()}
+            s |= {r[0].strip() for r in db.query(ManualCodeEntry.device_type).filter(
+                ManualCodeEntry.device_type.isnot(None)).distinct().all()
+                if r[0] and r[0].strip()}
+            if s:
+                _KB_DEVICE_TYPES = s
+                _KB_DEVICE_TYPES_LOADED_AT = _time.time()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[Tools] 知识库设备类型加载失败: {e}")
+    return _KB_DEVICE_TYPES
+
+
+# ==================== 日志类输入结构化提取 ====================
+
+# 标准日志行格式：时间戳 + 级别词（如 "2026-08-19 10:30:14.976 ERROR PLC-Logger | ..."）
+_LOG_LINE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]?\d*\s+"
+    r"(?:INFO|WARN|WARNING|ERROR|ERR|DEBUG|FATAL|CRITICAL|TRACE)\b",
+    re.IGNORECASE,
+)
+
+# 英文故障现象词 → 中文故障词（供严格过滤命中中文知识库/手册条目）
+# 只收"现象/部件"级词汇；不收 error/alarm/fault 等泛化词（会命中所有条目，失去过滤意义）
+_EN_FAULT_TERM_MAP = {
+    "over-current": ("过流", "过电流"), "overcurrent": ("过流", "过电流"),
+    "over current": ("过流", "过电流"),
+    "over-voltage": ("过压",), "overvoltage": ("过压",), "over voltage": ("过压",),
+    "overheat": ("过热",), "over-heat": ("过热",), "over heat": ("过热",),
+    "overload": ("过载",), "over-load": ("过载",), "over load": ("过载",),
+    "low voltage": ("电压低",), "under voltage": ("电压低",),
+    "battery": ("电池",),
+    "brake": ("抱闸",),
+    "vibration": ("振动",), "noise": ("异响",),
+    "leak": ("泄漏",), "leakage": ("泄漏",),
+    "servo": ("伺服",), "spindle": ("主轴",),
+    "motor": ("电机",), "pump": ("泵",),
+    "position deviation": ("位置偏差",), "position error": ("位置偏差",),
+    "over travel": ("超程",), "travel limit": ("超程",),
+    "encoder": ("编码器",),
+    "temperature": ("温度",), "pressure": ("压力",),
+    "coolant": ("冷却液", "冷却水"),
+    "collision": ("碰撞",),
+}
+
+
+# 英文设备别名 → 库内设备类型（词边界匹配，防 "pressure" 误命中 "press"）。
+# 英文日志的设备名（Laser-Logger / WEDM-Logger）匹配不到中文设备词表，
+# 无别名映射时设备约束永远为空，只能靠关键词过滤兜噪声
+_EN_DEVICE_ALIAS = {
+    "laser": "激光切割机", "laser cutter": "激光切割机", "laser cutting": "激光切割机",
+    "wedm": "线切割", "wire edm": "线切割",
+    "punch": "冲床", "punching": "冲床",
+    "press brake": "数控折弯机", "bending machine": "数控折弯机",
+    "machining center": "CNC加工中心", "machining centre": "CNC加工中心",
+    "lathe": "CNC车床",
+    "grinder": "磨床", "grinding machine": "磨床",
+    "compressor": "空压机", "air compressor": "空压机",
+}
+
+
+def parse_log_query(query: str):
+    """日志类输入结构化提取：设备名 + 故障现象词（英文→中文映射）
+
+    检测到标准日志格式（时间戳 + 级别词）时启用。整段英文日志的原文词
+    （ERROR/detected/halted/时间戳数字...）在中文知识库中无法命中任何条目，
+    通用清洗会把它们全部当作"故障关键词"，导致严格过滤误杀语义相关案例；
+    语义兜底再按分数救回时又会混入低相关噪声（如电池电压低条目）。
+    日志场景改为结构化提取：
+    - 设备：先匹配中文设备词表，未命中再按英文别名映射（Laser-Logger → 激光切割机）
+    - 关键词：英文故障现象映射为中文（Over-current → 过流/过电流），
+      中文词才能命中中文条目的标题/正文，过滤即准又不杀语义命中
+    - 错误码由 extract_error_codes 独立提取（regex + 码表扫描），不在此处理
+
+    Returns:
+        (device, keywords) 元组；非日志格式返回 None
+    """
+    if not query or not _LOG_LINE_RE.search(query):
+        return None
+    text = query.lower()
+    # 设备：中文词表最长词优先匹配（避免 "CNC" 抢走 "CNC车床"）
+    device_terms = get_device_terms()
+    device = next(
+        (t for t in sorted(device_terms, key=len, reverse=True)
+         if t and t.lower() in text), ""
+    )
+    # 英文设备别名：词边界匹配（"laser-logger" 中 laser 前后是空格/连字符，均可命中）
+    if not device:
+        for en, zh in _EN_DEVICE_ALIAS.items():
+            if re.search(rf"(?<![A-Za-z]){re.escape(en)}(?![A-Za-z])", text):
+                device = zh
+                break
+    # 故障现象：英文 → 中文映射
+    kws = []
+    for en, zh_terms in _EN_FAULT_TERM_MAP.items():
+        if en in text:
+            kws.extend(zh_terms)
+    seen = set()
+    keywords = [k for k in kws if not (k in seen or seen.add(k))]
+    return device, keywords
+
 # 故障原因关键词（只有症状/异常描述，不含设备名/部件名）
 # 设备名/部件名不是故障原因，不应参与故障匹配评分
 _FAULT_CAUSE_SIGNALS = {
@@ -350,6 +478,26 @@ def _classify_keywords(tokens: Set[str]) -> Tuple[Set[str], Set[str]]:
     return device_keywords, fault_keywords
 
 
+def _manual_exact_device_conflict(item: dict, query_device: str) -> bool:
+    """manual_code_exact 跨系统同码冲突判定。
+
+    同一错误码在不同系统（如 PLC 伺服驱动的 SV0401=过电流 vs FANUC/三菱 CNC 的
+    SV0401=位置偏差）含义完全不同。若查询已明确提取到设备，而手册精确命中条目的
+    device_type 与查询设备无任何共同 token，判为冲突——不再当作权威命中置顶/豁免过滤，
+    避免把不相干系统的手册条目硬套在查询日志上（如 PLC 日志误配到 CNC 手册）。
+
+    保守策略：查询设备或条目设备任一为空 → 不算冲突（保留"精确码不过杀"的既有语义，
+    如"机械臂报6401"未标注设备时仍按权威命中放行）。
+    """
+    query_device = (query_device or "").strip()
+    entry_device = str(item.get("device_type") or "").strip()
+    if not query_device or not entry_device:
+        return False
+    tokens = lambda s: set(re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+", s))
+    # 无共同 token → 设备和手册条目分属不同系统，判冲突
+    return not (tokens(query_device) & tokens(entry_device))
+
+
 def weighted_rerank(
     results: List[Dict],
     query: str,
@@ -438,7 +586,12 @@ def weighted_rerank(
         # 错误码权威精确命中（manual_code_exact）：本身就是最强相关性（用户给出/日志抠出精确错误码，
         # 手册按 error_code 精确查得），属于金融级"确定命中"，不应再按 故障关键词命中率/设备词 惩罚。
         # 否则英文日志场景下 fault_hit_count≈0 会把 1.0 压到 0.15 地板，导致权威命中被判"低分/未检索到"。
-        if item.get("method") == "manual_code_exact":
+        # 例外：跨系统同码冲突（查询已明确设备、条目设备与查询设备无共同 token，如 PLC 的 SV0401
+        # 误配到 CNC 手册）不再享受豁免，走下方正常设备/关键词惩罚，避免误导。权重治理在
+        # filter_rerank_cases 中强约束，此处为一致性防护（device_kw 白名单提取可能为空）。
+        if item.get("method") == "manual_code_exact" and not _manual_exact_device_conflict(
+            item, " ".join(sorted(device_kw))
+        ):
             # 权威命中分数 = 原向量/精排分；向量路不可用（降级）时用 RRF 分冲高，保证能过回答层阈值
             exact_score = original_score if original_score > 0 else float(item.get("rrf_score", 0) or 0)
             item["score"] = round(max(exact_score, 0.8), 4)
@@ -553,6 +706,18 @@ def extract_error_codes(query: str, whitelist: Optional[Set[str]] = None) -> Lis
             continue
         if allowed and tok in allowed:
             codes.add(tok)
+
+    # 3. 字母型手册码扫描：CW_OT / SERVO_AL / E01-02 等无数字或带分隔符的码表形态，
+    #    形态正则覆盖不到（其要求数字），改为对码表全量做词边界匹配。
+    #    码表仅百余条且字母型码均含下划线/连字符，词边界匹配不会误命中普通文本；
+    #    匹配成功按码表原形态加入（manual_code_search 按原码精确查询）
+    if allowed:
+        for code in allowed:
+            if code in codes:
+                continue
+            if re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])",
+                         query, re.IGNORECASE):
+                codes.add(code)
 
     return sorted(codes)
 

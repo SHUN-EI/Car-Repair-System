@@ -67,7 +67,17 @@ _insert_*.sql
 
 # ===== 本地工具 / Agent 状态（非项目代码）=====
 .claude/
+.trae/
 .trae-html-share-packages/
+
+# ===== 本地调试输出（非项目代码）=====
+_debug/
+backend/final_out*.txt
+package.json
+package-lock.json
+
+# ===== 含个人隐私的简历材料（绝不提交）=====
+项目说明/_简历提取.md
 
 # ===== 独立调研报告（非系统代码）=====
 factory-equipment-research/

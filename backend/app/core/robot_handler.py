@@ -65,7 +65,8 @@ def _send_reply(user_ids: List[str], content: str, title: str = "", msg_key: str
         )
         data = resp.json()
         if data.get("processQueryKey") or data.get("errcode") in (0, None):
-            logger.info(f"[Robot] 回复成功: users={len(user_ids)}")
+            preview = content[:120].replace("\n", " | ")
+            logger.info(f"[Robot] 回复成功: users={len(user_ids)} content={preview!r}")
             return True
         logger.error(f"[Robot] 回复失败: {data}")
         return False
@@ -167,6 +168,8 @@ def _route(db, payload: Dict, user: Optional[User], text: str) -> str:
 # ============================================================
 def handle_robot_message(payload: Dict) -> None:
     """Stream 收到机器人单聊消息时调用（同步处理）"""
+    import time as _t
+    _t0 = _t.time()
     try:
         text = ""
         if isinstance(payload.get("text"), dict):
@@ -176,6 +179,15 @@ def handle_robot_message(payload: Dict) -> None:
         sender_staff_id = (payload.get("senderStaffId") or "").strip()
         sender_nick = (payload.get("senderNick") or "").strip()
         msg_type = payload.get("msgtype") or payload.get("msgType") or ""
+        _raw_user_fields = (
+            f"sid={sender_staff_id} uid={payload.get('senderId')} "
+            f"unionId={payload.get('unionId','')[:16]} nick={sender_nick}"
+        )
+        print(
+            f"[ROBOT-RAW] @{_t.strftime('%H:%M:%S')} msgType={msg_type} "
+            f"{_raw_user_fields} text={text[:120]!r}",
+            flush=True,
+        )
 
         # 只处理文本消息
         if msg_type and msg_type != "text":
@@ -194,14 +206,24 @@ def handle_robot_message(payload: Dict) -> None:
                     user = _find_user(db, payload)
             if not user:
                 logger.warning(f"[Robot] 未匹配到系统用户: staffId={sender_staff_id}, unionId={payload.get('unionId')}")
+                print(f"[ROBOT-USER-MISS] sid={sender_staff_id} → 回 HELP_TEXT", flush=True)
                 _send_reply([sender_staff_id] if sender_staff_id else [], HELP_TEXT)
                 return
+            print(f"[ROBOT-USER-OK] staff={sender_staff_id} sysUser.id={user.id} sysUser={user.username}", flush=True)
             # 知识检索类消息：LLM 生成较慢，先发"正在思考中"占位提示
             if _is_knowledge_query(text) and sender_staff_id:
                 _send_reply([sender_staff_id], "思考中，请稍候…", title="维修助手")
             reply = _route(db, payload, user, text)
             _send_reply([sender_staff_id] if sender_staff_id else [], reply, title="维修助手")
+            _dt = int((_t.time() - _t0) * 1000)
+            _preview = (reply or "").replace("\n", " | ")[:150]
+            print(f"[ROBOT-DONE] @{_t.strftime('%H:%M:%S')} cost={_dt}ms reply={_preview!r}", flush=True)
         finally:
             db.close()
     except Exception as e:
         logger.exception(f"[Robot] 处理消息异常: {e}")
+        try:
+            import traceback
+            print(f"[ROBOT-ERR] {e}\n{traceback.format_exc()}", flush=True)
+        except Exception:
+            pass

@@ -118,11 +118,11 @@ def confirm_dispatch(
         if s.schedule_type == 'LEAVE' and s.shift == 'ALL_DAY':
             raise HTTPException(status_code=400, detail=f"该维修员今日全天请假，无法派工")
 
-    # 当前时段请假校验
+    # 当前时段请假校验（与 duty_schedules.SHIFT_HOURS 保持一致：早班 8-16、中班 16-24、晚班 0-8）
     def _current_shift(hour):
         if 8 <= hour < 16: return "MORNING"
-        elif 16 <= hour < 24: return "AFTERNOON"
-        else: return "NIGHT"
+        if 16 <= hour < 24: return "AFTERNOON"
+        return "NIGHT"
 
     cur_shift = _current_shift(now_hour)
     for s in today_schedules:

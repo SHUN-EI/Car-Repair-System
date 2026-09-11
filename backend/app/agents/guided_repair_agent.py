@@ -214,10 +214,12 @@ class GuidedRepairAgent:
         return sid
 
     def _search_knowledge(self, query: str, device_type: str = "") -> List[Dict]:
-        """检索知识库（公共编排层）：向量 + BM25 + 手册错误码路 → RRF → 粗筛 → 精排 → 取 top3
+        """检索知识库（公共编排层）：向量 + BM25 + 手册错误码路 → RRF → 粗筛 → 严格过滤 → 精排 → 取 top3
 
-        与问答模块同口径：先按设备/故障关键词严格过滤；严格过滤后为空时降级宽松
-        （仅错误码置顶、不做设备/关键词约束），保证追踪引导不因跨设备误伤而"突然无案例"。
+        与问答模块同口径：设备/关键词严格过滤（为空时语义兜底由 filter_rerank_cases
+        内部处理：保留向量分≥0.6 的候选并剔除跨系统同码冲突）。兜底后仍为空则如实
+        返回空——由上层 prompt 告知"知识库暂无相关案例"，不做宽松降级
+        （宽松捞回的仅是向量分<0.6 的低相关噪声，且会绕过跨系统冲突剔除，误导排查方向）。
         """
         try:
             from app.agents.retrieval_flow import (
@@ -233,11 +235,6 @@ class GuidedRepairAgent:
                 require_device=device, require_keywords=tuple(kws),
                 error_codes=error_codes,
             )
-            if not cases:
-                # 严格过滤空 → 降级宽松（仅错误码置顶，不做设备/关键词约束）
-                cases = filter_rerank_cases(
-                    tools, merged, query, top_n=5, error_codes=error_codes,
-                )
             return cases[:3]
         except Exception as e:
             logger.error(f"[GuidedRepair] 知识检索失败: {e}")

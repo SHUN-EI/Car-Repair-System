@@ -35,6 +35,9 @@ from app.agents.tools import (
     extract_error_codes,
     clean_query_for_retrieval,
     get_device_terms,
+    _manual_exact_device_conflict,
+    parse_log_query,
+    get_kb_device_types,
 )
 
 
@@ -100,9 +103,15 @@ def retrieve_hybrid(
 def extract_device_and_fault(tools: RetrievalTools, query: str) -> Tuple[str, List[str]]:
     """从查询中提取设备类型 + 故障关键词（供检索结果过滤使用）
 
+    日志类输入（时间戳+级别词格式）先走结构化提取：设备名 + 英文故障现象→中文映射
+    （详见 tools.parse_log_query），避免英文日志原文词进入关键词导致中文库全灭。
+
     Returns:
         (device, keywords): 设备类型（可能为空）+ 故障关键词列表
     """
+    parsed = parse_log_query(query)
+    if parsed is not None:
+        return parsed
     cleaned = tools.query_extractor.extract(query, use_llm_fallback=False)
     # 设备词全集（静态内置词 + 知识库实际设备）；最长词优先匹配（避免“CNC”吃掉“CNC加工中心”）
     device_terms = get_device_terms()
@@ -122,7 +131,14 @@ def _rerank_or_fallback(tools: RetrievalTools, filtered: List[dict], query: str)
     """模型精排（Qwen3-Reranker），不可用时回退规则重排 weighted_rerank
 
     只排序、不过滤：过滤由调用方的向量相似度阈值 + 严格过滤负责。
+
+    日志类输入跳过模型精排：英文日志 × 中文候选的跨语言精排收益低，且 CPU 上
+    单块 8 条文档就可能超 60s（超时后仍要走降级，白等）；前置关键词严格过滤
+    （中文故障词）+ bge-m3 跨语言向量分已给出正确排序，直接按向量分降序。
     """
+    parsed = parse_log_query(query)
+    if parsed is not None:
+        return sorted(filtered, key=lambda m: m.get("score", 0) or 0, reverse=True)
     if settings.RERANKER_ENABLED and len(filtered) > 1:
         # 只对候选集头部做模型打分（CPU 延迟预算内），尾部保持原序
         head, tail = filtered[: settings.RERANKER_CANDIDATES], filtered[settings.RERANKER_CANDIDATES:]
@@ -214,13 +230,13 @@ def filter_rerank_cases(
     top_n = top_n or settings.FINAL_TOP_N
     bm25_only_degraded = bool(merged) and all(m.get("rrf_only", False) for m in merged)
 
+    # ---- 粗筛 ----
     if bm25_only_degraded:
-        # 推理服务不可用：纯 BM25 降级，按 RRF 名次排序 → 过 weighted_rerank 修正分（避免 score=0 展示 0%）
-        filtered = sorted(merged, key=lambda x: x.get("rrf_score", 0), reverse=True)
-        filtered = _rerank_or_fallback(tools, filtered, query)
+        # 推理服务不可用：纯 BM25 降级，按 RRF 名次排序
+        coarse = sorted(merged, key=lambda x: x.get("rrf_score", 0), reverse=True)
         logger.warning("[RetrievalFlow] BM25-only 降级模式：跳过向量分数阈值，按 RRF 名次排序")
     else:
-        # 粗筛：向量路以 score>=阈值 放行；BM25/手册路无向量分但 rrf_only 者也放行进精排，
+        # 粗筛：向量路以 score>=阈值 放行；BM25/手册路无向量分但 rrf_only 者也放行，
         # 末段再按 _sort_key 统一阈值收口——避免 BM25 命中正确案例被 0 分向量粗筛误杀
         pre = [
             m for m in merged
@@ -229,14 +245,15 @@ def filter_rerank_cases(
         # 非降级模式下 rrf_only 只是"向量路这条没召回"（不是全不可用），控制数量防污染头部
         pre_non_vec = [m for m in pre if m.get("rrf_only", False)]
         pre_vec = [m for m in pre if not m.get("rrf_only", False)]
-        filtered = pre_vec + pre_non_vec[: settings.RERANKER_CANDIDATES]
-        if filtered:
-            filtered = _rerank_or_fallback(tools, filtered, query)
+        coarse = pre_vec + pre_non_vec[: settings.RERANKER_CANDIDATES]
 
-    # 严格过滤：设备匹配 + 故障关键词命中
+    # ---- 严格过滤前置到精排之前 ----
+    # 设备匹配 + 故障关键词命中是确定性规则、开销极低；而模型精排在纯 CPU 上次次要 ~60s。
+    # 先剔除注定要被丢弃的候选再精排，只对真正相关的少量候选打分，可显著压缩过滤耗时
+    # （典型：整段英文日志三路召回出一堆跨设备/无关候选，首轮全被严格过滤，无需再精排）。
     # 过滤后为空则返回空——不做“塞两条宽松结果”兜底：测试证明兜底塞的 100% 是跨设备噪声，
-    # 伪装成结果流入回答层是串味回答的来源；由回答层的空案例/低分护栏如实说未检索到
-    strict = filtered
+    # 伪装成结果流入回答层是串味回答的来源；由回答层的空案例/低分护栏如实说未检索到。
+    strict = coarse
     if require_device or require_keywords:
         # 关键词命中范围：标题 + 正文 + 错误码（手册条目正文不含错误码本身，必须纳入 error_code 字段）
         def _searchable(m: dict) -> str:
@@ -245,26 +262,73 @@ def filter_rerank_cases(
                 text += f" {m.get('error_code')}"
             return text
 
+        # 设备约束仅对"库中实际收录的设备"生效：日志提取的设备（如 PLC）库中往往
+        # 没有手册/案例，设备精确匹配注定全灭——退化为仅按故障现象关键词过滤
+        # （故障现象跨设备通用，如伺服过流在 CNC 车床/加工中心手册中同样适用）。
+        # 注意：require_device 原值仍保留给跨系统同码冲突判定使用。
+        device_effective = require_device if require_device in get_kb_device_types() else ""
         strict = [
-            m for m in filtered
-            if (not require_device or m.get("device_type") == require_device)
+            m for m in coarse
+            if (not device_effective or m.get("device_type") == device_effective)
             and (not require_keywords or any(k in _searchable(m) for k in require_keywords))
         ]
         # 错误码权威放行：错误码精确命中手册（manual_code_exact）的条目必定保留。
-        # 场景：查询是"整段英文设备日志"，extract_device_and_fault 会把日志单词当关键词，
-        # 而手册条目标是中文（如"伺服位置偏差过大报警"），既不含英文关键词也不匹配设备词，
-        # 严格过滤会把这些"错误码权威命中"的正确答案误杀。错误码精确匹配本就是最高优先级标
-        # 准，不应被标签/关键词二次约束，故在此补充合并而非直接替换过滤结果。
+        # 场景：提取的关键词/设备可能筛掉"错误码权威命中"的正确条目（如手册条目标题
+        # 与查询关键词无交集），错误码精确匹配本就是最高优先级标准，不应被标签/关键词
+        # 二次约束，故在此补充合并而非直接替换过滤结果。
+        # 跨系统同码冲突（如 PLC 日志的 SV0401 被误配到 FANUC/三菱 CNC 手册）不豁免，
+        # 避免把不相干系统的手册条目塞回结果。未提取到设备时仍按权威命中放行。
         if error_codes:
             exact_hits = [
-                m for m in filtered
+                m for m in coarse
                 if m.get("method") == "manual_code_exact"
+                and not _manual_exact_device_conflict(m, require_device)
             ]
             if exact_hits:
                 seen = {id(x) for x in strict}
                 strict = strict + [m for m in exact_hits if id(m) not in seen]
-        if not strict:
-            logger.info(f"[RetrievalFlow] 严格过滤后无候选（设备={require_device!r} 关键词={list(require_keywords)}），返回空结果")
+        # 跨系统同码冲突的手册精确命中条目直接剔除：设备约束退化（库中无该设备）时，
+        # 冲突条目可能经关键词过滤混入（如 PLC 日志的"伺服"命中 CNC 的 SV0401 条目），
+        # 而末段错误码置顶规则会把 manual_code_exact 拉到头部——必须在置顶前剔除
+        if require_device:
+            strict = [
+                m for m in strict
+                if not (m.get("method") == "manual_code_exact"
+                        and _manual_exact_device_conflict(m, require_device))
+            ]
+
+    # ---- 精排（只对严格过滤后的真实候选打分）----
+    if strict:
+        strict = _rerank_or_fallback(tools, strict, query)
+
+    # ---- 语义兜底：确定性词法严格过滤可能误杀语义命中的候选 ----
+    # 场景：查询是整段英文设备日志（如 "PLC-Logger | Over-current detected on servo drive, code=SV0401"），
+    # 设备词提取为 'PLC'、关键词为英文日志原文词（Over-current/detected/drive/halted...），
+    # 而库里手册是中文（"伺服放大器过电流报警"），英文关键词无法命中中文正文；且库里没有
+    # device_type='PLC' 的设备，设备精确匹配也使结果全灭。但向量/manual_vector 语义检索此时已
+    # 召回到高相关分（0.6~0.7）的正确案例——语义不该因语言/词法差异被丢弃。
+    # 兜底规则：严格过滤为空时，保留向量语义分≥SEMANTIC_RESCUE_THRESHOLD 的粗筛候选，
+    # 并排除跨系统同码冲突（如 PLC 日志的 SV0401 不配到 CNX 手册的 SV0401 位置偏差）。
+    # 不再触发昂贵的模型重排/外部宽松重跑，兼顾正确性与延迟。
+    if not strict and coarse and (require_device or require_keywords):
+        survivors = [
+            m for m in coarse
+            if not (m.get("method") == "manual_code_exact"
+                    and _manual_exact_device_conflict(m, require_device))
+        ]
+        rescue = [
+            m for m in survivors
+            if (m.get("score", 0) or 0) >= settings.SEMANTIC_RESCUE_THRESHOLD
+        ]
+        if rescue:
+            strict = rescue
+            logger.info(
+                f"[RetrievalFlow] 严格过滤（设备={require_device!r} 关键词={list(require_keywords)}）为空，"
+                f"语义兜底保留{len(rescue)}条（向量分≥{settings.SEMANTIC_RESCUE_THRESHOLD}，已排除跨系统同码冲突）"
+            )
+
+    if not strict:
+        logger.info(f"[RetrievalFlow] 严格过滤后无候选（设备={require_device!r} 关键词={list(require_keywords)}），返回空结果")
 
     strict.sort(key=_sort_key, reverse=True)
 
@@ -428,7 +492,8 @@ def repair_intent_check(message: str,
         message: 用户消息
         tools: retrieval_flow.make_tools() 构造的工具上下文
         device_type: 已知设备类型（传进检索）
-        threshold: 第三层"相关"判定阈值，默认 RETRIEVAL_COARSE_THRESHOLD/2 ≈ 0.35
+        threshold: 第三层"相关"判定阈值，默认与粗筛阈值一致（RETRIEVAL_COARSE_THRESHOLD=0.45），
+                   两个判定统一口径；实测分布：无关向量分≤0.353、正常故障≥0.571，0.45 居中
         top_k: 第三层检索取的候选数
 
     Returns:
@@ -439,7 +504,7 @@ def repair_intent_check(message: str,
          "error_codes": [...]}
     """
     if threshold is None:
-        threshold = max(0.35, settings.RETRIEVAL_COARSE_THRESHOLD)
+        threshold = settings.RETRIEVAL_COARSE_THRESHOLD
 
     # ①② 快路径
     fast = repair_intent_fast_check(message)
@@ -451,9 +516,6 @@ def repair_intent_check(message: str,
             tools, merged, message, top_n=top_k,
             require_device=dev, require_keywords=tuple(kws), error_codes=err_codes,
         )
-        # 严格过滤空：宽松降级（不传 device/kws）只传错误码置顶
-        if not cases:
-            cases = filter_rerank_cases(tools, merged, message, top_n=top_k, error_codes=err_codes)
         ms = max((c.get("score", 0) for c in cases), default=0.0)
         return {"decision": "related", "by": fast["by"], "cases": cases,
                 "max_score": ms, "error_codes": err_codes}
@@ -468,9 +530,6 @@ def repair_intent_check(message: str,
         tools, merged, message, top_n=top_k,
         require_device=dev, require_keywords=tuple(kws), error_codes=err_codes,
     )
-    if not cases:
-        # 严格过滤空时给宽松版本一次机会（只传错误码置顶），再判空
-        cases = filter_rerank_cases(tools, merged, message, top_n=top_k, error_codes=err_codes)
     max_score = max((c.get("score", 0) for c in cases), default=0.0)
     if cases and max_score >= threshold:
         return {"decision": "related", "by": "retrieval_hit", "cases": cases,

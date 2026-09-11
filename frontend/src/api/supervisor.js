@@ -8,6 +8,13 @@ export const listDutyToday = (params) => {
   })
 }
 
+export const getShiftMeta = () => {
+  return request({
+    url: '/duty-schedules/shift-meta',
+    method: 'get',
+  })
+}
+
 export const createDutyBatch = (data) => {
   return request({
     url: '/duty-schedules/batch',

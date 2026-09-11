@@ -13,6 +13,52 @@ from app.models.duty_schedule import DutySchedule, ShiftType
 router = APIRouter()
 
 
+# 统一的三倒班班次时间定义（机械/制造行业常见 8 小时三班制）
+# 所有模块（/today 分组、派工校验、机器人查询、请假冲突判断）都必须以此表为准，
+# 严禁再在文件里写散的 if hour < 12 / 18 分支——改一处即可全链路对齐。
+SHIFT_HOURS: dict = {
+    # (start_hour, start_min, end_hour, end_min)
+    "MORNING":     (8, 0, 16, 0),
+    "AFTERNOON":  (16, 0, 0, 0),  # 16:00 - 24:00（下一天 00:00）
+    "NIGHT":      (0, 0, 8, 0),   # 00:00 - 08:00（属于该日期的凌晨段）
+}
+# 中文显示名 + 时间区间（前端统一从 /meta 接口拿，避免再写散）
+SHIFT_LABELS: dict = {
+    "MORNING":   {"name": "早班", "time": "08:00 - 16:00"},
+    "AFTERNOON": {"name": "中班", "time": "16:00 - 24:00"},
+    "NIGHT":     {"name": "晚班", "time": "00:00 - 08:00"},
+    "ALL_DAY":   {"name": "全天", "time": "—"},
+}
+
+
+def _get_shift_by_hour(hour: int, minute: int = 0) -> str:
+    """按当前时刻（小时+分钟）返回对应班次。
+    08:00 前算 NIGHT；08:00–16:00 算 MORNING；16:00 起算 AFTERNOON，直到 24:00 重新归 NIGHT。
+    """
+    cur = hour * 60 + minute
+    m_start = SHIFT_HOURS["MORNING"][0] * 60 + SHIFT_HOURS["MORNING"][1]
+    a_start = SHIFT_HOURS["AFTERNOON"][0] * 60 + SHIFT_HOURS["AFTERNOON"][1]
+    if cur < m_start:
+        return "NIGHT"
+    if cur < a_start:
+        return "MORNING"
+    return "AFTERNOON"
+
+
+class ShiftMetaResponse(BaseModel):
+    key: str
+    name: str
+    time_range: str
+
+
+@router.get("/shift-meta", response_model=List[ShiftMetaResponse], summary="班次元数据（显示名+时间范围，前后端统一来源）")
+def get_shift_meta():
+    return [
+        {"key": k, "name": v["name"], "time_range": v["time"]}
+        for k, v in SHIFT_LABELS.items()
+    ]
+
+
 class DutyScheduleItem(BaseModel):
     shift: ShiftType
     user_ids: List[int]
@@ -39,6 +85,9 @@ class DutyScheduleResponse(BaseModel):
     shift: str
     user_id: int
     user_name: str
+    real_name: Optional[str] = None
+    name: Optional[str] = None
+    employee_id: Optional[str] = None
     schedule_type: str
     note: Optional[str]
     leave_type: Optional[str]
@@ -55,12 +104,25 @@ class DutyTodayResponse(BaseModel):
 
 
 def _to_response(ds: DutySchedule) -> dict:
+    user = ds.user
+    real_name = ""
+    username = ""
+    emp_id = None
+    if user:
+        real_name = user.real_name or ""
+        username = user.username or ""
+        emp_id = getattr(user, "employee_id", None)
     return {
         "id": ds.id,
         "date": ds.date,
         "shift": ds.shift,
         "user_id": ds.user_id,
-        "user_name": ds.user.real_name if ds.user else "",
+        # /today 在前端用于渲染人员卡片，需要 id / real_name / name / employee_id 与 tech 列表一致
+        "real_name": real_name,
+        "name": real_name or username,
+        "employee_id": emp_id,
+        # 兼容其它调用方
+        "user_name": real_name or username,
         "schedule_type": ds.schedule_type,
         "note": ds.note,
         "leave_type": ds.leave_type,

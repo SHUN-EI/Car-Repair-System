@@ -912,9 +912,17 @@ def _find_or_create_user_by_dtuserid(db: Session, dt_userid: str):
 def _process_text_command(sender_userid: str, text: str, raw: Dict, db: Session):
     """处理纯文本指令。内部异步任务，不抛异常给钉钉 HTTP。"""
     try:
+        logger.info(f"[DingTalk][Robot] 收到文本指令 user={sender_userid} text={text[:80]!r} len={len(text)}")
+        t0 = __import__("time").monotonic()
         reply_lines = _dispatch_text_command(sender_userid, text, db)
+        dt = (__import__("time").monotonic() - t0) * 1000
+        logger.info(f"[DingTalk][Robot] 指令处理完成 user={sender_userid} lines={len(reply_lines)} cost_ms={dt:.0f}")
         if reply_lines:
+            preview = "\n".join(reply_lines)[:160].replace("\n", " | ")
+            logger.info(f"[DingTalk][Robot] 回复预览 user={sender_userid}: {preview!r}")
             dingtalk.send_text_notice(sender_userid, "\n".join(reply_lines))
+        else:
+            logger.info(f"[DingTalk][Robot] 指令无回复 user={sender_userid}")
     except Exception as e:
         logger.exception(f"[DingTalk][Robot] 指令处理失败 text={text[:50]} err={e}")
         try:
@@ -1039,7 +1047,18 @@ def _dispatch_text_command(sender_userid: str, text: str, db: Session) -> List[s
         reason = (m.group(2) or "").strip() or "主管拒绝，请联系主管咨询"
         return _cmd_reject_leave(u, lr_id, reason, db)
 
-    # ---------- 未知指令 ----------
+    # ---------- 未知指令：统一走 Robot LangGraph 意图路由 ----------
+    # 覆盖工单查询 / 待办 / 备件库存 / 排班 / 维修引导 等（请假指令已在上文匹配返回）
+    from app.agents.robot_graph import invoke_robot
+    # staff_id=sender_userid（钉钉 dt_userid）；user_id/u_dt_userid 给工具侧查询绑定关系
+    robot_reply = invoke_robot(
+        text=text,
+        staff_id=sender_userid,
+        user_id=(u.id if u and getattr(u, "id", None) else None),
+        user_dt_userid=sender_userid,
+    )
+    if robot_reply:
+        return robot_reply.splitlines()
     return [
         "❓ 未能识别该指令。回复「帮助」查看支持的指令。",
         f"您的输入：{text[:40]}" + ("…" if len(text) > 40 else ""),

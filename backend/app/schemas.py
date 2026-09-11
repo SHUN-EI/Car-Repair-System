@@ -540,8 +540,10 @@ class LeaveRequestResponse(BaseModel):
     leave_reason: Optional[str]
     status: str
     approver_id: Optional[int] = None
+    approver_name: Optional[str] = None
     approver_comment: Optional[str] = None
     substitute_user_id: Optional[int] = None
+    substitute_name: Optional[str] = None
     correlation_id: Optional[str] = None
     submitted_at: Optional[datetime] = None
     handled_at: Optional[datetime] = None

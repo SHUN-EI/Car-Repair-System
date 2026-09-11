@@ -32,12 +32,26 @@ from app.api.auth import router as auth_router
 from app.api.dingtalk_mock import router as dingtalk_mock_router
 from app.mcp.server import mcp_http_app
 
+logger.remove()
 logger.add(
     settings.LOG_FILE,
     rotation="10 MB",
     retention="30 days",
     level=settings.LOG_LEVEL,
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+    enqueue=False,
+    backtrace=False,
+    diagnose=False,
+)
+# 标准输出：低延迟，排查钉钉机器人链路必看
+import sys as _sys
+logger.add(
+    _sys.stdout,
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
+    enqueue=False,
+    backtrace=False,
+    diagnose=False,
 )
 
 # MCP Server 实例（lifespan 与 mount 复用同一实例）

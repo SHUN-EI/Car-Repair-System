@@ -20,7 +20,7 @@
 | 设备手册错误码库 | 说明书错误码结构化入库，精确匹配 + 语义双路检索，权威方案置顶 |
 | AI 智能问答 | LangGraph 主图意图路由（库存 > 聊天 > 故障），SSE 流式回答 |
 | 追踪维修 | LangGraph 多轮对话状态机，按“分析 + 操作”逐步引导排查 |
-| 专家模式 | 复合故障拆解，并行 ReAct 检索，按故障分组流式回答 |
+| 专家模式 | 复合故障拆解，管道优先检索 + 阀门判定后再触发 ReAct 救援 |
 | 知识审核与去重 | DRAFT/UNDER_REVIEW/PUBLISHED/DEPRECATED/ARCHIVED 状态，LLM 去重检测 |
 | 备件库存 | 备件台账、安全库存、库存预警、进货单批量导入 |
 | 排班 / 请假 / 派工 | 班次排班、请假申请与审批、顶岗人、工单冲突预检、主管派工 |
@@ -36,7 +36,7 @@
 | 前端 | Vue 3、Vite、Pinia、Element Plus、Vue Router、Axios |
 | 后端 | FastAPI、SQLAlchemy 2.0、Alembic、Pydantic v2、Loguru |
 | AI / Agent | LangChain、LangGraph、FastMCP、DeepSeek、RAGFlow/LangFuse/local 追踪 |
-| 召回 / 精排 | bge-m3 召回（1024 维）、Qwen3-Reranker-0.6B 精排 |
+| 召回 / 精排 | Qwen3-Embedding-4B 召回（4096 维）、Qwen3-Reranker-0.6B 精排 |
 | 数据存储 | PostgreSQL 16、Redis 7、Milvus 2.4、MinIO、etcd |
 | 集成 | 钉钉开放平台、阿里云短信、RAGFlow |
 | 测试 | Pytest、pytest-asyncio、pytest-cov |
@@ -46,7 +46,7 @@
 ```text
 ┌────────────────────────────────────────────┐
 │ Vue 3 + Vite 前端（Port 4173）              │
-│ 驾驶舱/工单/设备/知识/手册/库存/搜索/AI/排班 │
+│ 驾驶舱/工单/设备/知识/手册/库存/AI问答/排班 │
 └────────────────────┬───────────────────────┘
                      │ HTTP / SSE
 ┌────────────────────▼───────────────────────┐
@@ -59,9 +59,9 @@
     │        │        │        │ HTTP
 ┌───▼───┐ ┌──▼───┐ ┌──▼──┐ ┌──▼────────────┐   ┌─────────────────┐
 │ PG 16 │ │Milvus│ │Redis│ │ 推理服务 8010  │   │ DeepSeek 云端   │
-│15432  │ │19530 │ │7379 │ │ bge-m3 +       │   │ LLM 问答/抽取/  │
+│15432  │ │19530 │ │7379 │ │ Qwen3-Embed-4B │   │ LLM 问答/抽取/  │
 │业务+  │ │向量库 │ │会话 │ │ Qwen3-Reranker │   │ Agent 推理      │
-│BM25   │ └──┬───┘ │缓存 │ │（纯 CPU，双模型）│   └─────────────────┘
+│BM25   │ └──┬───┘ │缓存 │ │（独立进程，双模型）│   └─────────────────┘
 └───────┘    │     └─────┘ └───────────────┘
         依赖 etcd（元数据）+ MinIO（对象存储）
 ```
@@ -79,18 +79,18 @@
 
 | | PostgreSQL | Milvus |
 | --- | --- | --- |
-| 定位 | 正本档案室：全部业务数据 + 结构化检索 | 语义储物柜：只存 1024 维向量副本 |
+| 定位 | 正本档案室：全部业务数据 + 结构化检索 | 语义储物柜：只存 4096 维向量副本 |
 | 集合/表 | `knowledge_items`、`manual_code_entries`、工单/设备/备件等 | `knowledge`（知识案例）、`log_code`（手册错误码） |
 | 承担检索路 | BM25 关键词路（ILIKE 加权）、手册精确路（错误码等值） | 知识向量路、手册语义路（COSINE ANN） |
 
 ### 3.3 两级模型（都托管在统一推理服务 8010）
 
-| | bge-m3（召回） | Qwen3-Reranker-0.6B（精排） |
+| | Qwen3-Embedding-4B（召回） | Qwen3-Reranker-0.6B（精排） |
 | --- | --- | --- |
 | 类型 | bi-encoder，离线预计算文档向量 | cross-encoder，query×文档联合编码 |
-| 输出 | 1024 维 dense 向量（已 L2 归一化） | 0~1 相关分 |
-| 接口 | `POST /v1/embeddings`（OpenAI 兼容，RAGFlow 共用） | `POST /v1/rerank`（分块调用，防 CPU 内存峰值） |
-| 部署 | 纯 CPU fp32，两模型单进程共约 5GB 内存 | 同左 |
+| 输出 | 4096 维 dense 向量（已 L2 归一化） | 0~1 相关分 |
+| 接口 | `POST /v1/embeddings`（OpenAI 兼容，RAGFlow 共用） | `POST /v1/rerank`（分块调用，防显存/内存峰值） |
+| 部署 | vLLM 托管于 GPU（4B fp16 约 8GB 显存 + 0.6B 约 1.2GB，A10/A30 单卡即可），OpenAI 兼容 | 同左 |
 
 ### 3.4 一次智能问答的数据流
 
@@ -105,7 +105,7 @@
 - **推理服务独立进程**：模型推理与业务解耦，可独立升级/扩缩容；主链路启动不加载模型，推理服务挂掉时检索自动降级而非整体不可用
 - **LLM 只花在语义边界**：意图路由、错误码提取、关键词清洗均为确定性规则（零成本、零延迟）；LLM 只用于回答生成、可答性裁决等无法用规则表达的环节
 - **全链路降级**：推理服务不可用 → BM25-only；Reranker 不可用 → 规则重排；严格过滤为空 → 回答层如实说未检索到；任何单点故障都不导致“无回答”
-- **本地模型 + 云端 LLM 混合**：检索相关模型全部本地 CPU（数据不出内网），仅生成环节调 DeepSeek 云端
+- **本地模型 + 云端 LLM 混合**：检索相关模型全部本地私有化部署于 GPU 推理服务（数据不出内网），仅生成环节调 DeepSeek 云端
 
 ### 3.6 LangGraph 图编排
 
@@ -243,7 +243,7 @@ flowchart TD
 | MinIO | 9000 / 9001 | Milvus 依赖的对象存储 |
 | Milvus | 19530 / 9091 | 知识向量、手册错误码向量 |
 | Attu | 8080 | Milvus Web 管理界面 |
-| 统一推理服务 | 8010 | bge-m3 编码 + Qwen3-Reranker 精排 |
+| 统一推理服务 | 8010 | Qwen3-Embedding-4B 编码 + Qwen3-Reranker 精排 |
 | 后端 API | 18080 | FastAPI，Swagger 在 `/docs` |
 | 前端开发服务器 | 4173 | Vite，代理 `/api` 和 `/dingtalk` 到 18080 |
 
@@ -289,10 +289,16 @@ Smart-Repair-System/
 
 ### 前端主要页面
 
-- PC 端：数据驾驶舱、维修报表、工单新建/详情、设备列表/表单、知识库/知识表单、设备手册、故障码、库存、仓库、搜索、AI 问答、用户、分类、导入、个人设置、账号安全、帮助、主管派工、实时进度、排班管理
+- PC 端：数据驾驶舱、维修报表、工单新建/详情、设备列表/表单、知识库/知识表单、设备手册、故障码、库存、仓库、AI 问答看板、用户、分类、导入、个人设置、账号安全、帮助、主管派工、实时进度、排班管理
 - 移动端 `/m`：故障上报、我的工单、工单详情
 
 ## 五、初始化与启动
+
+### 部署形态（企业生产环境）
+
+系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）由 **vLLM 在 GPU 上托管 Qwen3-Embedding-4B（召回）+ Qwen3-Reranker（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。
+
+以下「初始化与启动」说明为**本地开发/排查**用途。
 
 ### 前置条件
 
@@ -330,16 +336,13 @@ Smart-Repair-System/
 # 1. 启动基础设施
 docker compose -f docker-compose.dev.yml up -d
 
-# 2. 启动推理服务（bge-m3 + Qwen3-Reranker，CPU 加载约 3-6 分钟）
+# 2. 启动推理服务（Qwen3-Embedding-4B + Qwen3-Reranker，GPU 加载约 1-2 分钟）
 cd backend
 python -m app.core.embedding_server --host 0.0.0.0 --port 8010
 
 # 3. 初始化数据库（首次）
 alembic upgrade head
-python scripts\seed_knowledge.py
-python scripts\seed_categories.py
-python scripts\seed_fault_codes.py
-python scripts\seed_data.py
+python scripts\init_categories.py
 python scripts\import_manual_codes.py   # 可选：导入设备手册错误码
 python scripts\sync_vectors.py          # 知识条目同步到 Milvus
 
@@ -363,13 +366,24 @@ npm run dev
 
 ### 检索策略
 
+分析问答/追踪维修/专家模式/钉钉四个入口共用**同一套三层维修意图阀门**（`retrieval_flow.py`）：
+- ① regex 错误码提取（如 SV0436 / ALM-6401 / E3091）→ 命中即判定为维修相关，直接放行
+- ② 关键词白名单（170+ 项设备类型/故障现象/操作术语）+ 短应答精确匹配（好/OK/行）
+- ③ 以上都不命中时走检索打分：cases 为空或最高分低于阈值（默认 0.35）→ 判定为无关并返回护栏文案，不调用 LLM
+
+检索链路：
 1. 错误码预检：正则从提问/日志原文提取报警码（混合码自由匹配 + 纯数字码白名单裁决，零 LLM），命中则激活手册双路
 2. 召回：知识库向量 + BM25 双路（各 top 30）；含错误码时增加手册错误码精确 + 语义两路
 3. 融合：RRF 名次融合（k=60），复合去重键防止双库撞号
-4. 过滤：向量相似度粗筛（0.15）+ 设备类型 / 故障关键词严格过滤
+4. 过滤：向量相似度粗筛（0.15）+ 设备类型 / 故障关键词严格过滤（错误码精确命中的权威条目不被误杀）
 5. 精排：Qwen3-Reranker-0.6B 对头部 30 条候选打分（分块批调用防内存峰值）；不可用时回退规则重排
 6. 置顶与重排：手册错误码精确命中置顶，情形条件匹配加分
 7. 回答护栏：无案例或最高分低于阈值时如实回答“未检索到相关案例”，prompt 约束不匹配时不得硬凑回答
+
+各入口编排差异：
+- **智能问答**：纯管道检索（无 ReAct），四路召回→精排→生成回答
+- **追踪维修**：严格过滤为空时自动降级为宽松模式（仅错误码置顶，不做设备/关键词约束），继续给出引导
+- **专家模式**：管道优先 → 阀门判定（≥3 条且高分≥2 条，或最高分≥0.7 才达标）→ 不达标再触发 ReAct 循环检索救援
 
 详见[检索全链路详解](<项目说明/检索全链路详解.md>)。
 
@@ -385,11 +399,11 @@ npm run dev
 | --- | --- | --- |
 | 智能问答 | `/api/v1/search/answer/stream` | LangGraph 意图路由：库存 > 聊天 > 故障 |
 | 追踪维修 | `/api/v1/search/guided-repair/*` | 多轮逐步排查，Redis 会话持久化 |
-| 专家模式 | `/api/v1/search/answer/expert` | 复合故障拆解 + ReAct 检索 + 流式回答 |
+| 专家模式 | `/api/v1/search/answer/expert` | 复合故障拆解，管道优先 + ReAct 救援，流式回答 |
 | 专家模式下一步 | `/api/v1/search/answer/expert/step` | 多轮分析 + 引导 |
-| 混合检索 | `/api/v1/search/hybrid` | 无 Agent 的检索链路 |
-| Agent 检索 | `/api/v1/search/agent` | ReAct 循环检索 |
-| 快速检索 | `/api/v1/search/quick` | 快速语义检索 |
+| 混合检索 | `/api/v1/search/hybrid` | 无 Agent 的检索链路（后端保留，前端无独立入口） |
+| Agent 检索 | `/api/v1/search/agent` | ReAct 循环检索（ReAct 逻辑已整合进专家模式救援，独立入口仅后端保留） |
+| 快速检索 | `/api/v1/search/quick` | 快速语义检索（后端保留，前端无独立入口） |
 
 ## 七、设备手册错误码
 
@@ -484,7 +498,7 @@ MCP 访问控制：配置 `MCP_API_KEY` 后要求 `Authorization: Bearer <key>`�
 | --- | --- |
 | `DEEPSEEK_API_KEY` | AI 问答、知识抽取、Agent 的必填密钥 |
 | `EMBEDDING_SERVER_URL` | 推理服务地址，默认 `http://localhost:8010` |
-| `EMBEDDING_MODEL_NAME` | 召回模型，默认 bge-m3 |
+| `EMBEDDING_MODEL_NAME` | 召回模型，默认 Qwen3-Embedding-4B |
 | `RERANKER_MODEL_NAME` | 精排模型，默认 Qwen3-Reranker-0.6B |
 | `RERANKER_ENABLED` | 模型精排总开关 |
 | `RECALL_TOP_K` / `FINAL_TOP_N` | 召回候选数（30）/ 最终送 LLM 条数（10） |
