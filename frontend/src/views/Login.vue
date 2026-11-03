@@ -754,7 +754,7 @@ const confirmDingTalkLogin = async () => {
     }
     saveLoginUser(res)
     ElMessage.success(`欢迎回来，${res.real_name}`)
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '登录失败')
   } finally {
@@ -788,7 +788,7 @@ const submitDingTalkBind = async () => {
     saveLoginUser(res)
     ElMessage.success(`绑定成功，欢迎 ${res.real_name}`)
     dtNeedBind.value = false
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '操作失败')
   } finally {
@@ -851,7 +851,7 @@ const saveLoginUser = (user) => {
     id: user.id,
     name: user.real_name,
     role: user.role,
-    roleLabel: user.role === 'ADMIN' ? '系统管理员' : (user.role === 'TECHNICIAN' ? '技术员' : '操作工'),
+    roleLabel: user.role === 'ADMIN' ? '系统管理员' : (user.role === 'SUPERVISOR' ? '主管' : (user.role === 'TECHNICIAN' ? '技术员' : (user.role === 'OWNER' ? '车主' : '操作工'))),
     employeeId: user.username || user.phone || '',
     employee_id: user.employee_id || '',
     department: user.department || '',
@@ -887,7 +887,7 @@ const handleCodeLogin = async () => {
     })
     saveLoginUser(res)
     ElMessage.success(`欢迎回来，${res.real_name}`)
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch {
     loggingIn.value = false
     return
@@ -909,7 +909,7 @@ const handlePwdLogin = async () => {
     })
     saveLoginUser(res)
     ElMessage.success(`欢迎回来，${res.real_name}`)
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch {
     loggingIn.value = false
     return
@@ -966,7 +966,7 @@ const handleRegister = async () => {
     })
     saveLoginUser(res)
     ElMessage.success(`注册成功，欢迎加入，${res.real_name || regForm.name}`)
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '注册失败')
   } finally {
@@ -990,7 +990,7 @@ const handleDingTalkQrRegister = async () => {
     })
     saveLoginUser(res)
     ElMessage.success(`钉钉注册成功，欢迎加入，${res.real_name || dtScanUser.value.name}`)
-    router.push('/dashboard')
+    router.push(res.role === 'OWNER' ? '/m/book' : '/dashboard')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '注册失败')
   } finally {

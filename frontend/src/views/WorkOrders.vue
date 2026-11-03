@@ -2,7 +2,10 @@
   <div class="page">
     <div class="page-header">
       <h2 class="page-title">维修报表</h2>
-      <el-button type="primary" @click="$router.push('/work-orders/new')">新建工单</el-button>
+      <div>
+        <el-button @click="openIntake">接车开单</el-button>
+        <el-button type="primary" @click="$router.push('/work-orders/new')">新建工单</el-button>
+      </div>
     </div>
 
     <el-card class="filter-card" shadow="never">
@@ -104,7 +107,7 @@
                   @click="handleTransition(row, 'IN_PROGRESS')"
                 >开始维修</el-button>
                 <el-button
-                  v-if="row.status === 'IN_PROGRESS'"
+                  v-if="row.status === 'IN_PROGRESS' && !isAutoLane(row)"
                   size="small"
                   type="success"
                   :loading="transitionLoading[`${row.id}_ARCHIVING`]"
@@ -116,6 +119,32 @@
                   type="primary"
                   @click="$router.push(`/work-orders/${row.id}?edit=1`)"
                 >去归档</el-button>
+              </div>
+              <div class="action-row progress-row" v-if="isAutoLane(row) && (autoNext(row) || canCancel(row))">
+                <el-button
+                  v-if="autoNext(row)"
+                  size="small"
+                  type="primary"
+                  :disabled="needsSupervisor(autoNext(row)) && !isSupervisor"
+                  :loading="transitionLoading[`${row.id}_${autoNext(row)}`]"
+                  @click="handleTransition(row, autoNext(row), 'WEB')"
+                >{{ actionLabel(autoNext(row)) }}</el-button>
+                <el-button
+                  v-if="canCancel(row)"
+                  size="small"
+                  :loading="transitionLoading[`${row.id}_CANCELLED`]"
+                  @click="handleTransition(row, 'CANCELLED', 'WEB')"
+                >取消</el-button>
+                <el-button
+                  v-if="isSupervisor && !['CLOSED', 'CANCELLED', 'COMPLETED'].includes(row.status)"
+                  size="small"
+                  @click="openBind(row)"
+                >派工</el-button>
+                <el-button
+                  v-if="canIssue(row)"
+                  size="small"
+                  @click="openIssue(row)"
+                >领料</el-button>
               </div>
             </div>
           </template>
@@ -131,6 +160,74 @@
         />
       </div>
     </el-card>
+
+    <el-dialog v-model="intakeVisible" title="接车开单" width="520px">
+      <el-form label-width="88px">
+        <el-form-item label="预约">
+          <el-select v-model="intakeForm.appointment_id" clearable placeholder="可选，选中后按预约接车" style="width: 100%" @change="onAppointmentPick">
+            <el-option v-for="item in appointmentOptions" :key="item.id" :label="appointmentLabel(item)" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="门店">
+          <el-select v-model="intakeForm.store_id" clearable placeholder="门店" style="width: 100%" @change="loadBays">
+            <el-option v-for="item in storeOptions" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="工位">
+          <el-select v-model="intakeForm.bay_id" clearable placeholder="工位" style="width: 100%">
+            <el-option v-for="item in bayOptions" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="车辆">
+          <el-select v-model="intakeForm.vehicle_id" filterable clearable placeholder="车牌" style="width: 100%">
+            <el-option v-for="item in vehicleOptions" :key="item.id" :label="vehicleLabel(item)" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="症状">
+          <el-input v-model="intakeForm.fault_description" type="textarea" :rows="3" placeholder="车主描述或到店现象" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="intakeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="intakeSaving" @click="submitIntake">开单</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="bindVisible" title="绑定技师和工位" width="420px">
+      <el-form label-width="72px">
+        <el-form-item label="技师">
+          <el-select v-model="bindForm.technician_id" filterable placeholder="选择技师" style="width: 100%">
+            <el-option v-for="item in technicians" :key="item.id" :label="item.real_name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="工位">
+          <el-select v-model="bindForm.bay_id" clearable placeholder="工位" style="width: 100%">
+            <el-option v-for="item in bindBays" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="bindVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bindSaving" @click="submitBind">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="issueVisible" title="领料出库" width="420px">
+      <el-form label-width="72px">
+        <el-form-item label="备件">
+          <el-select v-model="issueForm.part_code" filterable placeholder="选择备件" style="width: 100%">
+            <el-option v-for="item in partOptions" :key="item.part_code" :label="`${item.part_code} ${item.part_name}（库存 ${item.stock_quantity}）`" :value="item.part_code" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="数量">
+          <el-input-number v-model="issueForm.qty" :min="1" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="issueVisible = false">取消</el-button>
+        <el-button type="primary" :loading="issueSaving" @click="submitIssue">出库</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -175,6 +272,178 @@ const isAssignedTech = (row) => {
 }
 const canOperateProgress = (row) => isAssignedTech(row)
 const transitionLoading = ref({})
+
+const AUTO_ONLY = ['INTAKE', 'DIAGNOSING', 'QUOTING', 'QC']
+const AUTO_NEXT = {
+  DRAFT: 'INTAKE',
+  INTAKE: 'DIAGNOSING',
+  DIAGNOSING: 'QUOTING',
+  QUOTING: 'APPROVED',
+  APPROVED: 'IN_PROGRESS',
+  IN_PROGRESS: 'QC',
+  QC: 'COMPLETED',
+  COMPLETED: 'CLOSED',
+}
+const ACTION_LABEL = {
+  INTAKE: '接车',
+  DIAGNOSING: '开始诊断',
+  QUOTING: '出具报价',
+  APPROVED: '确认报价',
+  IN_PROGRESS: '开始施工',
+  QC: '提交质检',
+  COMPLETED: '质检通过',
+  CLOSED: '结案交车',
+}
+const isAutoLane = (row) => !!(row.vehicle_id || row.appointment_id || row.store_id || AUTO_ONLY.includes(row.status))
+const autoNext = (row) => {
+  const next = AUTO_NEXT[row.status]
+  if (!next) return ''
+  return (row.allowed_transitions || []).includes(next) ? next : ''
+}
+const actionLabel = (status) => ACTION_LABEL[status] || statusLabel(status)
+const needsSupervisor = (status) => status === 'APPROVED' || status === 'CLOSED'
+const canCancel = (row) => (row.allowed_transitions || []).includes('CANCELLED')
+const canIssue = (row) => ['INTAKE', 'DIAGNOSING', 'QUOTING', 'APPROVED', 'IN_PROGRESS', 'QC'].includes(row.status)
+
+const intakeVisible = ref(false)
+const intakeSaving = ref(false)
+const intakeForm = ref({ appointment_id: null, store_id: null, bay_id: null, vehicle_id: null, fault_description: '' })
+const storeOptions = ref([])
+const bayOptions = ref([])
+const vehicleOptions = ref([])
+const appointmentOptions = ref([])
+const bindVisible = ref(false)
+const bindSaving = ref(false)
+const bindForm = ref({ work_order_id: null, technician_id: null, bay_id: null, store_id: null })
+const technicians = ref([])
+const bindBays = ref([])
+const issueVisible = ref(false)
+const issueSaving = ref(false)
+const issueForm = ref({ work_order_id: null, part_code: '', qty: 1 })
+const partOptions = ref([])
+
+const vehicleLabel = (item) => [item.plate, item.make, item.model].filter(Boolean).join(' ')
+const appointmentLabel = (item) => `#${item.id} ${item.scheduled_at || ''} ${item.remark || ''}`.trim()
+
+const loadBays = async (storeId) => {
+  bayOptions.value = []
+  if (!storeId) return
+  const res = await request.get('/bays/', { params: { store_id: storeId, page_size: 100 } })
+  bayOptions.value = res.items || []
+}
+
+const openIntake = async () => {
+  intakeForm.value = { appointment_id: null, store_id: null, bay_id: null, vehicle_id: null, fault_description: '' }
+  intakeVisible.value = true
+  const [stores, vehicles, appointments] = await Promise.all([
+    request.get('/stores/', { params: { page_size: 50 } }),
+    request.get('/vehicles/', { params: { page_size: 100 } }),
+    request.get('/appointments/', { params: { page_size: 50, status: 'PENDING' } }),
+  ])
+  storeOptions.value = stores.items || []
+  vehicleOptions.value = vehicles.items || []
+  const confirmed = await request.get('/appointments/', { params: { page_size: 50, status: 'CONFIRMED' } })
+  appointmentOptions.value = [...(appointments.items || []), ...(confirmed.items || [])]
+}
+
+const onAppointmentPick = (id) => {
+  const row = appointmentOptions.value.find(item => item.id === id)
+  if (!row) return
+  intakeForm.value.store_id = row.store_id
+  intakeForm.value.bay_id = row.bay_id
+  intakeForm.value.vehicle_id = row.vehicle_id
+  if (!intakeForm.value.fault_description) intakeForm.value.fault_description = row.remark || '预约到店接车'
+  loadBays(row.store_id)
+}
+
+const submitIntake = async () => {
+  intakeSaving.value = true
+  try {
+    if (intakeForm.value.appointment_id) {
+      await request.post('/work-orders/from-appointment', {
+        appointment_id: intakeForm.value.appointment_id,
+        bay_id: intakeForm.value.bay_id || undefined,
+        fault_description: intakeForm.value.fault_description || undefined,
+      })
+    } else {
+      if (!intakeForm.value.vehicle_id && !intakeForm.value.store_id) {
+        ElMessage.warning('请选择车辆或门店')
+        return
+      }
+      if (!intakeForm.value.fault_description.trim()) {
+        ElMessage.warning('请填写症状')
+        return
+      }
+      await request.post('/work-orders/', {
+        fault_description: intakeForm.value.fault_description.trim(),
+        vehicle_id: intakeForm.value.vehicle_id || undefined,
+        store_id: intakeForm.value.store_id || undefined,
+        bay_id: intakeForm.value.bay_id || undefined,
+        status: 'INTAKE',
+      })
+    }
+    ElMessage.success('已开接车工单')
+    intakeVisible.value = false
+    fetchData()
+  } finally {
+    intakeSaving.value = false
+  }
+}
+
+const openBind = async (row) => {
+  bindForm.value = { work_order_id: row.id, technician_id: row.technician_id || null, bay_id: row.bay_id || null, store_id: row.store_id || null }
+  bindVisible.value = true
+  const [techRes, bayRes] = await Promise.all([
+    request.get('/dispatch/technicians'),
+    row.store_id ? request.get('/bays/', { params: { store_id: row.store_id, page_size: 100 } }) : Promise.resolve({ items: [] }),
+  ])
+  technicians.value = techRes || []
+  bindBays.value = bayRes.items || []
+}
+
+const submitBind = async () => {
+  if (!bindForm.value.technician_id) {
+    ElMessage.warning('请选择技师')
+    return
+  }
+  bindSaving.value = true
+  try {
+    await request.post('/dispatch/bind', {
+      work_order_id: bindForm.value.work_order_id,
+      technician_id: bindForm.value.technician_id,
+      bay_id: bindForm.value.bay_id || undefined,
+    })
+    ElMessage.success('已绑定技师和工位')
+    bindVisible.value = false
+    fetchData()
+  } finally {
+    bindSaving.value = false
+  }
+}
+
+const openIssue = async (row) => {
+  issueForm.value = { work_order_id: row.id, part_code: '', qty: 1 }
+  issueVisible.value = true
+  if (!partOptions.value.length) {
+    const res = await request.get('/spare-parts/', { params: { page_size: 200 } })
+    partOptions.value = res.items || []
+  }
+}
+
+const submitIssue = async () => {
+  if (!issueForm.value.part_code) {
+    ElMessage.warning('请选择备件')
+    return
+  }
+  issueSaving.value = true
+  try {
+    await request.post('/spare-parts/issue', issueForm.value)
+    ElMessage.success('已出库')
+    issueVisible.value = false
+  } finally {
+    issueSaving.value = false
+  }
+}
 
 const handleTransition = async (row, toStatus, source = 'TECH_PROGRESS') => {
   try {

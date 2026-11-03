@@ -35,6 +35,13 @@ class DispatchConfirmResponse(BaseModel):
     error: Optional[str] = None
 
 
+class DispatchBindRequest(BaseModel):
+    """给已有汽修工单绑定技师和工位，不改变状态机。"""
+    work_order_id: int
+    technician_id: int
+    bay_id: Optional[int] = None
+
+
 @router.get("/technicians", summary="获取所有可用维修员列表(主管派工下拉)")
 def list_technicians(
     db: Session = Depends(get_db),
@@ -206,3 +213,91 @@ def confirm_dispatch(
         work_order_no=work_order_no,
         technician_name=technician.real_name,
     )
+
+
+@router.post("/bind", summary="汽修工单绑定技师和工位")
+def bind_dispatch(
+    data: DispatchBindRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """复用派工的技师校验和钉钉卡片。只改技师/工位，状态仍由 /transition 推进。"""
+    if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
+        raise HTTPException(status_code=403, detail="仅主管或管理员可派工")
+
+    work_order = db.query(WorkOrder).filter(WorkOrder.id == data.work_order_id).first()
+    if not work_order:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    from app.domain.work_order_status import is_auto_repair_lane
+    if not is_auto_repair_lane(
+        status=work_order.status,
+        vehicle_id=work_order.vehicle_id,
+        appointment_id=work_order.appointment_id,
+        store_id=work_order.store_id,
+    ):
+        raise HTTPException(status_code=400, detail="仅汽修工单在此绑定技师和工位，工业派工请使用派工确认")
+    if work_order.status and work_order.status.value in ("CLOSED", "CANCELLED", "ARCHIVED", "COMPLETED"):
+        raise HTTPException(status_code=400, detail="工单已结束，不能改派")
+
+    technician = db.query(User).filter(User.id == data.technician_id).first()
+    if not technician or not technician.is_active:
+        raise HTTPException(status_code=400, detail="指派的维修员不存在或已停用")
+    if technician.role not in (UserRole.TECHNICIAN.value, UserRole.ADMIN.value):
+        raise HTTPException(status_code=400, detail="被指派人必须是维修员角色")
+
+    if data.bay_id is not None:
+        from app.models.store import Bay
+        bay = db.query(Bay).filter(Bay.id == data.bay_id).first()
+        if not bay:
+            raise HTTPException(status_code=400, detail="工位不存在")
+        if work_order.store_id and bay.store_id != work_order.store_id:
+            raise HTTPException(status_code=400, detail="工位不属于该门店")
+        work_order.bay_id = bay.id
+        if not work_order.store_id:
+            work_order.store_id = bay.store_id
+
+    from app.api.work_orders import _add_progress_log, _update_workload
+    old_id = work_order.technician_id
+    active = work_order.status and work_order.status.value not in ("CLOSED", "CANCELLED", "COMPLETED", "ARCHIVED", "REJECTED")
+    if active and old_id and old_id != technician.id:
+        _update_workload(db, old_id, -1)
+    work_order.technician_id = technician.id
+    work_order.assignee_id = technician.id
+    if active and old_id != technician.id:
+        _update_workload(db, technician.id, +1)
+
+    status_enum = work_order.status
+    _add_progress_log(
+        db=db,
+        work_order_id=work_order.id,
+        from_status=status_enum,
+        to_status=status_enum,
+        operator_id=current_user.id,
+        operator_name=current_user.real_name,
+        source="WEB",
+        remark=f"绑定技师 {technician.real_name}" + (f"，工位 #{work_order.bay_id}" if work_order.bay_id else ""),
+    )
+    try:
+        from app.core.dingtalk_wo_card import send_progress_card
+        from app.core.config import settings
+        public_url = getattr(settings, "SERVER_PUBLIC_URL", "") or ""
+        send_progress_card(
+            technician.dingtalk_userid or "",
+            work_order,
+            supervisor_name=current_user.real_name,
+            public_url=public_url,
+        )
+    except Exception as e:
+        logger.warning(f"[Dispatch] 绑定后钉钉卡片发送失败（不影响派工）: {e}")
+
+    db.commit()
+    db.refresh(work_order)
+    return {
+        "success": True,
+        "work_order_id": work_order.id,
+        "work_order_no": work_order.work_order_no,
+        "technician_id": technician.id,
+        "technician_name": technician.real_name,
+        "bay_id": work_order.bay_id,
+        "status": work_order.status.value if work_order.status else None,
+    }

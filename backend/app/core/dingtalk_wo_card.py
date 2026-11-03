@@ -35,6 +35,11 @@ ACTION_INSPECT = "wo_inspect"    # 开始检查
 ACTION_REPAIR = "wo_repair"      # 开始维修
 ACTION_FINISH = "wo_finish"      # 完成维修
 ACTION_FORM = "wo_form"          # 确认工单录入
+ACTION_DIAGNOSE = "wo_diagnose"  # 汽修：开始诊断
+ACTION_QUOTE = "wo_quote"        # 汽修：出具报价
+ACTION_SERVICE = "wo_service"    # 汽修：开始施工
+ACTION_QC = "wo_qc"              # 汽修：提交质检
+ACTION_QC_PASS = "wo_qc_pass"    # 汽修：质检通过
 
 # action → (目标状态, 进度中文, 主管通知文案)
 ACTION_MAP = {
@@ -42,6 +47,11 @@ ACTION_MAP = {
     ACTION_ARRIVE: ("ARRIVED", "已到达现场", "已到达现场"),
     ACTION_INSPECT: ("INSPECTING", "开始检查", "开始检查"),
     ACTION_REPAIR: ("IN_PROGRESS", "开始维修", "开始维修"),
+    ACTION_DIAGNOSE: ("DIAGNOSING", "开始诊断", "开始诊断"),
+    ACTION_QUOTE: ("QUOTING", "出具报价", "出具报价"),
+    ACTION_SERVICE: ("IN_PROGRESS", "开始施工", "开始施工"),
+    ACTION_QC: ("QC", "提交质检", "提交质检"),
+    ACTION_QC_PASS: ("COMPLETED", "质检通过", "质检通过"),
 }
 
 # 按钮文字 → 动作。MarkdownButton 模板回调不保留自定义 params.id，
@@ -54,6 +64,11 @@ _TEXT_TO_ACTION = {
     "完成维修": ACTION_FINISH,
     "确认工单录入": ACTION_FORM,
     "查看进度": ACTION_FORM,
+    "开始诊断": ACTION_DIAGNOSE,
+    "出具报价": ACTION_QUOTE,
+    "开始施工": ACTION_SERVICE,
+    "提交质检": ACTION_QC,
+    "质检通过": ACTION_QC_PASS,
 }
 
 # 各状态下一步的按钮
@@ -64,6 +79,32 @@ _NEXT_BUTTONS = {
     "INSPECTING": request_button("开始维修", ACTION_REPAIR),
     "IN_PROGRESS": request_button("完成维修", ACTION_FINISH, "orange"),
 }
+
+# 汽修车道按钮。报价确认和结案留给主管在系统里点，不放在技师卡片上。
+_AUTO_BUTTONS = {
+    "INTAKE": request_button("开始诊断", ACTION_DIAGNOSE),
+    "DIAGNOSING": request_button("出具报价", ACTION_QUOTE),
+    "APPROVED": request_button("开始施工", ACTION_SERVICE),
+    "IN_PROGRESS": request_button("提交质检", ACTION_QC),
+    "QC": request_button("质检通过", ACTION_QC_PASS),
+}
+
+
+def _is_auto_lane(wo) -> bool:
+    from app.domain.work_order_status import is_auto_repair_lane
+    return is_auto_repair_lane(
+        status=getattr(wo, "status", None),
+        vehicle_id=getattr(wo, "vehicle_id", None),
+        appointment_id=getattr(wo, "appointment_id", None),
+        store_id=getattr(wo, "store_id", None),
+    )
+
+
+def _next_button(wo):
+    status = wo.status.value if getattr(wo, "status", None) else None
+    if _is_auto_lane(wo) and status in _AUTO_BUTTONS:
+        return _AUTO_BUTTONS[status]
+    return _NEXT_BUTTONS.get(status)
 
 
 def _status_cn(status: Optional[str]) -> str:
@@ -202,7 +243,7 @@ def send_progress_card(
     status = wo.status.value if wo.status else "ASSIGNED"
     title = f"派工通知: {wo.work_order_no}"
     markdown = _card_markdown(wo, public_url)
-    buttons = [_NEXT_BUTTONS.get(status, request_button("查看进度", ACTION_FORM, "gray"))]
+    buttons = [_next_button(wo) or request_button("查看进度", ACTION_FORM, "gray")]
     oid, err = send_card(technician_userid, title, markdown, buttons, out_track_id=wo.work_order_no)
     if not oid or err:
         # 可能已有同 outTrackId 的卡片实例 → 尝试更新
@@ -228,8 +269,10 @@ def _refresh_card(wo, out_track_id: str, extra_markdown: str = "") -> None:
     if status == "ARCHIVED":
         update_card(out_track_id, f"已归档: {wo.work_order_no}", _card_markdown(wo), [])
         return
-    btn = _NEXT_BUTTONS.get(status)
+    btn = _next_button(wo)
     if btn is None:
+        if _is_auto_lane(wo):
+            update_card(out_track_id, f"工单进度: {wo.work_order_no}", _card_markdown(wo), [])
         return
     markdown = _card_markdown(wo)
     if extra_markdown:
@@ -291,6 +334,10 @@ def _dispatch_action(out_track_id: str, user_id: str, action: str) -> Optional[s
                 f"工单 **{wo.work_order_no}** 维修已完成。\n"
                 f"请登录系统在『维修报表』中打开该工单，填写维修结果并提交，提交后自动收录知识库。"
             )
+
+        # 汽修施工中的旧「完成维修」按钮改走质检，避免跳过 QC 进入工业待归档。
+        if action == ACTION_FINISH and _is_auto_lane(wo):
+            action = ACTION_QC
 
         # ---- 完成维修：工单进入待归档（ARCHIVING），引导回系统完善表单并归档 ----
         if action == ACTION_FINISH:

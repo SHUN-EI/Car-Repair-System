@@ -41,6 +41,7 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
 }
 
 # 汽修主路径（不含取消）。APPROVED / IN_PROGRESS / COMPLETED / DRAFT 与工业枚举复用。
+# 门店闭环从预约接车或直接接车进入：APPOINTMENT 不是工单状态，预约核销后落到 INTAKE。
 AUTO_REPAIR_PATH: List[str] = [
     "DRAFT",
     "INTAKE",
@@ -52,6 +53,37 @@ AUTO_REPAIR_PATH: List[str] = [
     "COMPLETED",
     "CLOSED",
 ]
+
+# 这些状态只出现在汽修车道。CANCELLED 两边都能到，单靠状态不能区分车道。
+AUTO_REPAIR_ONLY_STATUSES = {"INTAKE", "DIAGNOSING", "QUOTING", "QC"}
+
+# 在修期间可以走备件出库。已完成/已结案/已取消不再领料。
+PARTS_ISSUE_STATUSES = {
+    "INTAKE",
+    "DIAGNOSING",
+    "QUOTING",
+    "APPROVED",
+    "IN_PROGRESS",
+    "QC",
+    "ASSIGNED",
+    "ACCEPTED",
+    "ARRIVED",
+    "INSPECTING",
+    "ARCHIVING",
+}
+
+# 列表上的下一步按钮文案。键是目标状态。
+AUTO_REPAIR_ACTION_LABELS: Dict[str, str] = {
+    "INTAKE": "接车",
+    "DIAGNOSING": "开始诊断",
+    "QUOTING": "出具报价",
+    "APPROVED": "确认报价",
+    "IN_PROGRESS": "开始施工",
+    "QC": "提交质检",
+    "COMPLETED": "质检通过",
+    "CLOSED": "结案交车",
+    "CANCELLED": "取消",
+}
 
 STATUS_LABELS: Dict[str, str] = {
     "DRAFT": "草稿",
@@ -94,6 +126,33 @@ def is_allowed_transition(from_status, to_status: str) -> bool:
     return to_status in allowed_transitions(from_status)
 
 
+def is_auto_repair_lane(status=None, vehicle_id=None, appointment_id=None, store_id=None) -> bool:
+    """有车辆/预约/门店，或已经走在汽修专有状态上，就按汽修车道处理。
+
+    工业工单没有这些关联，IN_PROGRESS / COMPLETED 仍走原来的派工和归档。
+    """
+    if vehicle_id or appointment_id or store_id:
+        return True
+    return status_value(status) in AUTO_REPAIR_ONLY_STATUSES
+
+
+def next_auto_step(status) -> Optional[str]:
+    """汽修主路径的下一步。草稿的下一步是接车。终态没有下一步。"""
+    key = status_value(status)
+    if key == "DRAFT":
+        return "INTAKE"
+    if key not in AUTO_REPAIR_PATH:
+        return None
+    idx = AUTO_REPAIR_PATH.index(key)
+    if idx + 1 >= len(AUTO_REPAIR_PATH):
+        return None
+    return AUTO_REPAIR_PATH[idx + 1]
+
+
+def parts_issue_allowed(status) -> bool:
+    return status_value(status) in PARTS_ISSUE_STATUSES
+
+
 def status_machine_payload() -> dict:
     """给 API 用的状态目录：每个状态、中文名、以及允许的下一步。"""
     statuses = []
@@ -108,5 +167,6 @@ def status_machine_payload() -> dict:
         "statuses": statuses,
         "transitions": {key: list(targets) for key, targets in VALID_TRANSITIONS.items()},
         "auto_repair_path": list(AUTO_REPAIR_PATH),
+        "auto_repair_actions": dict(AUTO_REPAIR_ACTION_LABELS),
         "cancel_status": "CANCELLED",
     }

@@ -53,7 +53,7 @@
                 <!-- 正常显示：标题 + 编辑按钮 -->
                 <div class="item-title-row">
                   <div class="item-title">{{ s.title }}</div>
-                  <span class="item-type-badge" :class="s.type">{{ s.type === 'guided' ? '追踪' : s.type === 'expert' ? '专家' : '问答' }}</span>
+                  <span class="item-type-badge" :class="s.type">{{ s.type === 'guided' ? '追踪' : s.type === 'expert' ? '专家' : s.type === 'consult' ? '问诊' : '问答' }}</span>
                   <el-button
                     class="item-rename"
                     text
@@ -102,6 +102,11 @@
               :class="{ active: repairMode === 'expert' }"
               @click="switchMode('expert')"
             >专家模式</span>
+            <span
+              class="mode-tab"
+              :class="{ active: repairMode === 'consult' }"
+              @click="switchMode('consult')"
+            >车主问诊</span>
           </div>
         </div>
       </div>
@@ -109,7 +114,7 @@
       <!-- ===== 三种模式介绍（可折叠，默认记住收起状态） ===== -->
       <div class="mode-intro" :class="{ collapsed: !modeIntroExpanded }">
         <div class="mode-intro-title" @click="toggleModeIntro">
-          <span class="mi-label">三种模式怎么选？</span>
+          <span class="mi-label">怎么选模式？</span>
           <span class="mi-tip">{{ modeIntroExpanded ? '点击卡片切换模式，点标题栏收起' : '点击展开查看适用场景' }}</span>
           <el-icon class="mi-arrow" :class="{ expanded: modeIntroExpanded }"><ArrowDown /></el-icon>
         </div>
@@ -145,8 +150,8 @@
           <div class="welcome-icon">
             <el-icon :size="40" color="#0FC6C2"><ChatLineSquare /></el-icon>
           </div>
-          <h3>{{ repairMode === 'guided' ? '追踪维修模式' : repairMode === 'expert' ? '专家问答模式' : '向 AI 助手提问' }}</h3>
-          <p>{{ repairMode === 'guided' ? '描述设备故障现象，AI 将逐步引导排查和维修' : repairMode === 'expert' ? 'AI 多轮智能检索知识库，先给出深入分析，再像老师傅一样逐步引导排查' : '描述设备故障现象，AI 将检索知识库中的维修案例和解决方案' }}</p>
+          <h3>{{ welcomeTitle }}</h3>
+          <p>{{ welcomeText }}</p>
           <div class="quick-hints">
             <span
               v-for="tag in quickTags"
@@ -292,7 +297,7 @@
               v-model="inputText"
               type="textarea"
               :rows="1"
-              :placeholder="repairMode === 'guided' ? '请输入操作结果和设备状态...' : repairMode === 'expert' ? '描述模糊或复杂的维修问题，专家模式将深度分析并引导排查...' : '请输入维修相关问题，规范的提问：产品型号+故障描述...'"
+              :placeholder="repairMode === 'guided' ? '请输入操作结果和设备状态...' : repairMode === 'expert' ? '描述模糊或复杂的维修问题，专家模式将深度分析并引导排查...' : repairMode === 'consult' ? '描述症状，例如：踩刹车异响，要不要预约？' : '请输入维修相关问题，规范的提问：产品型号+故障描述...'"
               class="chat-textarea"
               @keydown.enter.prevent.exact="handleSend"
               resize="none"
@@ -375,6 +380,18 @@ const sourceDialog = reactive({ visible: false, item: null })
 
 // ===== 追踪模式 =====
 const repairMode = ref('qa')
+const welcomeTitle = computed(() => {
+  if (repairMode.value === 'guided') return '追踪维修模式'
+  if (repairMode.value === 'expert') return '专家问答模式'
+  if (repairMode.value === 'consult') return '车主问诊'
+  return '向 AI 助手提问'
+})
+const welcomeText = computed(() => {
+  if (repairMode.value === 'guided') return '描述设备故障现象，AI 将逐步引导排查和维修'
+  if (repairMode.value === 'expert') return 'AI 多轮智能检索知识库，先给出深入分析，再像老师傅一样逐步引导排查'
+  if (repairMode.value === 'consult') return '描述症状。回答会给出症状理解、建议项目，以及是否建议预约到店。'
+  return '描述设备故障现象，AI 将检索知识库中的维修案例和解决方案'
+})
 
 // ===== 三种模式介绍（维修人员视角） =====
 const modeIntroCards = [
@@ -404,6 +421,15 @@ const modeIntroCards = [
     when: '一台设备同时出现多个故障，想一次性问清楚',
     example: '"锁模力不够出飞边，油温65度报警，熔胶马达不转，三个一起查"',
     desc: 'AI 把复合问题拆成多个单故障，分别检索各自的历史案例、按故障分组回答；并判断是否同根因、给出维修优先级，像老师傅一样逐步引导排查。',
+  },
+  {
+    mode: 'consult',
+    name: '车主问诊',
+    icon: ChatLineSquare,
+    color: '#00B42A',
+    when: '车主描述症状，想知道建议项目以及要不要预约到店',
+    example: '"踩刹车有异响，要不要预约？"',
+    desc: '仍走原来的检索。回答按症状理解、建议项目、是否预约三段给出，项目只来自知识库。',
   },
 ]
 
@@ -518,8 +544,10 @@ const switchMode = (mode) => {
     if (!currentSession.value || currentSession.value.type !== 'expert') {
       startNewExpertChat()
     }
+  } else if (mode === 'consult') {
+    startNewChat('consult')
   } else {
-    if (!currentSession.value || currentSession.value.type === 'guided' || currentSession.value.type === 'expert') {
+    if (!currentSession.value || ['guided', 'expert', 'consult'].includes(currentSession.value.type)) {
       startNewChat()
     }
   }
@@ -607,19 +635,19 @@ const formatDateLabel = (d) => {
 }
 
 // ===== 新建/切换会话 =====
-const startNewChat = () => {
+const startNewChat = (type = 'qa') => {
   sessionIdCounter.value++
   const id = `session_${sessionIdCounter.value}`
   const now = new Date()
   const session = {
     id,
-    title: '新对话',
+    title: type === 'consult' ? '车主问诊' : '新对话',
     preview: '',
     time: formatTime(now),
     _group: 'today',
     _createdAt: now,
     unread: false,
-    type: 'qa',
+    type,
     messages: [],
   }
   sessions.value.unshift(session)
@@ -833,10 +861,10 @@ const handleSend = async () => {
           ? '/api/v1/search/answer/expert'
           : '/api/v1/search/answer/stream'
     const body = isGuided
-      ? JSON.stringify({ message: text, session_id: session._guidedSessionId || undefined })
+      ? JSON.stringify({ message: text, session_id: session._guidedSessionId || undefined, scene: repairMode.value === 'consult' ? 'consult' : undefined })
       : isExpertStep
         ? JSON.stringify({ session_id: session._expertSessionId, message: text })
-        : JSON.stringify({ question: text, top_k: 8 })
+        : JSON.stringify({ question: text, top_k: 8, scene: repairMode.value === 'consult' ? 'consult' : undefined })
 
     const response = await fetch(url, {
       method: 'POST',

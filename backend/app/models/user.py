@@ -10,6 +10,7 @@ class UserRole(str, __import__('enum').Enum):
     TECHNICIAN = "TECHNICIAN"
     SUPERVISOR = "SUPERVISOR"
     WORKER = "WORKER"
+    OWNER = "OWNER"  # 车主，H5 预约与进度
 
 
 class User(BaseModel):

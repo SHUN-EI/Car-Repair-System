@@ -94,6 +94,21 @@ class AnswerGenerator:
 - 每个部分要展开说明，不要用"测量电压、检查保险丝"这种极简列表
 - 严格基于案例内容，不添加案例中没有的信息"""
 
+    CONSULT_SYSTEM_PROMPT = """你是门店的车主问诊助手。根据检索到的案例、保养规范和手册，帮助车主理解症状、看到建议项目，并判断要不要预约到店。
+
+## 核心规则
+1. 只使用检索案例里写明的症状、项目和风险。案例没有的零件、价格、工期、保养间隔不要编。
+2. 不输出命中率、置信度或任何系统指标。
+3. 引用案例时注明来源：手册写手册名和错误码，工单案例写「来源：工单案例」。
+4. 案例不足以判断时，直接写知识库未覆盖，并建议到店由技师确认。不要用通用经验补全。
+
+## 输出结构（固定三段）
+1. **症状理解**：用 1-2 句复述车主描述的现象，并对应到案例中的症状。
+2. **建议项目**：只列案例里出现的检查或保养项目。没有就写「知识库未给出可执行项目」。
+3. **是否预约**：案例写明需要进店、涉及制动/高温/故障灯等安全风险时，明确建议预约；常规保养且案例允许直接预约时，也建议预约保养工位；信息不足时写「建议预约到店，由技师现场确认」。
+
+不要输出工业维修的五段式排查清单。"""
+
     # 案例相关度阈值：低于此分数视为不相关，不送入 LLM（配置化，换模型后按标定结果调整）
     SCORE_THRESHOLD = settings.RETRIEVAL_COARSE_THRESHOLD
 
@@ -503,7 +518,7 @@ class AnswerGenerator:
             return "再见！如有设备问题随时找我。"
         return f"您好！请描述您遇到的设备故障现象，我会为您检索相关的维修案例并给出分析建议。"
 
-    def stream_answer(self, question: str, cases: List[Dict], emit_done: bool = True):
+    def stream_answer(self, question: str, cases: List[Dict], emit_done: bool = True, scene: str = ""):
         """
         流式生成回答 - 返回一个生成器，逐 token yield
 
@@ -523,19 +538,24 @@ class AnswerGenerator:
                 yield f"data: {json.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
             return
 
+        consult = (scene or "").strip().lower() == "consult"
+        empty_answer = (
+            "知识库未检索到与该症状匹配的案例或保养规范，无法给出具体项目。建议预约到店，由技师现场确认。"
+            if consult else
+            "未检索到与该问题相关的历史案例。请尝试使用更具体的设备型号或故障描述重新提问。"
+        )
+
         # 无案例 → 直接返回
         if not cases:
-            answer = "未检索到与该问题相关的历史案例。请尝试使用更具体的设备型号或故障描述重新提问。"
-            yield f"data: {json.dumps({'type': 'answer', 'content': answer}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'answer', 'content': empty_answer}, ensure_ascii=False)}\n\n"
             if emit_done:
                 yield f"data: {json.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
             return
 
-        # 案例相关度过低 → 视为无匹配
+        # 案例相关度过低 → 视为无匹配（阈值仍是检索粗筛，不因问诊场景放宽）
         max_score = max((c.get("score", 0) for c in cases), default=0)
         if max_score < self.SCORE_THRESHOLD:
-            answer = "未检索到与该问题相关的历史案例。请尝试使用更具体的设备型号或故障描述重新提问。"
-            yield f"data: {json.dumps({'type': 'answer', 'content': answer}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'answer', 'content': empty_answer}, ensure_ascii=False)}\n\n"
             if emit_done:
                 yield f"data: {json.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
             return
@@ -570,17 +590,25 @@ class AnswerGenerator:
 
 """
 
+        if consult:
+            instruction = """## 回答指令
+1. 按「症状理解 / 建议项目 / 是否预约」三段回答
+2. 项目和风险只能来自上面的案例
+3. 不要写分数、命中率或价格
+4. 案例没写清时，建议预约到店由技师确认"""
+        else:
+            instruction = """## 回答指令
+1. 上述案例已由检索系统筛选，均与用户问题相关
+2. 请根据问题类型选择对应的回答格式（参考系统提示中的「问题类型判断」）
+3. 分数来自检索系统，不得修改
+4. 严格基于案例内容回答，不添加案例中没有的信息"""
         user_prompt = f"""## 用户问题
 {question}
 
 ## 检索案例
 {cases_text}
 
-## 回答指令
-1. 上述案例已由检索系统筛选，均与用户问题相关
-2. 请根据问题类型选择对应的回答格式（参考系统提示中的「问题类型判断」）
-3. 分数来自检索系统，不得修改
-4. 严格基于案例内容回答，不添加案例中没有的信息"""
+{instruction}"""
 
         # 发送 thinking 事件
         yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
@@ -591,7 +619,7 @@ class AnswerGenerator:
                 "cases_count": len(cases),
             }) as trace_ctx:
                 messages = [
-                    SystemMessage(content=self.SYSTEM_PROMPT),
+                    SystemMessage(content=self.CONSULT_SYSTEM_PROMPT if consult else self.SYSTEM_PROMPT),
                     HumanMessage(content=user_prompt),
                 ]
 

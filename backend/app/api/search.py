@@ -86,6 +86,7 @@ class AnswerRequest(BaseModel):
     fault_code: Optional[str] = Field(None, description="故障码筛选")    # 可选，缩小检索范围
     top_k: Optional[int] = Field(10, ge=3, le=20)   # 检索案例数：默认10，限制3~20（至少3条供LLM参考）
     session_id: Optional[str] = Field(None, description="专家模式会话ID（多轮引导时带上前一轮返回的 session_id）")
+    scene: Optional[str] = Field(None, description="consult=车主问诊，空则保持原维修问答")
 
 
 class ExpertStepRequest(BaseModel):
@@ -442,7 +443,9 @@ async def analyze_answer_stream(
 
         t_gen_start = time.monotonic()
         try:
-            for sse_msg in answer_generator.stream_answer(request.question, cases):
+            for sse_msg in answer_generator.stream_answer(
+                request.question, cases, scene=request.scene or "",
+            ):
                 yield sse_msg
         except Exception as e:
             t_gen = (time.monotonic() - t_gen_start) * 1000
@@ -801,6 +804,7 @@ class GuidedRepairChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000, description="维修员消息")
     session_id: Optional[str] = Field(None, description="追踪会话ID，首次为空则自动创建")
     device_type: Optional[str] = Field(None, description="设备类型")
+    scene: Optional[str] = Field(None, description="consult=车主问诊，空则保持原追踪维修")
 
 
 @router.post("/guided-repair/chat", summary="对话式追踪维修（流式 SSE）")
@@ -828,6 +832,7 @@ async def guided_repair_chat_stream(request: GuidedRepairChatRequest,
                 session_id=sid,
                 message=request.message,
                 device_type=request.device_type or "",
+                scene=request.scene or "",
             ):
                 if hasattr(chunk, 'content') and chunk.content:
                     yield f"data: {json_module.dumps({'type': 'answer', 'content': chunk.content}, ensure_ascii=False)}\n\n"

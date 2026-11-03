@@ -70,7 +70,15 @@
           </el-descriptions-item>
         </el-descriptions>
         <div class="detail-footer">
-          <el-button type="primary" @click="$router.push('/work-orders')">返回列表</el-button>
+          <el-button
+            v-if="autoNextStatus"
+            type="primary"
+            :disabled="needsStoreSupervisor && !isSupervisor"
+            :loading="transitioning"
+            @click="runAutoTransition(autoNextStatus)"
+          >{{ autoActionLabel }}</el-button>
+          <el-button v-if="canCancelAuto" :loading="transitioning" @click="runAutoTransition('CANCELLED')">取消</el-button>
+          <el-button type="primary" plain @click="$router.push('/work-orders')">返回列表</el-button>
         </div>
       </el-card>
     </template>
@@ -721,6 +729,11 @@ const form = reactive({
   work_hours: null,
   status: 'DRAFT',
   allowed_transitions: [],
+  vehicle_id: null,
+  store_id: null,
+  bay_id: null,
+  appointment_id: null,
+  customer_id: null,
   vehicle_plate: '',
   tags: [],
   fault_tags: [],
@@ -1008,6 +1021,41 @@ const statusMap = {
 }
 const statusLabel = computed(() => statusMap[form.status] || form.status || '-')
 const allowedTransitionLabels = computed(() => (form.allowed_transitions || []).map(s => statusMap[s] || s))
+const AUTO_NEXT = {
+  DRAFT: 'INTAKE', INTAKE: 'DIAGNOSING', DIAGNOSING: 'QUOTING', QUOTING: 'APPROVED',
+  APPROVED: 'IN_PROGRESS', IN_PROGRESS: 'QC', QC: 'COMPLETED', COMPLETED: 'CLOSED',
+}
+const AUTO_ACTION = {
+  INTAKE: '接车', DIAGNOSING: '开始诊断', QUOTING: '出具报价', APPROVED: '确认报价',
+  IN_PROGRESS: '开始施工', QC: '提交质检', COMPLETED: '质检通过', CLOSED: '结案交车',
+}
+const isAutoLane = computed(() => !!(form.vehicle_id || form.appointment_id || form.store_id || ['INTAKE', 'DIAGNOSING', 'QUOTING', 'QC'].includes(form.status)))
+const autoNextStatus = computed(() => {
+  if (!isAutoLane.value) return ''
+  const next = AUTO_NEXT[form.status]
+  return next && (form.allowed_transitions || []).includes(next) ? next : ''
+})
+const autoActionLabel = computed(() => AUTO_ACTION[autoNextStatus.value] || '')
+const needsStoreSupervisor = computed(() => autoNextStatus.value === 'APPROVED' || autoNextStatus.value === 'CLOSED')
+const canCancelAuto = computed(() => isAutoLane.value && (form.allowed_transitions || []).includes('CANCELLED'))
+const transitioning = ref(false)
+const currentUser = (() => {
+  try { return JSON.parse(localStorage.getItem('current_user') || '{}') } catch { return {} }
+})()
+const isSupervisor = currentUser.role === 'SUPERVISOR' || currentUser.role === 'ADMIN'
+const runAutoTransition = async (toStatus) => {
+  const id = route.params.id || form.id
+  if (!id) return
+  transitioning.value = true
+  try {
+    const res = await request.post(`/work-orders/${id}/transition`, { to_status: toStatus, source: 'WEB' })
+    form.status = res.status
+    form.allowed_transitions = res.allowed_transitions || []
+    ElMessage.success('状态已更新')
+  } finally {
+    transitioning.value = false
+  }
+}
 const statusTagType = computed(() => {
   const map = {
     DRAFT: 'info', SUBMITTED: 'info', ASSIGNED: 'primary', ACCEPTED: 'primary',
@@ -1627,7 +1675,7 @@ onMounted(async () => {
 
       usedParts.value = (res.used_parts || []).map(p => {
         const sp = spareParts.value.find(s => s.part_code === p.code)
-        return { name: p.name || '', code: p.code || '', qty: p.qty || 1, stock: sp?.stock_quantity ?? 0, maxStock: sp?.stock_quantity ?? 999 }
+        return { name: p.name || '', code: p.code || '', qty: p.qty || 1, stock: sp?.stock_quantity ?? 0, maxStock: sp?.stock_quantity ?? 999, issued: !!p.issued }
       })
 
       if (res.attachments && Array.isArray(res.attachments)) {

@@ -206,6 +206,14 @@ class WorkOrderTransition(BaseModel):
     attachments: Optional[Any] = None
 
 
+class WorkOrderFromAppointment(BaseModel):
+    """预约到店后开接车工单。不走草稿保存时的直接进维修捷径。"""
+    appointment_id: int
+    fault_description: Optional[str] = None
+    technician_id: Optional[int] = None
+    bay_id: Optional[int] = None
+
+
 class WorkOrderDispatchCreate(BaseModel):
     device_id: Optional[int] = None
     device_code: Optional[str] = None
