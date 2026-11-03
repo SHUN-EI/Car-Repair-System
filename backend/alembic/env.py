@@ -24,6 +24,9 @@ from app.models.store import Store, Bay  # noqa: F401
 from app.models.vehicle import Vehicle  # noqa: F401
 from app.models.appointment import Appointment  # noqa: F401
 from app.models.part_sku import PartSku  # noqa: F401
+from app.models.service_catalog import ServicePackage, ServiceSku  # noqa: F401
+from app.models.quote import Quote, QuoteLine  # noqa: F401
+from app.models.payment import PaymentIntent  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

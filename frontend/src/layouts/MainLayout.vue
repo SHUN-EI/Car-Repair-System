@@ -163,6 +163,10 @@
                 <el-icon><Odometer /></el-icon>
                 <template #title>车辆档案</template>
               </el-menu-item>
+              <el-menu-item index="/service-packages">
+                <el-icon><Tickets /></el-icon>
+                <template #title>保养套餐</template>
+              </el-menu-item>
 
               <div class="menu-group-label">主管中心</div>
               <el-menu-item index="/supervisor/dispatch">
@@ -213,6 +217,10 @@
               <el-menu-item index="/vehicles">
                 <el-icon><Odometer /></el-icon>
                 <template #title>车辆档案</template>
+              </el-menu-item>
+              <el-menu-item index="/service-packages">
+                <el-icon><Tickets /></el-icon>
+                <template #title>保养套餐</template>
               </el-menu-item>
               <el-menu-item index="/categories">
                 <el-icon><Grid /></el-icon>
@@ -285,6 +293,9 @@
                 <el-menu-item index="/vehicles">
                   <el-icon><Odometer /></el-icon>
                 </el-menu-item>
+                <el-menu-item index="/service-packages">
+                  <el-icon><Tickets /></el-icon>
+                </el-menu-item>
                 <el-menu-item index="/supervisor/dispatch">
                   <el-icon><SetUp /></el-icon>
                 </el-menu-item>
@@ -318,6 +329,9 @@
                 </el-menu-item>
                 <el-menu-item index="/vehicles">
                   <el-icon><Odometer /></el-icon>
+                </el-menu-item>
+                <el-menu-item index="/service-packages">
+                  <el-icon><Tickets /></el-icon>
                 </el-menu-item>
                 <el-menu-item index="/categories">
                   <el-icon><Grid /></el-icon>

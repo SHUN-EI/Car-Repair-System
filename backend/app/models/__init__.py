@@ -21,6 +21,9 @@ from app.models.store import Store, Bay
 from app.models.vehicle import Vehicle
 from app.models.appointment import Appointment
 from app.models.part_sku import PartSku
+from app.models.service_catalog import ServicePackage, ServiceSku
+from app.models.quote import Quote, QuoteLine
+from app.models.payment import PaymentIntent
 
 __all__ = [
     "Device", "WorkOrder", "WorkOrderStatus",
@@ -43,4 +46,7 @@ __all__ = [
     "Vehicle",
     "Appointment",
     "PartSku",
+    "ServicePackage", "ServiceSku",
+    "Quote", "QuoteLine",
+    "PaymentIntent",
 ]

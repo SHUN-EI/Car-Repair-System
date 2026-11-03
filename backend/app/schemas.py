@@ -362,6 +362,15 @@ class KnowledgeReviewResponse(BaseModel):
 
 
 # ==================== 备件 ====================
+class FitmentRule(BaseModel):
+    """备件适配一条。空字段表示这一维不限制。"""
+    brand: Optional[str] = Field(None, max_length=50)
+    series: Optional[str] = Field(None, max_length=80)
+    year_from: Optional[int] = Field(None, ge=1900, le=2100)
+    year_to: Optional[int] = Field(None, ge=1900, le=2100)
+    engine: Optional[str] = Field(None, max_length=50)
+
+
 class SparePartCreate(BaseModel):
     part_code: str = Field(..., max_length=50)
     part_name: str = Field(..., max_length=200)
@@ -374,6 +383,7 @@ class SparePartCreate(BaseModel):
     location: Optional[str] = None
     supplier: Optional[str] = None
     sku_id: Optional[int] = None
+    fitment: Optional[List[FitmentRule]] = None
 
 
 class SparePartUpdate(BaseModel):
@@ -387,6 +397,7 @@ class SparePartUpdate(BaseModel):
     location: Optional[str] = None
     supplier: Optional[str] = None
     sku_id: Optional[int] = None
+    fitment: Optional[List[FitmentRule]] = None
 
 
 class SparePartResponse(BaseModel):
@@ -402,6 +413,7 @@ class SparePartResponse(BaseModel):
     location: Optional[str]
     supplier: Optional[str]
     sku_id: Optional[int] = None
+    fitment: Optional[List[FitmentRule]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -772,6 +784,204 @@ class PartSkuResponse(BaseModel):
     cost_price: Optional[float] = 0.0
     specification: Optional[str] = None
     is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ServicePackageCreate(BaseModel):
+    code: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=200)
+    description: Optional[str] = None
+    brand: Optional[str] = Field(None, max_length=50)
+    series: Optional[str] = Field(None, max_length=80)
+    mileage_from: Optional[int] = Field(None, ge=0)
+    mileage_to: Optional[int] = Field(None, ge=0)
+    symptom_keywords: Optional[List[str]] = None
+    list_price: Optional[float] = Field(0, ge=0)
+    is_active: Optional[bool] = True
+
+
+class ServicePackageUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = None
+    brand: Optional[str] = Field(None, max_length=50)
+    series: Optional[str] = Field(None, max_length=80)
+    mileage_from: Optional[int] = Field(None, ge=0)
+    mileage_to: Optional[int] = Field(None, ge=0)
+    symptom_keywords: Optional[List[str]] = None
+    list_price: Optional[float] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+
+class ServicePackageResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: Optional[str] = None
+    brand: Optional[str] = None
+    series: Optional[str] = None
+    mileage_from: Optional[int] = None
+    mileage_to: Optional[int] = None
+    symptom_keywords: Optional[List[str]] = None
+    list_price: float = 0
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ServiceSkuCreate(BaseModel):
+    code: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=200)
+    labor_minutes: Optional[int] = Field(0, ge=0)
+    base_price: Optional[float] = Field(0, ge=0)
+    package_id: Optional[int] = None
+    category: Optional[str] = Field(None, max_length=50)
+    symptom_keywords: Optional[List[str]] = None
+    brand: Optional[str] = Field(None, max_length=50)
+    series: Optional[str] = Field(None, max_length=80)
+    mileage_from: Optional[int] = Field(None, ge=0)
+    mileage_to: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = True
+
+
+class ServiceSkuUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    labor_minutes: Optional[int] = Field(None, ge=0)
+    base_price: Optional[float] = Field(None, ge=0)
+    package_id: Optional[int] = None
+    category: Optional[str] = Field(None, max_length=50)
+    symptom_keywords: Optional[List[str]] = None
+    brand: Optional[str] = Field(None, max_length=50)
+    series: Optional[str] = Field(None, max_length=80)
+    mileage_from: Optional[int] = Field(None, ge=0)
+    mileage_to: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+
+
+class ServiceSkuResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    labor_minutes: int = 0
+    base_price: float = 0
+    package_id: Optional[int] = None
+    category: Optional[str] = None
+    symptom_keywords: Optional[List[str]] = None
+    brand: Optional[str] = None
+    series: Optional[str] = None
+    mileage_from: Optional[int] = None
+    mileage_to: Optional[int] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ServiceRecommendRequest(BaseModel):
+    vehicle_id: Optional[int] = None
+    plate: Optional[str] = None
+    brand: Optional[str] = None
+    series: Optional[str] = None
+    mileage: Optional[int] = Field(None, ge=0, description="公里。不传表示未知里程，不按区间过滤")
+    symptoms: Optional[str] = None
+
+
+class QuoteSuggestionIn(BaseModel):
+    name: str = Field(..., max_length=200)
+    code: Optional[str] = Field(None, max_length=50)
+    qty: float = Field(1, gt=0)
+    unit_price: Optional[float] = Field(None, ge=0)
+    line_type: Optional[str] = None
+    ref_id: Optional[int] = None
+
+
+class QuoteDraftRequest(BaseModel):
+    work_order_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    consult_text: Optional[str] = None
+    suggestions: Optional[List[QuoteSuggestionIn]] = None
+    mileage: Optional[int] = Field(None, ge=0)
+    symptoms: Optional[str] = None
+    include_packages: bool = False
+    include_used_parts: bool = True
+
+
+class QuoteLineCreate(BaseModel):
+    name: str = Field(..., max_length=200)
+    code: Optional[str] = Field(None, max_length=50)
+    qty: float = Field(1, gt=0)
+    unit_price: float = Field(0, ge=0)
+    line_type: Optional[str] = "LABOR"
+    ref_id: Optional[int] = None
+
+
+class QuoteLineResponse(BaseModel):
+    id: int
+    line_no: int
+    line_type: str
+    name: str
+    code: Optional[str] = None
+    qty: float
+    unit_price: float
+    amount: float
+    source: Optional[str] = None
+    ref_id: Optional[int] = None
+
+    model_config = {"from_attributes": True}
+
+
+class QuoteResponse(BaseModel):
+    id: int
+    quote_no: str
+    work_order_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    store_id: Optional[int] = None
+    status: str
+    status_label: str = ""
+    customer_confirm: bool = False
+    total: float = 0
+    mileage: Optional[int] = None
+    symptoms: Optional[str] = None
+    consult_text: Optional[str] = None
+    note: Optional[str] = None
+    lines: List[QuoteLineResponse] = []
+    allowed_transitions: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class QuoteActionResponse(QuoteResponse):
+    notify: Optional[dict] = None
+
+
+class CustomerConfirmRequest(BaseModel):
+    on_behalf: bool = False
+
+
+class PaymentIntentCreate(BaseModel):
+    quote_id: int
+
+
+class PaymentIntentResponse(BaseModel):
+    id: int
+    intent_no: str
+    quote_id: Optional[int] = None
+    work_order_id: Optional[int] = None
+    amount: float
+    currency: str
+    channel: str
+    status: str
+    status_label: str = ""
+    note: Optional[str] = None
+    reused: bool = False
     created_at: datetime
     updated_at: datetime
 

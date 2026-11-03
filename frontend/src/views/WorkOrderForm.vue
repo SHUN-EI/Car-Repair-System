@@ -69,6 +69,54 @@
             ~ {{ form.end_time ? dayjs(form.end_time).format('YYYY-MM-DD HH:mm') : '-' }}
           </el-descriptions-item>
         </el-descriptions>
+
+        <div class="quote-panel">
+          <div class="quote-head">
+            <span class="section-title">报价单</span>
+            <span class="mode-tip">草案来自领料、问诊建议或保养套餐。店员确认后，车主才能确认。支付只创建占位单，不收款。</span>
+          </div>
+          <div v-if="!isOwnerUser" class="quote-form">
+            <el-input v-model="consultText" type="textarea" :rows="3" placeholder="粘贴问诊里的建议项目，例如【建议项目】更换机油和机油滤清器" />
+            <div class="quote-actions">
+              <el-input-number v-model="quoteMileage" :min="0" :controls="false" placeholder="里程 km" />
+              <el-input v-model="quoteSymptoms" placeholder="症状，如刹车异响" style="width: 220px" />
+              <el-button :loading="quoteBusy" @click="previewPackages">查看保养推荐</el-button>
+              <el-button :loading="quoteBusy" @click="draftQuote('parts')">按领料生成草案</el-button>
+              <el-button :loading="quoteBusy" @click="draftQuote('consult')">按问诊建议生成草案</el-button>
+              <el-button :loading="quoteBusy" type="primary" @click="draftQuote('package')">按保养套餐生成草案</el-button>
+            </div>
+            <div v-if="recommendations.length" class="quote-reco">
+              <div v-for="item in recommendations" :key="item.id">{{ item.name }}（{{ item.code }}）{{ item.list_price }} 元 · {{ item.reason }}</div>
+            </div>
+          </div>
+          <div v-if="!quotes.length" class="mode-tip">还没有报价单</div>
+          <div v-for="quote in quotes" :key="quote.id" class="quote-card">
+            <div class="quote-title">
+              <strong>{{ quote.quote_no }}</strong>
+              <el-tag size="small">{{ quoteStatusText[quote.status] || quote.status }}</el-tag>
+              <el-tag v-if="quote.customer_confirm" size="small" type="success">车主已确认</el-tag>
+              <span>合计 {{ quote.total }} 元</span>
+            </div>
+            <div v-if="quote.note" class="mode-tip">{{ quote.note }}</div>
+            <div v-for="line in quote.lines" :key="line.id" class="quote-line">
+              {{ lineTypeText[line.line_type] || line.line_type }} · {{ line.name }} × {{ line.qty }} · 单价 {{ line.unit_price }} · 小计 {{ line.amount }}
+            </div>
+            <div class="quote-actions">
+              <el-button v-if="isSupervisor && quote.status === 'DRAFT'" size="small" type="primary" :loading="quoteBusy" @click="confirmQuote(quote, 'staff')">店员确认</el-button>
+              <el-button v-if="isOwnerUser && quote.status === 'STAFF_CONFIRMED'" size="small" type="primary" :loading="quoteBusy" @click="confirmQuote(quote, 'customer')">车主确认</el-button>
+              <el-button v-if="isSupervisor && quote.status === 'STAFF_CONFIRMED'" size="small" :loading="quoteBusy" @click="confirmQuote(quote, 'behalf')">代录车主确认</el-button>
+              <el-button v-if="(isOwnerUser || isSupervisor) && quote.status === 'STAFF_CONFIRMED'" size="small" :loading="quoteBusy" @click="confirmQuote(quote, 'reject')">拒绝</el-button>
+              <el-button
+                v-if="isSupervisor && quote.customer_confirm && !openPayment(quote.id)"
+                size="small"
+                :loading="quoteBusy"
+                @click="createPayment(quote)"
+              >创建支付占位</el-button>
+              <span v-if="openPayment(quote.id)" class="mode-tip">支付占位 {{ openPayment(quote.id).intent_no }} · {{ openPayment(quote.id).status_label || '已创建（未清算）' }} · {{ openPayment(quote.id).amount }} 元</span>
+            </div>
+          </div>
+        </div>
+
         <div class="detail-footer">
           <el-button
             v-if="autoNextStatus"
@@ -1043,6 +1091,84 @@ const currentUser = (() => {
   try { return JSON.parse(localStorage.getItem('current_user') || '{}') } catch { return {} }
 })()
 const isSupervisor = currentUser.role === 'SUPERVISOR' || currentUser.role === 'ADMIN'
+const isOwnerUser = currentUser.role === 'OWNER'
+const quotes = ref([])
+const payments = ref([])
+const quoteBusy = ref(false)
+const consultText = ref('')
+const quoteMileage = ref(null)
+const quoteSymptoms = ref('')
+const recommendations = ref([])
+const quoteStatusText = {
+  DRAFT: '草案', STAFF_CONFIRMED: '店员已确认', CUSTOMER_CONFIRMED: '车主已确认',
+  REJECTED: '已拒绝', CANCELLED: '已取消',
+}
+const lineTypeText = { PART: '配件', LABOR: '工时', PACKAGE: '套餐' }
+const openPayment = (quoteId) => payments.value.find(item => item.quote_id === quoteId && item.status === 'CREATED')
+const loadQuotes = async () => {
+  const id = form.id || route.params.id
+  if (!id) return
+  const [quoteRes, payRes] = await Promise.all([
+    request.get('/quotes/', { params: { work_order_id: id, page_size: 20 } }),
+    request.get('/payments/intents/', { params: { work_order_id: id, page_size: 20 } }),
+  ])
+  quotes.value = quoteRes.items || []
+  payments.value = payRes.items || []
+}
+const draftQuote = async (kind) => {
+  quoteBusy.value = true
+  try {
+    await request.post('/quotes/draft', {
+      work_order_id: Number(form.id || route.params.id),
+      consult_text: kind === 'consult' ? consultText.value : '',
+      mileage: quoteMileage.value,
+      symptoms: quoteSymptoms.value,
+      include_packages: kind === 'package',
+      include_used_parts: kind !== 'consult',
+    })
+    ElMessage.success('已生成报价草案')
+    await loadQuotes()
+  } finally {
+    quoteBusy.value = false
+  }
+}
+const previewPackages = async () => {
+  quoteBusy.value = true
+  try {
+    const res = await request.post('/service-packages/recommend', {
+      vehicle_id: form.vehicle_id,
+      mileage: quoteMileage.value,
+      symptoms: quoteSymptoms.value || consultText.value,
+    })
+    recommendations.value = res.packages || []
+    if (!recommendations.value.length) ElMessage.info(res.note || '没有符合条件的保养套餐')
+  } finally {
+    quoteBusy.value = false
+  }
+}
+const confirmQuote = async (quote, action) => {
+  quoteBusy.value = true
+  try {
+    if (action === 'staff') await request.post(`/quotes/${quote.id}/staff-confirm`)
+    else if (action === 'customer') await request.post(`/quotes/${quote.id}/customer-confirm`, {})
+    else if (action === 'behalf') await request.post(`/quotes/${quote.id}/customer-confirm`, { on_behalf: true })
+    else await request.post(`/quotes/${quote.id}/reject`)
+    ElMessage.success('报价状态已更新')
+    await loadQuotes()
+  } finally {
+    quoteBusy.value = false
+  }
+}
+const createPayment = async (quote) => {
+  quoteBusy.value = true
+  try {
+    const res = await request.post('/payments/intents/', { quote_id: quote.id })
+    ElMessage.success(res.reused ? `已有支付占位 ${res.intent_no}，未清算` : `已创建支付占位 ${res.intent_no}，未清算`)
+    await loadQuotes()
+  } finally {
+    quoteBusy.value = false
+  }
+}
 const runAutoTransition = async (toStatus) => {
   const id = route.params.id || form.id
   if (!id) return
@@ -1661,6 +1787,7 @@ onMounted(async () => {
     try {
       const res = await request.get(`/work-orders/${route.params.id}`)
       Object.assign(form, res)
+      loadQuotes()
 
       if (typeof res.fault_code === 'string' && res.fault_code) {
         form.fault_code = res.fault_code.split(',').map(c => c.trim()).filter(Boolean)
@@ -1789,6 +1916,13 @@ onMounted(async () => {
 .detail-header h3 { font-size: 18px; font-weight: 600; color: #1D2129; margin: 0; }
 .detail-pre { margin: 0; white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.7; }
 .detail-footer { margin-top: 24px; display: flex; justify-content: center; }
+.quote-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid #F2F3F5; }
+.quote-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.quote-form, .quote-card { margin-bottom: 12px; }
+.quote-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.quote-title { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.quote-line { font-size: 13px; color: #1D2129; line-height: 1.7; }
+.quote-reco { margin-top: 8px; font-size: 13px; color: #4E5969; }
 .fc-dialog-footer { display: flex; gap: 8px; justify-content: flex-end; }
 .submit-confirm-dialog .el-message-box__btns .el-button:not(.el-button--primary) {
   background: var(--color-primary) !important;

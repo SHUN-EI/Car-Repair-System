@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     SMS_ACCESS_KEY_SECRET: str = ""
     SMS_SIGN_NAME: str = ""          # 短信签名（需在阿里云短信控制台申请）
     SMS_TEMPLATE_CODE: str = ""      # 验证码短信模板 CODE（需在阿里云短信控制台申请）
+    SMS_NOTICE_TEMPLATE_CODE: str = ""  # 车主状态通知模板，变量 work_order_no、status
     SMS_ENABLED: bool = False        # 是否启用真实短信发送
 
     # 服务器公开访问地址（用于生成可扫码的真实 URL）

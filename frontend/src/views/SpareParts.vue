@@ -55,6 +55,9 @@
         <el-table-column prop="unit_price" label="单价" width="90" />
         <el-table-column prop="location" label="存放位置" width="110" />
         <el-table-column prop="supplier" label="供应商" width="110" show-overflow-tooltip />
+        <el-table-column label="适配" width="80">
+          <template #default="{ row }">{{ (row.fitment || []).length ? `${row.fitment.length}条` : '-' }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <div class="action-group">
