@@ -13,6 +13,7 @@ const router = createRouter({
         { path: 'work-orders/new', name: 'WorkOrderCreate', component: () => import('../views/WorkOrderForm.vue'), meta: { title: '新建工单' } },
         { path: 'work-orders/:id', name: 'WorkOrderForm', component: () => import('../views/WorkOrderForm.vue'), meta: { title: '工单详情' } },
         { path: 'devices', name: 'Devices', component: () => import('../views/Devices.vue'), meta: { title: '设备监控' } },
+        { path: 'vehicles', name: 'Vehicles', component: () => import('../views/Vehicles.vue'), meta: { title: '车辆档案' } },
         { path: 'devices/new', name: 'DeviceCreate', component: () => import('../views/DeviceForm.vue'), meta: { title: '新增设备' } },
         { path: 'devices/:id', name: 'DeviceForm', component: () => import('../views/DeviceForm.vue'), meta: { title: '设备详情' } },
         {

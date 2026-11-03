@@ -10,10 +10,17 @@
         <el-input v-model="keyword" placeholder="搜索工单编号/故障描述" clearable class="filter-input" @clear="handleSearch" @keyup.enter="handleSearch" />
         <el-select v-model="statusFilter" placeholder="工单状态" clearable class="filter-select" @change="handleSearch">
           <el-option label="草稿" value="DRAFT" />
+          <el-option label="接车" value="INTAKE" />
+          <el-option label="诊断中" value="DIAGNOSING" />
+          <el-option label="报价中" value="QUOTING" />
+          <el-option label="报价已确认" value="APPROVED" />
           <el-option label="维修中" value="IN_PROGRESS" />
+          <el-option label="质检" value="QC" />
+          <el-option label="已完成" value="COMPLETED" />
+          <el-option label="已结案" value="CLOSED" />
+          <el-option label="已取消" value="CANCELLED" />
           <el-option label="待归档" value="ARCHIVING" />
           <el-option label="已归档" value="ARCHIVED" />
-          <el-option label="已完成" value="COMPLETED" />
         </el-select>
         <el-select v-model="deviceTypeFilter" placeholder="设备类型" clearable class="filter-select" @change="handleSearch">
           <el-option v-for="d in deviceTypeOptions" :key="d.value" :label="d.label" :value="d.value" />
@@ -37,10 +44,20 @@
       <el-table :data="list" v-loading="loading" stripe>
         <el-table-column prop="work_order_no" label="工单编号" width="170" />
         <el-table-column prop="fault_description" label="故障描述" min-width="180" show-overflow-tooltip />
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <span class="status-tag" :class="'status-' + row.status">{{ statusLabel(row.status) }}</span>
+            <el-tooltip
+              v-if="row.allowed_transitions && row.allowed_transitions.length"
+              :content="'可流转：' + transitionText(row)"
+              placement="top"
+            >
+              <span class="status-tag" :class="'status-' + row.status">{{ statusLabel(row.status) }}</span>
+            </el-tooltip>
+            <span v-else class="status-tag" :class="'status-' + row.status">{{ statusLabel(row.status) }}</span>
           </template>
+        </el-table-column>
+        <el-table-column label="车牌" width="110">
+          <template #default="{ row }">{{ row.vehicle_plate || '-' }}</template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
@@ -202,9 +219,17 @@ const statusMap = {
   ARCHIVED: '已归档',
   COMPLETED: '已完成',
   REJECTED: '已退回',
+  APPROVED: '报价已确认',
+  INTAKE: '接车',
+  DIAGNOSING: '诊断中',
+  QUOTING: '报价中',
+  QC: '质检',
+  CLOSED: '已结案',
+  CANCELLED: '已取消',
 }
 
 const statusLabel = (s) => statusMap[s] || s
+const transitionText = (row) => (row.allowed_transitions || []).map(s => statusLabel(s)).join('、')
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
 const STORAGE_KEY = 'workorders_filter'
@@ -312,5 +337,12 @@ onMounted(() => {
 .status-ARCHIVING { background: #FFF7E8; color: #FF8800; }
 .status-ARCHIVED { background: #E8F8EE; color: #00B42A; }
 .status-COMPLETED { background: #E8F8EE; color: #00B42A; }
+.status-INTAKE { background: #E8F3FF; color: #1677FF; }
+.status-DIAGNOSING { background: #F5E8FF; color: #722ED1; }
+.status-QUOTING { background: #FFF7E8; color: #FF8800; }
+.status-APPROVED { background: #E8FFFB; color: #0FC6C2; }
+.status-QC { background: #FFF3E8; color: #FF7D00; }
+.status-CLOSED { background: #E8F8EE; color: #00B42A; }
+.status-CANCELLED { background: #FFECEC; color: #F53F3F; }
 .filter-date { width: 240px; }
 </style>

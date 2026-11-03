@@ -22,6 +22,12 @@ from app.agents.ticket_agent import ticket_agent
 from app.agents.knowledge_extractor import knowledge_extractor
 from app.agents.tools import extract_error_codes
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus
+from app.domain.work_order_status import (
+    VALID_TRANSITIONS,
+    allowed_transitions as _allowed_transitions,
+    status_machine_payload,
+    status_value as _status_value,
+)
 
 router = APIRouter()
 
@@ -77,6 +83,8 @@ def list_work_orders(
         users_q = db.query(User).filter(User.id.in_(user_ids)).all()
         user_emp_map = {u.id: u.employee_id for u in users_q}
         user_name_map = {u.id: u.real_name for u in users_q}
+    vehicle_ids = {w.vehicle_id for w in items if w.vehicle_id}
+    plate_map = _vehicle_plate_map(db, vehicle_ids)
     result_items = []
     for w in items:
         d = _wo_to_dict(w)
@@ -84,6 +92,8 @@ def list_work_orders(
         d['technician_name'] = user_name_map.get(w.technician_id) if w.technician_id else None
         d['device_type'] = w.device.device_type if w.device else None
         d['device_name'] = w.device.device_name if w.device else None
+        d['vehicle_plate'] = plate_map.get(w.vehicle_id)
+        _attach_transitions(d, w.status)
         result_items.append(d)
     return {"total": total, "items": result_items, "page": page, "page_size": page_size}
 
@@ -99,6 +109,13 @@ _DISPLAY_STATUS_MAP = {
     "INSPECTING": "检查中",
     "IN_PROGRESS": "维修中",
     "COMPLETED": "已完成",
+    "INTAKE": "接车",
+    "DIAGNOSING": "诊断中",
+    "QUOTING": "报价中",
+    "APPROVED": "报价已确认",
+    "QC": "质检",
+    "CLOSED": "已结案",
+    "CANCELLED": "已取消",
 }
 
 
@@ -187,6 +204,12 @@ def get_progress_board(
         WorkOrderStatus.ARRIVED.value,
         WorkOrderStatus.INSPECTING.value,
         WorkOrderStatus.IN_PROGRESS.value,
+        # 汽修车道上的在办状态，避免看板把接车/诊断/报价/质检丢掉
+        WorkOrderStatus.INTAKE.value,
+        WorkOrderStatus.DIAGNOSING.value,
+        WorkOrderStatus.QUOTING.value,
+        WorkOrderStatus.APPROVED.value,
+        WorkOrderStatus.QC.value,
     }
 
     submitted_list: List[dict] = []
@@ -222,6 +245,12 @@ def get_progress_board(
     }
 
 
+@router.get("/status-machine", summary="工单状态机（状态与允许转移）")
+def get_work_order_status_machine(current_user: User = Depends(get_current_user)):
+    """返回全部状态、中文名，以及每个状态允许的下一步。工业车道与汽修车道共用这一张表。"""
+    return status_machine_payload()
+
+
 @router.get("/{work_order_id}", response_model=WorkOrderResponse, summary="获取工单详情")
 def get_work_order(work_order_id: int, db: Session = Depends(get_db)):
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
@@ -239,6 +268,8 @@ def get_work_order(work_order_id: int, db: Session = Depends(get_db)):
     if work_order.technician_id:
         tech = db.query(User).filter(User.id == work_order.technician_id).first()
         resp.technician_name = tech.real_name if tech else None
+    _attach_transitions(resp, work_order.status)
+    _attach_vehicle_plate(resp, db)
     return resp
 
 
@@ -273,7 +304,7 @@ def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), curr
     db.commit()
     db.refresh(work_order)
     logger.info(f"[WorkOrder] 创建草稿: {work_order.work_order_no}")
-    return work_order
+    return _build_work_order_response(work_order, db)
 
 
 @router.put("/{work_order_id}", response_model=WorkOrderResponse, summary="更新工单（逐步填写）")
@@ -307,7 +338,7 @@ def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = D
         work_order.status = WorkOrderStatus.IN_PROGRESS
     db.commit()
     db.refresh(work_order)
-    return work_order
+    return _build_work_order_response(work_order, db)
 
 
 @router.post("/{work_order_id}/analyze", response_model=TicketAnalysisResponse, summary="AI 分析工单")
@@ -650,31 +681,42 @@ def _ensure_fault_code_mappings(wo: WorkOrder, db: Session):
 
 
 # ========== Phase1 工单流转与派工 ==========
-
-VALID_TRANSITIONS: Dict[str, List[str]] = {
-    WorkOrderStatus.DRAFT.value: [WorkOrderStatus.SUBMITTED.value, WorkOrderStatus.ASSIGNED.value],
-    WorkOrderStatus.SUBMITTED.value: [WorkOrderStatus.ASSIGNED.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.ASSIGNED.value: [WorkOrderStatus.ACCEPTED.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.ACCEPTED.value: [WorkOrderStatus.ARRIVED.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.ARRIVED.value: [WorkOrderStatus.INSPECTING.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.INSPECTING.value: [WorkOrderStatus.IN_PROGRESS.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.IN_PROGRESS.value: [WorkOrderStatus.ARCHIVING.value, WorkOrderStatus.REJECTED.value],
-    WorkOrderStatus.ARCHIVING.value: [WorkOrderStatus.ARCHIVED.value],
-    WorkOrderStatus.COMPLETED.value: [],
-    WorkOrderStatus.REJECTED.value: [],
-    WorkOrderStatus.STANDARDIZED.value: [],
-    WorkOrderStatus.CLASSIFIED.value: [],
-    WorkOrderStatus.APPROVED.value: [],
-    WorkOrderStatus.ARCHIVED.value: [],
-}
+# 转移白名单在 app.domain.work_order_status.VALID_TRANSITIONS。
+# 工业车道原有边全部保留；汽修车道只是在同一张表上追加边。
 
 WORKLOAD_INCREASE_STATUSES = {WorkOrderStatus.ASSIGNED.value}
 WORKLOAD_DECREASE_STATUSES = {WorkOrderStatus.COMPLETED.value, WorkOrderStatus.REJECTED.value}
 
 
 def _is_allowed_transition(from_status: str, to_status: str) -> bool:
-    allowed = VALID_TRANSITIONS.get(from_status, [])
-    return to_status in allowed
+    return to_status in _allowed_transitions(from_status)
+
+
+def _attach_transitions(payload, status) -> None:
+    """把当前状态和允许的下一步写进列表字典或响应模型。"""
+    status_val = _status_value(status)
+    targets = _allowed_transitions(status_val)
+    if isinstance(payload, dict):
+        if status_val is not None:
+            payload["status"] = status_val
+        payload["allowed_transitions"] = targets
+    else:
+        payload.allowed_transitions = targets
+
+
+def _vehicle_plate_map(db: Session, vehicle_ids) -> Dict[int, str]:
+    if not vehicle_ids:
+        return {}
+    from app.models.vehicle import Vehicle
+    rows = db.query(Vehicle).filter(Vehicle.id.in_(vehicle_ids)).all()
+    return {row.id: row.plate for row in rows}
+
+
+def _attach_vehicle_plate(resp, db: Session) -> None:
+    if not getattr(resp, "vehicle_id", None):
+        return
+    plates = _vehicle_plate_map(db, {resp.vehicle_id})
+    resp.vehicle_plate = plates.get(resp.vehicle_id)
 
 
 def _add_progress_log(
@@ -789,6 +831,29 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
     elif to_status_val == WorkOrderStatus.ASSIGNED.value:
         if not (is_supervisor or is_admin):
             raise HTTPException(status_code=403, detail="仅主管或管理员可派工/改派")
+
+    elif to_status_val in (
+        WorkOrderStatus.INTAKE.value,
+        WorkOrderStatus.DIAGNOSING.value,
+        WorkOrderStatus.QUOTING.value,
+        WorkOrderStatus.QC.value,
+    ):
+        is_creator = work_order.created_by == current_user.id
+        if not (is_assigned_tech or is_admin or is_supervisor or is_creator):
+            raise HTTPException(status_code=403, detail="仅维修员、主管或管理员可推进接车/诊断/报价/质检")
+
+    elif to_status_val == WorkOrderStatus.APPROVED.value:
+        if not (is_supervisor or is_admin):
+            raise HTTPException(status_code=403, detail="仅主管或管理员可确认报价")
+
+    elif to_status_val == WorkOrderStatus.CLOSED.value:
+        if not (is_supervisor or is_admin):
+            raise HTTPException(status_code=403, detail="仅主管或管理员可结案")
+
+    elif to_status_val == WorkOrderStatus.CANCELLED.value:
+        is_creator = work_order.created_by == current_user.id
+        if not (is_assigned_tech or is_admin or is_supervisor or is_creator):
+            raise HTTPException(status_code=403, detail="仅维修员、主管或管理员可取消工单")
 
     old_technician_id = work_order.technician_id
     from_status_enum = work_order.status
@@ -1045,7 +1110,7 @@ def get_work_order_progress(
         raise HTTPException(status_code=404, detail="工单不存在")
 
     current_status_val = work_order.status.value if work_order.status else None
-    allowed_next = VALID_TRANSITIONS.get(current_status_val, [])
+    allowed_next = _allowed_transitions(current_status_val)
 
     logs = (
         db.query(WorkOrderProgressLog)
@@ -1074,7 +1139,9 @@ def get_work_order_progress(
     return {
         "work_order_id": work_order_id,
         "current_status": current_status_val,
+        "status": current_status_val,
         "allowed_next": allowed_next,
+        "allowed_transitions": allowed_next,
         "progress_logs": log_responses,
     }
 
@@ -1225,6 +1292,8 @@ def _build_work_order_response(work_order: WorkOrder, db: Session) -> WorkOrderR
     if work_order.technician_id:
         tech = db.query(User).filter(User.id == work_order.technician_id).first()
         resp.technician_name = tech.real_name if tech else None
+    _attach_transitions(resp, work_order.status)
+    _attach_vehicle_plate(resp, db)
     if work_order.progress_logs:
         resp.progress_logs = [
             WorkOrderProgressLogResponse(

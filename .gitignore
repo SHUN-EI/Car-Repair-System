@@ -43,8 +43,9 @@ uploads/
 *.sqlite
 
 # ===== 本地模型（体积大，不入库）=====
+# 只忽略本地权重目录。不要写成 models/，否则 backend/app/models 里的新 ORM 文件也会被忽略。
 backend/models/
-models/
+/models/
 
 # ===== IDE / 系统 =====
 .vscode/

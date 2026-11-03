@@ -114,7 +114,10 @@ const showReport = ref(false)
 const reportForm = ref({ work_hours: 1.0, solution_desc: '', completion_photos: [] })
 
 
-const statusLabel = (s) => ({ ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成', APPROVED: '已审批' }[s] || s)
+const statusLabel = (s) => ({
+  ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成', APPROVED: '报价已确认',
+  INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中', QC: '质检', CLOSED: '已结案', CANCELLED: '已取消',
+}[s] || s)
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : '-'
 
 const fetchData = async () => {

@@ -5,10 +5,14 @@
       <el-card shadow="never" class="detail-card">
         <div class="detail-header">
           <h3>{{ form.work_order_no }}</h3>
-          <el-tag :type="statusTagType" size="large">{{ statusLabel }}</el-tag>
+          <div class="detail-status">
+            <el-tag :type="statusTagType" size="large">{{ statusLabel }}</el-tag>
+            <span v-if="allowedTransitionLabels.length" class="allowed-next">可流转：{{ allowedTransitionLabels.join('、') }}</span>
+          </div>
         </div>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="故障描述" :span="2">{{ form.fault_description || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="form.vehicle_plate" label="车牌">{{ form.vehicle_plate }}</el-descriptions-item>
           <el-descriptions-item label="故障码">{{ displayFaultCodes || '-' }}</el-descriptions-item>
           <el-descriptions-item v-if="form.device_error_code" label="设备错误码">{{ form.device_error_code }}</el-descriptions-item>
           <template v-if="form.device_id">
@@ -74,7 +78,13 @@
     <!-- 编辑模式 -->
     <template v-if="!isViewMode">
       <div class="work-order-form-head">
-        <h3 class="work-order-form-title">{{ isNew ? '新增工单' : (form.work_order_no || '编辑工单') }}</h3>
+        <div>
+          <h3 class="work-order-form-title">
+            {{ isNew ? '新增工单' : (form.work_order_no || '编辑工单') }}
+            <el-tag v-if="!isNew" :type="statusTagType" size="small" style="margin-left: 8px">{{ statusLabel }}</el-tag>
+          </h3>
+          <p v-if="!isNew && allowedTransitionLabels.length" class="allowed-next">可流转：{{ allowedTransitionLabels.join('、') }}</p>
+        </div>
         <div class="work-order-form-actions">
           <el-button @click="viewDrafts">查看历史草稿</el-button>
           <el-button type="primary" @click="router.push('/work-orders')">返回列表</el-button>
@@ -710,6 +720,8 @@ const form = reactive({
   follow_up_plan: '',
   work_hours: null,
   status: 'DRAFT',
+  allowed_transitions: [],
+  vehicle_plate: '',
   tags: [],
   fault_tags: [],
 })
@@ -990,9 +1002,12 @@ const technicianDisplay = computed(() => {
 const statusMap = {
   DRAFT: '草稿', SUBMITTED: '待派工', ASSIGNED: '已派单', ACCEPTED: '已接单',
   ARRIVED: '已到达', INSPECTING: '检查中', IN_PROGRESS: '维修中',
-  ARCHIVING: '待归档', ARCHIVED: '已归档', COMPLETED: '已完成', REJECTED: '已退回'
+  ARCHIVING: '待归档', ARCHIVED: '已归档', COMPLETED: '已完成', REJECTED: '已退回',
+  APPROVED: '报价已确认', INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中',
+  QC: '质检', CLOSED: '已结案', CANCELLED: '已取消',
 }
 const statusLabel = computed(() => statusMap[form.status] || form.status || '-')
+const allowedTransitionLabels = computed(() => (form.allowed_transitions || []).map(s => statusMap[s] || s))
 const statusTagType = computed(() => {
   const map = {
     DRAFT: 'info', SUBMITTED: 'info', ASSIGNED: 'primary', ACCEPTED: 'primary',
@@ -1720,7 +1735,9 @@ onMounted(async () => {
 .kd-item-footer { display: flex; justify-content: space-between; align-items: center; }
 .kd-count { font-size: 12px; color: #86909C; }
 .detail-card { max-width: 900px; margin: 0 auto; padding: 16px; }
-.detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; }
+.detail-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.allowed-next { color: #86909C; font-size: 12px; }
 .detail-header h3 { font-size: 18px; font-weight: 600; color: #1D2129; margin: 0; }
 .detail-pre { margin: 0; white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.7; }
 .detail-footer { margin-top: 24px; display: flex; justify-content: center; }

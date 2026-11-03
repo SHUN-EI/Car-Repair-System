@@ -22,6 +22,13 @@ class WorkOrderStatus(str, enum.Enum):
     CLASSIFIED = "CLASSIFIED"
     APPROVED = "APPROVED"
     ARCHIVED = "ARCHIVED"
+    # Phase 0 汽修车道。与上面的工业状态共存，转移约束在 domain/work_order_status.py。
+    INTAKE = "INTAKE"  # 接车
+    DIAGNOSING = "DIAGNOSING"  # 诊断中
+    QUOTING = "QUOTING"  # 报价中
+    QC = "QC"  # 质检
+    CLOSED = "CLOSED"  # 已结案
+    CANCELLED = "CANCELLED"  # 已取消
 
 
 class WorkOrder(BaseModel):
@@ -62,6 +69,12 @@ class WorkOrder(BaseModel):
     dispatch_score = Column(JSONB, nullable=True, comment="派工评分详情")
     completion_report = Column(JSONB, nullable=True, comment="维修完成报告（工时/备件/照片）")
     created_by = Column(Integer, ForeignKey("users.id"), comment="创建者 ID，仅创建者可编辑")
+    # 汽修域关联，全部可空，旧工单不受影响
+    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联车辆")
+    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联客户")
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, comment="服务门店")
+    bay_id = Column(Integer, ForeignKey("bays.id", ondelete="SET NULL"), nullable=True, comment="占用工位")
+    appointment_id = Column(Integer, ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, comment="来源预约")
 
     device = relationship("Device", back_populates="work_orders")
     technician = relationship("User", foreign_keys=[technician_id], lazy="joined")

@@ -22,6 +22,14 @@ from loguru import logger
 from app.core.config import settings
 from app.api import work_orders, knowledge, devices, spare_parts, users, categories, search, dashboard, dispatch, duty_schedules, leave_requests, notifications
 from app.api.work_order_imports import router as work_order_imports_router
+from app.api.vehicles import router as vehicles_router
+from app.api.service_domain import (
+    customers_router,
+    stores_router,
+    bays_router,
+    appointments_router,
+    part_skus_router,
+)
 from app.api.manual_codes import router as manual_codes_router
 from app.api.dingtalk import router as dingtalk_router, ensure_oa_services_started
 from app.api.session import router as session_router
@@ -119,6 +127,12 @@ app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["
 app.include_router(dispatch.router, tags=["派工管理"])
 app.include_router(dingtalk_mock_router, tags=["钉钉扫码模拟"])
 app.include_router(work_order_imports_router, prefix="/api/v1/work-order-imports", tags=["历史工单导入"])
+app.include_router(vehicles_router, prefix="/api/v1/vehicles", tags=["车辆档案"])
+app.include_router(customers_router, prefix="/api/v1/customers", tags=["客户"])
+app.include_router(stores_router, prefix="/api/v1/stores", tags=["门店"])
+app.include_router(bays_router, prefix="/api/v1/bays", tags=["工位"])
+app.include_router(appointments_router, prefix="/api/v1/appointments", tags=["预约"])
+app.include_router(part_skus_router, prefix="/api/v1/part-skus", tags=["配件目录"])
 
 # ============================================================
 # MCP Server（Streamable HTTP）：仅本机可访问，可配置 API Key
