@@ -1,6 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import cast, Date
+from sqlalchemy import cast, Date, or_
 from typing import Optional, List, Dict, Any
 from loguru import logger
 from datetime import date, datetime
@@ -16,7 +16,7 @@ from app.models.duty_schedule import DutySchedule
 from app.schemas import (
     WorkOrderCreate, WorkOrderUpdate, WorkOrderResponse, PaginatedResponse,
     TicketAnalysisResponse, WorkOrderTransition, WorkOrderDispatchCreate,
-    WorkOrderProgressLogResponse,
+    WorkOrderFromAppointment, WorkOrderProgressLogResponse,
 )
 from app.agents.ticket_agent import ticket_agent
 from app.agents.knowledge_extractor import knowledge_extractor
@@ -24,10 +24,13 @@ from app.agents.tools import extract_error_codes
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus
 from app.domain.work_order_status import (
     VALID_TRANSITIONS,
+    STATUS_LABELS,
     allowed_transitions as _allowed_transitions,
+    is_auto_repair_lane,
     status_machine_payload,
     status_value as _status_value,
 )
+from app.domain.owner_access import customer_ids_for_user, is_owner
 
 router = APIRouter()
 
@@ -73,6 +76,8 @@ def list_work_orders(
         query = query.filter(cast(WorkOrder.created_at, Date) >= date_from)
     if date_to:
         query = query.filter(cast(WorkOrder.created_at, Date) <= date_to)
+    if is_owner(current_user):
+        query = _scope_owner_work_orders(query, db, current_user)
     total = query.count()
     items = query.order_by(WorkOrder.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     # 批量查询创建者/维修员信息（工号+姓名，用于前端权限判断和名字显示）
@@ -252,9 +257,13 @@ def get_work_order_status_machine(current_user: User = Depends(get_current_user)
 
 
 @router.get("/{work_order_id}", response_model=WorkOrderResponse, summary="获取工单详情")
-def get_work_order(work_order_id: int, db: Session = Depends(get_db)):
+def get_work_order(
+    work_order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-    if not work_order:
+    if not work_order or not _owner_may_view(db, current_user, work_order):
         raise HTTPException(status_code=404, detail="工单不存在")
     resp = WorkOrderResponse.model_validate(work_order)
     # 设备信息（设备类型/名称）直接从关联设备返回，前端不依赖本地设备列表拼接
@@ -273,37 +282,214 @@ def get_work_order(work_order_id: int, db: Session = Depends(get_db)):
     return resp
 
 
+def _next_work_order_no(db: Session) -> str:
+    today_str = date.today().strftime("%Y%m%d")
+    prefix = f"WO-{today_str}-"
+    latest = db.query(WorkOrder).filter(
+        WorkOrder.work_order_no.like(f"{prefix}%")
+    ).order_by(WorkOrder.work_order_no.desc()).first()
+    seq = 1
+    if latest and latest.work_order_no:
+        try:
+            seq = int(latest.work_order_no.split("-")[-1]) + 1
+        except ValueError:
+            seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+def _scope_owner_work_orders(query, db: Session, current_user: User):
+    ids = customer_ids_for_user(db, current_user)
+    if not ids:
+        return query.filter(WorkOrder.id == -1)
+    from app.models.vehicle import Vehicle
+    vehicle_ids = [row.id for row in db.query(Vehicle.id).filter(Vehicle.owner_id.in_(ids)).all()]
+    clauses = [WorkOrder.customer_id.in_(ids)]
+    if vehicle_ids:
+        clauses.append(WorkOrder.vehicle_id.in_(vehicle_ids))
+    return query.filter(or_(*clauses))
+
+
+def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> bool:
+    if not is_owner(current_user):
+        return True
+    ids = set(customer_ids_for_user(db, current_user))
+    if work_order.customer_id in ids:
+        return True
+    if not work_order.vehicle_id or not ids:
+        return False
+    from app.models.vehicle import Vehicle
+    vehicle = db.query(Vehicle).filter(Vehicle.id == work_order.vehicle_id).first()
+    return bool(vehicle and vehicle.owner_id in ids)
+
+
+def _lane_of(work_order: WorkOrder) -> bool:
+    return is_auto_repair_lane(
+        status=work_order.status,
+        vehicle_id=work_order.vehicle_id,
+        appointment_id=work_order.appointment_id,
+        store_id=work_order.store_id,
+    )
+
+
+def _validate_auto_links(db: Session, store_id=None, bay_id=None, vehicle_id=None, customer_id=None, appointment_id=None):
+    from app.models.appointment import Appointment
+    from app.models.customer import Customer
+    from app.models.store import Bay, Store
+    from app.models.vehicle import Vehicle
+
+    if store_id is not None and not db.query(Store.id).filter(Store.id == store_id).first():
+        raise HTTPException(status_code=400, detail="门店不存在")
+    if vehicle_id is not None and not db.query(Vehicle.id).filter(Vehicle.id == vehicle_id).first():
+        raise HTTPException(status_code=400, detail="车辆不存在")
+    if customer_id is not None and not db.query(Customer.id).filter(Customer.id == customer_id).first():
+        raise HTTPException(status_code=400, detail="客户不存在")
+    if appointment_id is not None and not db.query(Appointment.id).filter(Appointment.id == appointment_id).first():
+        raise HTTPException(status_code=400, detail="预约不存在")
+    if bay_id is not None:
+        bay = db.query(Bay).filter(Bay.id == bay_id).first()
+        if not bay:
+            raise HTTPException(status_code=400, detail="工位不存在")
+        if store_id is not None and bay.store_id != store_id:
+            raise HTTPException(status_code=400, detail="工位不属于该门店")
+
+
+def _bind_technician(db: Session, work_order: WorkOrder, technician_id: int) -> User:
+    technician = db.query(User).filter(User.id == technician_id).first()
+    if not technician or not technician.is_active:
+        raise HTTPException(status_code=400, detail="指派的维修员不存在或已停用")
+    if technician.role not in (UserRole.TECHNICIAN.value, UserRole.ADMIN.value):
+        raise HTTPException(status_code=400, detail="被指派人必须是维修员角色")
+    work_order.technician_id = technician.id
+    work_order.assignee_id = technician.id
+    return technician
+
+
+def _complete_linked_appointment(db: Session, appointment_id: int) -> None:
+    from app.models.appointment import Appointment
+    row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if row and row.status == "CONFIRMED":
+        row.status = "COMPLETED"
+
+
 @router.post("/", response_model=WorkOrderResponse, summary="创建草稿工单")
 def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """创建工单草稿，状态为 DRAFT，不触发 AI 分析"""
-    # 自动生成工单编号: WO-YYYYMMDD-NNN
+    """创建工单。工业单仍是草稿；带车辆/门店/预约的汽修单直接进入接车，状态只靠流转接口推进。"""
     if not data.work_order_no:
-        today_str = date.today().strftime("%Y%m%d")
-        prefix = f"WO-{today_str}-"
-        latest = db.query(WorkOrder).filter(
-            WorkOrder.work_order_no.like(f"{prefix}%")
-        ).order_by(WorkOrder.work_order_no.desc()).first()
-        if latest and latest.work_order_no:
-            try:
-                seq = int(latest.work_order_no.split("-")[-1]) + 1
-            except ValueError:
-                seq = 1
-        else:
-            seq = 1
-        data.work_order_no = f"{prefix}{seq:03d}"
+        data.work_order_no = _next_work_order_no(db)
     existing = db.query(WorkOrder).filter(WorkOrder.work_order_no == data.work_order_no).first()
     if existing:
         raise HTTPException(status_code=400, detail="工单编号已存在")
-    work_order = WorkOrder(**data.model_dump(exclude_unset=True))
+    payload = data.model_dump(exclude_unset=True)
+    requested = str(payload.pop("status", "DRAFT") or "DRAFT").upper()
+    payload.pop("created_by", None)
+    requested_tech = payload.pop("technician_id", None)
+    payload.pop("assignee_id", None)
+    auto_lane = bool(payload.get("vehicle_id") or payload.get("appointment_id") or payload.get("store_id"))
+    if auto_lane:
+        _validate_auto_links(
+            db,
+            store_id=payload.get("store_id"),
+            bay_id=payload.get("bay_id"),
+            vehicle_id=payload.get("vehicle_id"),
+            customer_id=payload.get("customer_id"),
+            appointment_id=payload.get("appointment_id"),
+        )
+    work_order = WorkOrder(**payload)
     work_order.created_by = current_user.id
-    # 维修员强制为当前创建者（号主），不可指定他人
-    work_order.technician_id = current_user.id
-    if work_order.status not in (WorkOrderStatus.DRAFT, None):
+    if auto_lane:
+        work_order.status = WorkOrderStatus.DRAFT if requested == "DRAFT" else WorkOrderStatus.INTAKE
+        if requested_tech and current_user.role in (UserRole.ADMIN.value, UserRole.SUPERVISOR.value):
+            _bind_technician(db, work_order, requested_tech)
+        elif current_user.role == UserRole.TECHNICIAN.value:
+            work_order.technician_id = current_user.id
+    else:
+        # 维修员强制为当前创建者（号主），不可指定他人
+        work_order.technician_id = current_user.id
         work_order.status = WorkOrderStatus.DRAFT
     db.add(work_order)
+    db.flush()
+    if auto_lane and work_order.status == WorkOrderStatus.INTAKE:
+        _add_progress_log(
+            db=db,
+            work_order_id=work_order.id,
+            from_status=None,
+            to_status=WorkOrderStatus.INTAKE,
+            operator_id=current_user.id,
+            operator_name=current_user.real_name,
+            source="WEB",
+            remark="接车开单",
+        )
+    if auto_lane and work_order.technician_id:
+        _update_workload(db, work_order.technician_id, +1)
     db.commit()
     db.refresh(work_order)
-    logger.info(f"[WorkOrder] 创建草稿: {work_order.work_order_no}")
+    logger.info(f"[WorkOrder] 创建: {work_order.work_order_no} status={work_order.status}")
+    return _build_work_order_response(work_order, db)
+
+
+@router.post("/from-appointment", response_model=WorkOrderResponse, summary="预约接车开单")
+def create_work_order_from_appointment(
+    data: WorkOrderFromAppointment,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """预约到店：生成 INTAKE 工单并带上车辆、客户、门店、工位。已开过单则直接返回。"""
+    if current_user.role not in (UserRole.ADMIN.value, UserRole.SUPERVISOR.value, UserRole.TECHNICIAN.value):
+        raise HTTPException(status_code=403, detail="仅门店人员可从预约接车")
+    from app.models.appointment import Appointment
+    appointment = db.query(Appointment).filter(Appointment.id == data.appointment_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="预约不存在")
+    if appointment.status in ("CANCELLED", "COMPLETED"):
+        raise HTTPException(status_code=400, detail="该预约已结束，不能接车")
+    existing = db.query(WorkOrder).filter(WorkOrder.appointment_id == appointment.id).first()
+    if existing:
+        return _build_work_order_response(existing, db)
+    bay_id = data.bay_id if data.bay_id is not None else appointment.bay_id
+    _validate_auto_links(
+        db,
+        store_id=appointment.store_id,
+        bay_id=bay_id,
+        vehicle_id=appointment.vehicle_id,
+        customer_id=appointment.customer_id,
+        appointment_id=appointment.id,
+    )
+    description = (data.fault_description or appointment.remark or "预约到店接车").strip()
+    work_order = WorkOrder(
+        work_order_no=_next_work_order_no(db),
+        fault_description=description,
+        vehicle_id=appointment.vehicle_id,
+        customer_id=appointment.customer_id,
+        store_id=appointment.store_id,
+        bay_id=bay_id,
+        appointment_id=appointment.id,
+        status=WorkOrderStatus.INTAKE,
+        created_by=current_user.id,
+        priority="MEDIUM",
+    )
+    if data.technician_id:
+        _bind_technician(db, work_order, data.technician_id)
+    elif current_user.role == UserRole.TECHNICIAN.value:
+        work_order.technician_id = current_user.id
+    if appointment.status == "PENDING":
+        appointment.status = "CONFIRMED"
+    db.add(work_order)
+    db.flush()
+    _add_progress_log(
+        db=db,
+        work_order_id=work_order.id,
+        from_status=None,
+        to_status=WorkOrderStatus.INTAKE,
+        operator_id=current_user.id,
+        operator_name=current_user.real_name,
+        source="WEB",
+        remark=f"预约 #{appointment.id} 接车",
+    )
+    if work_order.technician_id:
+        _update_workload(db, work_order.technician_id, +1)
+    db.commit()
+    db.refresh(work_order)
+    logger.info(f"[WorkOrder] 预约接车: {work_order.work_order_no} appointment={appointment.id}")
     return _build_work_order_response(work_order, db)
 
 
@@ -329,12 +515,20 @@ def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = D
     ):
         raise HTTPException(status_code=403, detail="仅工单创建者、被指派维修员或管理员可编辑此工单")
 
-    for key, val in data.model_dump(exclude_unset=True).items():
+    changes = data.model_dump(exclude_unset=True)
+    # 状态只走 POST /transition。这里丢掉 status，避免保存表单绕过状态机。
+    changes.pop("status", None)
+    for key, val in changes.items():
         # 维修员和创建者不可通过更新修改（维修员锁定为创建者）
         if key in ("technician_id", "created_by"):
             continue
         setattr(work_order, key, val)
-    if work_order.status == WorkOrderStatus.DRAFT and any([work_order.fault_description, work_order.device_id]):
+    # 工业草稿保存后直接进入维修。汽修单留在当前状态，由门店点流转。
+    if (
+        not _lane_of(work_order)
+        and work_order.status == WorkOrderStatus.DRAFT
+        and any([work_order.fault_description, work_order.device_id])
+    ):
         work_order.status = WorkOrderStatus.IN_PROGRESS
     db.commit()
     db.refresh(work_order)
@@ -614,6 +808,8 @@ def _deduct_spare_parts(wo: WorkOrder, db: Session) -> List[dict]:
         qty = part.get("qty", 0)
         if not code or qty <= 0:
             continue
+        if part.get("issued"):
+            continue
 
         spare = db.query(SparePart).filter(SparePart.part_code == code).first()
         if not spare:
@@ -685,7 +881,12 @@ def _ensure_fault_code_mappings(wo: WorkOrder, db: Session):
 # 工业车道原有边全部保留；汽修车道只是在同一张表上追加边。
 
 WORKLOAD_INCREASE_STATUSES = {WorkOrderStatus.ASSIGNED.value}
-WORKLOAD_DECREASE_STATUSES = {WorkOrderStatus.COMPLETED.value, WorkOrderStatus.REJECTED.value}
+WORKLOAD_DECREASE_STATUSES = {
+    WorkOrderStatus.COMPLETED.value,
+    WorkOrderStatus.REJECTED.value,
+    WorkOrderStatus.CANCELLED.value,
+    WorkOrderStatus.CLOSED.value,
+}
 
 
 def _is_allowed_transition(from_status: str, to_status: str) -> bool:
@@ -858,6 +1059,9 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
     old_technician_id = work_order.technician_id
     from_status_enum = work_order.status
 
+    if to_status_val == WorkOrderStatus.CLOSED.value and work_order.appointment_id:
+        _complete_linked_appointment(db, work_order.appointment_id)
+
     if to_status_val == WorkOrderStatus.COMPLETED.value:
         try:
             complete_result = complete_work_order_internal(work_order_id, db)
@@ -898,11 +1102,19 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
     # 钉钉卡片回调走 DINGTALK_CARD 来源，卡片已由 dingtalk_wo_card._dispatch_action 异步刷新，此处跳过避免重复。
     if data.source != "DINGTALK_CARD":
         try:
-            from app.core.dingtalk_wo_card import _refresh_card_async
+            from app.core.dingtalk_wo_card import _notify_supervisor_async, _refresh_card_async
             from app.models.user import User as _User
             _tech = db.query(_User).filter(_User.id == work_order.technician_id).first()
             if _tech and _tech.dingtalk_userid:
                 _refresh_card_async(work_order.id, work_order.work_order_no)
+            # 汽修车道复用主管进度通知。没有绑定钉钉时函数内部会跳过。
+            if _lane_of(work_order):
+                actor = current_user.real_name or current_user.username or ""
+                _notify_supervisor_async(
+                    work_order.id,
+                    STATUS_LABELS.get(to_status_val, to_status_val),
+                    actor,
+                )
         except Exception as e:
             logger.warning(f"[Transition] 钉钉进度卡片刷新失败（不影响工单状态）: {e}")
 
@@ -1106,7 +1318,7 @@ def get_work_order_progress(
     current_user: User = Depends(get_current_user),
 ):
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-    if not work_order:
+    if not work_order or not _owner_may_view(db, current_user, work_order):
         raise HTTPException(status_code=404, detail="工单不存在")
 
     current_status_val = work_order.status.value if work_order.status else None

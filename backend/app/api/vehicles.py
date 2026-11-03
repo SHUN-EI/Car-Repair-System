@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.domain.owner_access import customer_ids_for_user, ensure_customer_for_user, is_owner
 from app.models.customer import Customer
 from app.models.user import User
 from app.models.vehicle import Vehicle
@@ -60,7 +61,12 @@ def list_vehicles(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Vehicle)
-    if owner_id:
+    if is_owner(current_user):
+        ids = customer_ids_for_user(db, current_user)
+        if not ids:
+            return {"total": 0, "items": [], "page": page, "page_size": page_size}
+        query = query.filter(Vehicle.owner_id.in_(ids))
+    elif owner_id:
         query = query.filter(Vehicle.owner_id == owner_id)
     if keyword:
         like = f"%{keyword.strip()}%"
@@ -94,6 +100,10 @@ def get_vehicle(
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="车辆不存在")
+    if is_owner(current_user):
+        ids = set(customer_ids_for_user(db, current_user))
+        if vehicle.owner_id not in ids:
+            raise HTTPException(status_code=404, detail="车辆不存在")
     owner_name = None
     if vehicle.owner_id:
         owner = db.query(Customer).filter(Customer.id == vehicle.owner_id).first()
@@ -110,6 +120,8 @@ def create_vehicle(
     _ensure_writer(current_user)
     plate = _norm_plate(data.plate)
     vin = _norm_vin(data.vin)
+    if is_owner(current_user):
+        data.owner_id = ensure_customer_for_user(db, current_user).id
     _ensure_owner(db, data.owner_id)
     if db.query(Vehicle.id).filter(Vehicle.plate == plate).first():
         raise HTTPException(status_code=400, detail="车牌号已存在")
@@ -140,7 +152,13 @@ def update_vehicle(
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="车辆不存在")
+    if is_owner(current_user):
+        ids = set(customer_ids_for_user(db, current_user))
+        if vehicle.owner_id not in ids:
+            raise HTTPException(status_code=404, detail="车辆不存在")
     changes = data.model_dump(exclude_unset=True)
+    if is_owner(current_user):
+        changes.pop("owner_id", None)
     if "plate" in changes:
         plate = _norm_plate(changes["plate"])
         exists = db.query(Vehicle.id).filter(Vehicle.plate == plate, Vehicle.id != vehicle_id).first()
@@ -177,6 +195,8 @@ def delete_vehicle(
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="车辆不存在")
+    if is_owner(current_user):
+        raise HTTPException(status_code=403, detail="车主不能删除车辆档案，请联系门店")
     db.delete(vehicle)
     try:
         db.commit()

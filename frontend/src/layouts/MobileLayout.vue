@@ -14,14 +14,26 @@
 
     <!-- 底部 Tab -->
     <div class="mobile-tabs" v-if="showTabs">
-      <div class="tab-item" :class="{ active: route.path.startsWith('/m/report') }" @click="$router.push('/m/report')">
-        <span class="tab-icon">+</span>
-        <span class="tab-label">故障上报</span>
-      </div>
-      <div class="tab-item" :class="{ active: route.path.startsWith('/m/queue') }" @click="$router.push('/m/queue')">
-        <span class="tab-icon">#</span>
-        <span class="tab-label">我的工单</span>
-      </div>
+      <template v-if="isOwner">
+        <div class="tab-item" :class="{ active: route.path.startsWith('/m/book') }" @click="$router.push('/m/book')">
+          <span class="tab-icon">+</span>
+          <span class="tab-label">预约</span>
+        </div>
+        <div class="tab-item" :class="{ active: route.path.startsWith('/m/progress') }" @click="$router.push('/m/progress')">
+          <span class="tab-icon">#</span>
+          <span class="tab-label">进度</span>
+        </div>
+      </template>
+      <template v-else>
+        <div class="tab-item" :class="{ active: route.path.startsWith('/m/report') }" @click="$router.push('/m/report')">
+          <span class="tab-icon">+</span>
+          <span class="tab-label">故障上报</span>
+        </div>
+        <div class="tab-item" :class="{ active: route.path.startsWith('/m/queue') }" @click="$router.push('/m/queue')">
+          <span class="tab-icon">#</span>
+          <span class="tab-label">我的工单</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -31,11 +43,17 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
-const showBack = computed(() => !['/m/report', '/m/queue'].includes(route.path))
-const showTabs = computed(() => ['/m/report', '/m/queue'].includes(route.path))
+const savedUser = (() => {
+  try { return JSON.parse(localStorage.getItem('current_user') || '{}') } catch { return {} }
+})()
+const isOwner = computed(() => savedUser.role === 'OWNER')
+const ownerRoots = ['/m/book', '/m/progress']
+const techRoots = ['/m/report', '/m/queue']
+const showBack = computed(() => !(isOwner.value ? ownerRoots : techRoots).includes(route.path))
+const showTabs = computed(() => (isOwner.value ? ownerRoots : techRoots).includes(route.path) || (isOwner.value && route.path.startsWith('/m/progress')))
 const title = computed(() => route.meta?.title || '维修助手')
 
-const user = { name: '张工' } // 后续从钉钉免登获取
+const user = { name: savedUser.name || '用户' }
 const showUserMenu = ref(false)
 </script>
 

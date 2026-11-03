@@ -85,6 +85,7 @@
             <el-option label="管理员" value="ADMIN" />
             <el-option label="技术员" value="TECHNICIAN" />
             <el-option label="主管" value="SUPERVISOR" />
+            <el-option label="车主" value="OWNER" />
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
@@ -161,7 +162,7 @@ const form = ref({
   role: 'TECHNICIAN', is_active: true
 })
 
-const roleMap = { ADMIN: '管理员', TECHNICIAN: '技术员', SUPERVISOR: '主管' }
+const roleMap = { ADMIN: '管理员', TECHNICIAN: '技术员', SUPERVISOR: '主管', OWNER: '车主' }
 const roleLabel = (r) => roleMap[r] || r
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 

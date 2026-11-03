@@ -62,6 +62,9 @@ const router = createRouter({
         { path: 'report', name: 'MobileReport', component: () => import('../views/mobile/WorkerSubmit.vue'), meta: { title: '故障上报' } },
         { path: 'queue', name: 'TechQueue', component: () => import('../views/mobile/TechQueue.vue'), meta: { title: '我的工单' } },
         { path: 'detail/:id', name: 'TechDetail', component: () => import('../views/mobile/TechDetail.vue'), meta: { title: '工单详情' } },
+        { path: 'book', name: 'OwnerBook', component: () => import('../views/mobile/OwnerBook.vue'), meta: { title: '预约到店' } },
+        { path: 'progress', name: 'OwnerProgress', component: () => import('../views/mobile/OwnerProgress.vue'), meta: { title: '维保进度' } },
+        { path: 'progress/:id', name: 'OwnerProgressDetail', component: () => import('../views/mobile/OwnerProgress.vue'), meta: { title: '工单进度' } },
       ]
     }
   ]
@@ -69,13 +72,19 @@ const router = createRouter({
 
 // 全局导航守卫：未登录跳转登录页
 router.beforeEach((to, from, next) => {
+  const raw = localStorage.getItem('current_user')
+  let role = ''
+  try { role = raw ? JSON.parse(raw).role : '' } catch { role = '' }
   if (!to.meta.noAuth) {
     const token = localStorage.getItem('auth_token')
-    const user = localStorage.getItem('current_user')
-    if (!token && !user) {
+    if (!token && !raw) {
       next('/login')
       return
     }
+  }
+  if (role === 'OWNER' && (to.path === '/m' || to.path.startsWith('/m/report') || to.path.startsWith('/m/queue'))) {
+    next('/m/book')
+    return
   }
   next()
 })

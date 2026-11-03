@@ -175,6 +175,65 @@ def delete_spare_part(part_id: int, db: Session = Depends(get_db)):
 
 # ==================== 进货单批量导入 ====================
 
+class SparePartIssueRequest(BaseModel):
+    work_order_id: int
+    part_code: str
+    qty: int
+
+
+@router.post("/issue", summary="在修工单领料出库")
+def issue_spare_part(
+    data: SparePartIssueRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """在修工单领用备件：立刻扣库存，并记到 used_parts。完工扣减会跳过已领出的行。"""
+    from app.domain.work_order_status import parts_issue_allowed, status_value
+    from app.models.work_order import WorkOrder
+
+    if current_user.role == "SUPERVISOR":
+        raise HTTPException(status_code=403, detail="主管仅可查看库存，领料请由维修员或管理员操作")
+    code = (data.part_code or "").strip()
+    if not code or data.qty <= 0:
+        raise HTTPException(status_code=400, detail="请填写备件编码和大于 0 的数量")
+    work_order = db.query(WorkOrder).filter(WorkOrder.id == data.work_order_id).first()
+    if not work_order:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if not parts_issue_allowed(work_order.status):
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前状态 {status_value(work_order.status)} 不可领料",
+        )
+    spare = db.query(SparePart).filter(SparePart.part_code == code).first()
+    if not spare:
+        raise HTTPException(status_code=404, detail="备件不存在")
+    if spare.stock_quantity < data.qty:
+        raise HTTPException(status_code=400, detail=f"库存不足，当前 {spare.stock_quantity}")
+
+    spare.stock_quantity -= data.qty
+    used = list(work_order.used_parts or [])
+    used.append({
+        "name": spare.part_name,
+        "code": spare.part_code,
+        "qty": data.qty,
+        "issued": True,
+    })
+    work_order.used_parts = used
+    db.commit()
+    cache_service.invalidate_pattern("stock_alerts:*")
+    cache_service.delete(f"spare_part:{spare.id}")
+    logger.info(
+        f"[SpareParts] 领料 {spare.part_code} x{data.qty} → 工单 {work_order.work_order_no}，剩余 {spare.stock_quantity}"
+    )
+    return {
+        "work_order_id": work_order.id,
+        "part_code": spare.part_code,
+        "part_name": spare.part_name,
+        "qty": data.qty,
+        "remaining_stock": spare.stock_quantity,
+    }
+
+
 @router.post("/import", response_model=PurchaseImportResult, summary="进货单批量导入")
 def import_purchase_orders(req: PurchaseImportRequest, db: Session = Depends(get_db)):
     """

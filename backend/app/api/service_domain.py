@@ -3,6 +3,7 @@
 风格对齐设备与备件：分页列表、按 id 读写、登录后访问。
 主管只读，和设备台账一致。
 """
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,17 +11,27 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.domain.appointment_slots import (
+    BUSY_APPOINTMENT_STATUSES,
+    build_slot_grid,
+    busy_key,
+    is_bookable_slot,
+    normalize_slot,
+)
 from app.domain.appointment_status import (
     APPOINTMENT_STATUSES,
     appointment_targets,
     is_allowed_appointment_transition,
 )
+from app.domain.owner_access import customer_ids_for_user, ensure_customer_for_user, is_owner
 from app.models.appointment import Appointment
 from app.models.customer import Customer
 from app.models.part_sku import PartSku
 from app.models.store import Bay, Store
 from app.models.user import User
 from app.models.vehicle import Vehicle
+from pydantic import BaseModel
+
 from app.schemas import (
     AppointmentCreate, AppointmentResponse, AppointmentUpdate,
     BayCreate, BayResponse, BayUpdate,
@@ -270,6 +281,112 @@ def delete_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = 
 
 # ==================== 预约 ====================
 
+class AppointmentBook(BaseModel):
+    store_id: int
+    bay_id: int
+    vehicle_id: int
+    scheduled_at: datetime
+    remark: Optional[str] = None
+
+
+@appointments_router.get("/slots", summary="可预约时段")
+def list_appointment_slots(
+    store_id: int = Query(...),
+    day: date = Query(..., description="日期 YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    store = db.query(Store).filter(Store.id == store_id, Store.is_active.is_(True)).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="门店不存在或未营业")
+    bays = (
+        db.query(Bay)
+        .filter(Bay.store_id == store_id, Bay.is_active.is_(True))
+        .order_by(Bay.id.asc())
+        .all()
+    )
+    day_start = datetime(day.year, day.month, day.day)
+    day_end = datetime(day.year, day.month, day.day, 23, 59, 59)
+    taken = (
+        db.query(Appointment)
+        .filter(
+            Appointment.store_id == store_id,
+            Appointment.status.in_(BUSY_APPOINTMENT_STATUSES),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at <= day_end,
+        )
+        .all()
+    )
+    busy = set()
+    for row in taken:
+        key = busy_key(row.bay_id, row.scheduled_at)
+        if key:
+            busy.add(key)
+    slots = build_slot_grid(
+        day,
+        [{"id": bay.id, "name": bay.name, "code": bay.code} for bay in bays],
+        busy,
+    )
+    return {
+        "store_id": store.id,
+        "store_name": store.name,
+        "date": day.isoformat(),
+        "open_hour": 9,
+        "close_hour": 18,
+        "slots": slots,
+    }
+
+
+@appointments_router.post("/book", response_model=AppointmentResponse, summary="车主预约")
+def book_appointment(
+    data: AppointmentBook,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role == "SUPERVISOR":
+        raise HTTPException(status_code=403, detail="主管仅可查看预约")
+    if not is_bookable_slot(data.scheduled_at):
+        raise HTTPException(status_code=400, detail="请选择营业时间内的整点时段（09:00-17:00）")
+    vehicle = _must(db, Vehicle, data.vehicle_id, "车辆")
+    bay = _must(db, Bay, data.bay_id, "工位")
+    if bay.store_id != data.store_id or not bay.is_active:
+        raise HTTPException(status_code=400, detail="工位不属于该门店或已停用")
+    _must(db, Store, data.store_id, "门店")
+    if is_owner(current_user):
+        customer = ensure_customer_for_user(db, current_user)
+        if vehicle.owner_id != customer.id:
+            raise HTTPException(status_code=403, detail="只能预约自己的车辆")
+        customer_id = customer.id
+    else:
+        if not vehicle.owner_id:
+            raise HTTPException(status_code=400, detail="车辆还没有车主，请先在车辆档案绑定客户")
+        customer_id = vehicle.owner_id
+    slot = normalize_slot(data.scheduled_at)
+    clash = (
+        db.query(Appointment.id)
+        .filter(
+            Appointment.bay_id == data.bay_id,
+            Appointment.status.in_(BUSY_APPOINTMENT_STATUSES),
+            Appointment.scheduled_at == slot,
+        )
+        .first()
+    )
+    if clash:
+        raise HTTPException(status_code=400, detail="该工位时段已被预约")
+    row = Appointment(
+        store_id=data.store_id,
+        bay_id=data.bay_id,
+        customer_id=customer_id,
+        vehicle_id=vehicle.id,
+        scheduled_at=slot,
+        status="PENDING",
+        remark=(data.remark or "").strip() or None,
+    )
+    db.add(row)
+    _commit(db, "预约保存失败")
+    db.refresh(row)
+    return _appointment_out(row)
+
 def _appointment_out(row: Appointment) -> AppointmentResponse:
     resp = AppointmentResponse.model_validate(row)
     resp.allowed_transitions = appointment_targets(row.status)
@@ -298,6 +415,11 @@ def list_appointments(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Appointment)
+    if is_owner(current_user):
+        ids = customer_ids_for_user(db, current_user)
+        if not ids:
+            return {"total": 0, "items": [], "page": page, "page_size": page_size}
+        query = query.filter(Appointment.customer_id.in_(ids))
     if store_id:
         query = query.filter(Appointment.store_id == store_id)
     if status:

@@ -540,6 +540,18 @@ class GuidedRepairAgent:
 - "1. 问题分析：... 2. 可能原因：(1)... 3. 排查方向：... 4. 处理方案：... 5. 预防建议：..."这是问答模式的完整分析格式，追踪模式不能用！
 应改为："可疑原因第一是XXX，第二是XXX；综合考虑先查XXX"——分条 + 收敛到唯一一步。"""
 
+    CONSULT_CHAT_SYSTEM_PROMPT = """你是门店的车主问诊助手。通过多轮对话，把车主描述的症状收成可执行的建议：症状理解、建议项目、是否预约。
+
+## 规则
+1. 只引用「知识库参考」里写明的内容。没有的零件、价格、工期、保养间隔不要编。
+2. 不要输出命中率、置信度或系统指标。
+3. 每次回复都包含这三段，可以很短：
+【症状】复述当前现象，对应到案例中的症状。案例没有就说明未覆盖。
+【建议项目】只列案例里的检查或保养项目。没有就写「知识库未给出可执行项目」。
+【是否预约】案例表明需要进店或有安全风险时建议预约；信息不足时写「建议预约到店，由技师现场确认」。
+4. 知识库参考为空时，不要编排查步骤，直接建议预约到店。
+5. 车主说「不用了」「先不到店」时，停止劝预约，简短收束。"""
+
     def chat(self, session_id: str, message: str, device_type: str = "") -> str:
         """对话式追踪：用户发消息，AI 流式回复"""
         # 三层阀门：①regex 错误码 ②关键词 → 都不过则 ③ 检索判定（cases 空=无关）
@@ -624,7 +636,7 @@ class GuidedRepairAgent:
         finally:
             self._save_session(session_id, session)
 
-    async def achat(self, session_id: str, message: str, device_type: str = ""):
+    async def achat(self, session_id: str, message: str, device_type: str = "", scene: str = ""):
         """对话式追踪（异步流式，用于 SSE 端点，避免线程池死锁）"""
         # 三层闸门（同 chat）
         fast = _repair_intent_fast_check(message)
@@ -643,7 +655,11 @@ class GuidedRepairAgent:
                 "created_at": time.time(),
                 "step_count": 0,
                 "cases": [],
+                "scene": (scene or "").strip().lower(),
             }
+        elif scene and not session.get("scene"):
+            session["scene"] = scene.strip().lower()
+        consult = session.get("scene") == "consult"
         session["step_count"] += 1
         session["last_user"] = message
 
@@ -668,7 +684,32 @@ class GuidedRepairAgent:
         for h in session.get("chat_history", []):
             history_text += f"\n维修员: {h['user']}\n你: {h['ai']}\n"
 
-        if session["step_count"] == 1:
+        if consult:
+            empty_ref = "未检索到匹配案例。请告知车主知识库未覆盖该症状，建议预约到店由技师确认。不得编造项目。"
+            if session["step_count"] == 1:
+                user_prompt = f"""## 车主描述
+{message}
+车辆/系统: {device_type or '未指定'}
+
+## 知识库参考
+{cases_text if cases_text else empty_ref}
+
+## 任务
+这是第一轮。按系统提示输出【症状】【建议项目】【是否预约】。"""
+            else:
+                user_prompt = f"""## 车主补充
+{message}
+
+## 对话历史
+{history_text}
+
+## 知识库参考
+{cases_text if cases_text else empty_ref}
+
+## 当前是第 {session['step_count']} 轮
+根据补充继续这三段。车主明确不到店时停止劝预约。"""
+            system_prompt = self.CONSULT_CHAT_SYSTEM_PROMPT
+        elif session["step_count"] == 1:
             user_prompt = f"""## 设备故障描述
 {message}
 设备类型: {device_type or '未指定'}
@@ -678,6 +719,7 @@ class GuidedRepairAgent:
 
 ## 任务
 这是维修员首次描述故障现象。请根据系统提示词中的"首次对话"规则，引导维修员排查。返回时务必包含【分析】和【操作】两部分。"""
+            system_prompt = self.CHAT_SYSTEM_PROMPT
         else:
             user_prompt = f"""## 维修员反馈
 {message}
@@ -692,9 +734,10 @@ class GuidedRepairAgent:
 根据维修员的反馈，给出下一步排查方向（只给一步）。返回时务必包含【分析】和【操作】两部分。
 如果反馈表明问题已解决（提到"解决了"/"正常了"/"修好了"等），请表示问题已解决并简短总结。
 注意：不要重复之前已经排查过的方向。"""
+            system_prompt = self.CHAT_SYSTEM_PROMPT
 
         messages = [
-            SystemMessage(content=self.CHAT_SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
         ]
 
