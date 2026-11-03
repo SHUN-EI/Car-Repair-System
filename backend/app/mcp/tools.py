@@ -37,6 +37,12 @@ STATUS_CN = {
     "STANDARDIZED": "已标准化",
     "CLASSIFIED": "已分类",
     "APPROVED": "已审核",
+    "INTAKE": "接车",
+    "DIAGNOSING": "诊断中",
+    "QUOTING": "报价中",
+    "QC": "质检",
+    "CLOSED": "已结案",
+    "CANCELLED": "已取消",
 }
 
 # 进行中的状态（用于"我的待办"）
@@ -48,6 +54,11 @@ ACTIVE_STATUS = (
     WorkOrderStatus.INSPECTING,
     WorkOrderStatus.IN_PROGRESS,
     WorkOrderStatus.ARCHIVING,
+    WorkOrderStatus.INTAKE,
+    WorkOrderStatus.DIAGNOSING,
+    WorkOrderStatus.QUOTING,
+    WorkOrderStatus.APPROVED,
+    WorkOrderStatus.QC,
 )
 
 

@@ -240,6 +240,13 @@ const statusMap = {
   DRAFT: '草稿',
   IN_PROGRESS: '维修中',
   COMPLETED: '已完成',
+  INTAKE: '接车',
+  DIAGNOSING: '诊断中',
+  QUOTING: '报价中',
+  APPROVED: '报价已确认',
+  QC: '质检',
+  CLOSED: '已结案',
+  CANCELLED: '已取消',
 }
 const statusLabel = (s) => statusMap[s] || s
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'

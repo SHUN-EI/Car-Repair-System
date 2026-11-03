@@ -1,5 +1,4 @@
 from sqlalchemy import Column, String, Integer, Float, ForeignKey
-from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
 
 
@@ -16,6 +15,7 @@ class SparePart(BaseModel):
     device_type = Column(String(100))
     location = Column(String(200))
     supplier = Column(String(200))
+    sku_id = Column(Integer, ForeignKey("part_skus.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联配件目录 SKU")
 
     def __repr__(self):
         return f"<SparePart(part_code='{self.part_code}', part_name='{self.part_name}')>"

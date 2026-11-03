@@ -50,7 +50,10 @@ const tabs = ref([
 ])
 const list = ref([])
 
-const statusLabel = (s) => ({ ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成' }[s] || s)
+const statusLabel = (s) => ({
+  ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成',
+  INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中', QC: '质检', CLOSED: '已结案', CANCELLED: '已取消', APPROVED: '报价已确认',
+}[s] || s)
 
 const fetchData = async () => {
   try {

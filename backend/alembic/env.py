@@ -19,6 +19,11 @@ from app.models.spare_part import SparePart  # noqa: F401
 from app.models.category import Category  # noqa: F401
 from app.models.work_order_import import WorkOrderImportBatch, WorkOrderImportItem  # noqa: F401
 from app.models.manual_code import ManualCodeEntry  # noqa: F401
+from app.models.customer import Customer  # noqa: F401
+from app.models.store import Store, Bay  # noqa: F401
+from app.models.vehicle import Vehicle  # noqa: F401
+from app.models.appointment import Appointment  # noqa: F401
+from app.models.part_sku import PartSku  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

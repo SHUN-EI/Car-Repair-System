@@ -78,6 +78,14 @@ def _status_cn(status: Optional[str]) -> str:
         "ARCHIVING": "待归档",
         "ARCHIVED": "已归档",
         "COMPLETED": "已完成",
+        "REJECTED": "已退回",
+        "APPROVED": "报价已确认",
+        "INTAKE": "接车",
+        "DIAGNOSING": "诊断中",
+        "QUOTING": "报价中",
+        "QC": "质检",
+        "CLOSED": "已结案",
+        "CANCELLED": "已取消",
     }.get(status or "", status or "-")
 
 
@@ -209,8 +217,9 @@ def send_progress_card(
 def _refresh_card(wo, out_track_id: str, extra_markdown: str = "") -> None:
     """根据当前状态刷新卡片按钮"""
     status = wo.status.value if wo.status else None
-    if status == "COMPLETED":
-        update_card(out_track_id, f"工单完成: {wo.work_order_no}", _card_markdown(wo), [])
+    if status in ("COMPLETED", "CLOSED", "CANCELLED"):
+        title = "工单完成" if status == "COMPLETED" else ("已结案" if status == "CLOSED" else "已取消")
+        update_card(out_track_id, f"{title}: {wo.work_order_no}", _card_markdown(wo), [])
         return
     if status == "ARCHIVING":
         markdown = _card_markdown(wo) + "\n\n> 维修已完成，请在系统『维修报表』完善表单后完成工单归档。"

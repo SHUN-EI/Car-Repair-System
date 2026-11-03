@@ -101,6 +101,11 @@ class WorkOrderCreate(BaseModel):
     status: Optional[str] = "DRAFT"
     tags: Optional[List[str]] = None
     created_by: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    store_id: Optional[int] = None
+    bay_id: Optional[int] = None
+    appointment_id: Optional[int] = None
 
 
 class WorkOrderUpdate(BaseModel):
@@ -132,6 +137,11 @@ class WorkOrderUpdate(BaseModel):
     location: Optional[str] = None
     status: Optional[str] = None
     tags: Optional[List[str]] = None
+    vehicle_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    store_id: Optional[int] = None
+    bay_id: Optional[int] = None
+    appointment_id: Optional[int] = None
 
 
 class WorkOrderResponse(BaseModel):
@@ -176,6 +186,13 @@ class WorkOrderResponse(BaseModel):
     created_by: Optional[int] = None
     created_by_employee_id: Optional[str] = None
     technician_name: Optional[str] = None
+    vehicle_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    store_id: Optional[int] = None
+    bay_id: Optional[int] = None
+    appointment_id: Optional[int] = None
+    vehicle_plate: Optional[str] = None
+    allowed_transitions: List[str] = []
     progress_logs: List["WorkOrderProgressLogResponse"] = []
 
     model_config = {"from_attributes": True}
@@ -348,6 +365,7 @@ class SparePartCreate(BaseModel):
     device_type: Optional[str] = None
     location: Optional[str] = None
     supplier: Optional[str] = None
+    sku_id: Optional[int] = None
 
 
 class SparePartUpdate(BaseModel):
@@ -360,6 +378,7 @@ class SparePartUpdate(BaseModel):
     device_type: Optional[str] = None
     location: Optional[str] = None
     supplier: Optional[str] = None
+    sku_id: Optional[int] = None
 
 
 class SparePartResponse(BaseModel):
@@ -374,6 +393,7 @@ class SparePartResponse(BaseModel):
     device_type: Optional[str]
     location: Optional[str]
     supplier: Optional[str]
+    sku_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -553,6 +573,199 @@ class LeaveRequestResponse(BaseModel):
     # 辅助计算属性
     on_duty_after: Optional[dict] = None  # {date: remaining_count} 审批通过后每天剩余值班人数
     pending_work_orders: Optional[List[dict]] = None  # 审批时返回未完成工单冲突警告
+
+    model_config = {"from_attributes": True}
+
+
+# ==================== Phase 0 汽修域骨架 ====================
+class CustomerCreate(BaseModel):
+    name: str = Field(..., max_length=100)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = None
+    id_no: Optional[str] = Field(None, max_length=30)
+    remark: Optional[str] = None
+    user_id: Optional[int] = None
+
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = None
+    id_no: Optional[str] = Field(None, max_length=30)
+    remark: Optional[str] = None
+    user_id: Optional[int] = None
+
+
+class CustomerResponse(BaseModel):
+    id: int
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    id_no: Optional[str] = None
+    remark: Optional[str] = None
+    user_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class StoreCreate(BaseModel):
+    code: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=200)
+    address: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    is_active: Optional[bool] = True
+
+
+class StoreUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    address: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    is_active: Optional[bool] = None
+
+
+class StoreResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BayCreate(BaseModel):
+    store_id: int
+    code: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=100)
+    bay_type: Optional[str] = "通用"
+    is_active: Optional[bool] = True
+
+
+class BayUpdate(BaseModel):
+    code: Optional[str] = Field(None, max_length=50)
+    name: Optional[str] = Field(None, max_length=100)
+    bay_type: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class BayResponse(BaseModel):
+    id: int
+    store_id: int
+    code: str
+    name: str
+    bay_type: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class VehicleCreate(BaseModel):
+    plate: str = Field(..., max_length=20)
+    vin: Optional[str] = Field(None, max_length=17)
+    make: Optional[str] = Field(None, max_length=50)
+    model: Optional[str] = Field(None, max_length=80)
+    year: Optional[int] = Field(None, ge=1980, le=2100)
+    owner_id: Optional[int] = None
+
+
+class VehicleUpdate(BaseModel):
+    plate: Optional[str] = Field(None, max_length=20)
+    vin: Optional[str] = Field(None, max_length=17)
+    make: Optional[str] = Field(None, max_length=50)
+    model: Optional[str] = Field(None, max_length=80)
+    year: Optional[int] = Field(None, ge=1980, le=2100)
+    owner_id: Optional[int] = None
+
+
+class VehicleResponse(BaseModel):
+    id: int
+    plate: str
+    vin: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AppointmentCreate(BaseModel):
+    store_id: int
+    bay_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    scheduled_at: datetime
+    remark: Optional[str] = None
+
+
+class AppointmentUpdate(BaseModel):
+    bay_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    scheduled_at: Optional[datetime] = None
+    status: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class AppointmentResponse(BaseModel):
+    id: int
+    store_id: int
+    bay_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    scheduled_at: datetime
+    status: str
+    remark: Optional[str] = None
+    allowed_transitions: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PartSkuCreate(BaseModel):
+    code: str = Field(..., max_length=50)
+    name: str = Field(..., max_length=200)
+    brand: Optional[str] = Field(None, max_length=100)
+    unit: Optional[str] = "个"
+    list_price: Optional[float] = Field(0.0, ge=0)
+    cost_price: Optional[float] = Field(0.0, ge=0)
+    specification: Optional[str] = None
+    is_active: Optional[bool] = True
+
+
+class PartSkuUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    brand: Optional[str] = Field(None, max_length=100)
+    unit: Optional[str] = None
+    list_price: Optional[float] = Field(None, ge=0)
+    cost_price: Optional[float] = Field(None, ge=0)
+    specification: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PartSkuResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    brand: Optional[str] = None
+    unit: Optional[str] = None
+    list_price: Optional[float] = 0.0
+    cost_price: Optional[float] = 0.0
+    specification: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 

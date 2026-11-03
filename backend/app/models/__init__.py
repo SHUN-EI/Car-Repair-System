@@ -16,6 +16,11 @@ from app.models.leave_request import (
 from app.models.sys_config import SysConfig
 from app.models.notification import Notification
 from app.models.manual_code import ManualCodeEntry
+from app.models.customer import Customer
+from app.models.store import Store, Bay
+from app.models.vehicle import Vehicle
+from app.models.appointment import Appointment
+from app.models.part_sku import PartSku
 
 __all__ = [
     "Device", "WorkOrder", "WorkOrderStatus",
@@ -33,4 +38,9 @@ __all__ = [
     "SysConfig",
     "Notification",
     "ManualCodeEntry",
+    "Customer",
+    "Store", "Bay",
+    "Vehicle",
+    "Appointment",
+    "PartSku",
 ]
