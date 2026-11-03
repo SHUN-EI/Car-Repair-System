@@ -83,6 +83,49 @@ async def get_workorder_stats() -> str:
     return await _call(tools.get_workorder_stats, 10.0)
 
 
+@mcp.tool()
+async def query_compatible_parts(
+    brand: str = "",
+    series: str = "",
+    year: int = 0,
+    engine: str = "",
+    plate: str = "",
+    keyword: str = "",
+) -> str:
+    """按品牌、车系、年款、发动机或车牌查询适配备件和库存。year 传 0 表示不限年款。"""
+    return await _call(
+        tools.query_compatible_parts, 10.0,
+        brand, series, year, engine, plate, keyword,
+    )
+
+
+@mcp.tool()
+async def recommend_service(
+    brand: str = "",
+    series: str = "",
+    mileage: int = -1,
+    symptoms: str = "",
+    plate: str = "",
+) -> str:
+    """按车型、里程和症状推荐保养套餐。mileage 传 -1 表示未知里程。"""
+    return await _call(tools.recommend_service, 10.0, brand, series, mileage, symptoms, plate)
+
+
+@mcp.tool()
+async def draft_quote(
+    work_order_id: int = 0,
+    consult_text: str = "",
+    mileage: int = -1,
+    symptoms: str = "",
+    include_packages: bool = False,
+) -> str:
+    """根据工单领料、问诊建议或保养套餐生成报价草案。只生成草案，不确认、不收款。"""
+    return await _call(
+        tools.draft_quote, 10.0,
+        work_order_id, consult_text, mileage, symptoms, include_packages,
+    )
+
+
 def mcp_http_app():
     """返回可挂载到 FastAPI 的 Starlette app
 

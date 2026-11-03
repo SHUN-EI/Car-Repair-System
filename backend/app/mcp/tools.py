@@ -633,6 +633,112 @@ def get_workorder_stats() -> str:
         db.close()
 
 
+# ============================================================
+# 9. 适配备件 / 保养推荐 / 报价草案
+# ============================================================
+def query_compatible_parts(
+    brand: str = "",
+    series: str = "",
+    year: int = 0,
+    engine: str = "",
+    plate: str = "",
+    keyword: str = "",
+) -> str:
+    """按品牌、车系、年款、发动机或车牌列出适配备件和库存。year 传 0 表示不限年款。"""
+    from app.agents.inventory_tools import format_compatible_text, list_compatible_parts, resolve_fitment_spec
+    from app.domain.fitment import spec_is_empty
+
+    db = SessionLocal()
+    try:
+        spec, error = resolve_fitment_spec(
+            db,
+            plate=plate or None,
+            brand=brand or None,
+            series=series or None,
+            year=year or None,
+            engine=engine or None,
+        )
+        if error:
+            return error
+        if spec_is_empty(spec):
+            return "请提供品牌、车系、年款、发动机或车牌。例如：大众 速腾 2018 1.4T。"
+        parts = list_compatible_parts(
+            db,
+            brand=spec["brand"],
+            series=spec["series"],
+            year=spec["year"],
+            engine=spec["engine"],
+            keyword=keyword or None,
+            limit=20,
+        )
+        return format_compatible_text(spec, parts)
+    finally:
+        db.close()
+
+
+def recommend_service(
+    brand: str = "",
+    series: str = "",
+    mileage: int = -1,
+    symptoms: str = "",
+    plate: str = "",
+) -> str:
+    """按车型、里程和症状推荐保养套餐。mileage 传 -1 表示未知里程。"""
+    from app.agents.service_tools import format_recommendation, recommend_service_packages
+
+    db = SessionLocal()
+    try:
+        result = recommend_service_packages(
+            db,
+            plate=plate or None,
+            brand=brand or None,
+            series=series or None,
+            mileage=None if mileage is None or mileage < 0 else mileage,
+            symptoms=symptoms or None,
+        )
+        return format_recommendation(result)
+    finally:
+        db.close()
+
+
+def draft_quote(
+    work_order_id: int = 0,
+    consult_text: str = "",
+    mileage: int = -1,
+    symptoms: str = "",
+    include_packages: bool = False,
+) -> str:
+    """根据工单领料、问诊建议或保养套餐生成报价草案。不自动确认，也不收款。"""
+    from app.domain.quote_service import QuoteError, create_draft
+
+    if not work_order_id and not (consult_text or "").strip() and not include_packages:
+        return "请提供工单号对应的工单 id、问诊建议，或打开套餐推荐。"
+    db = SessionLocal()
+    try:
+        quote = create_draft(
+            db,
+            work_order_id=work_order_id or None,
+            consult_text=consult_text or None,
+            mileage=None if mileage is None or mileage < 0 else mileage,
+            symptoms=symptoms or None,
+            include_packages=bool(include_packages),
+            include_used_parts=bool(work_order_id),
+        )
+        lines = [
+            f"已生成报价草案 {quote.quote_no}，状态：草案，合计 {quote.total} 元。",
+            "店员确认前不会请车主确认，也不会创建支付单。",
+        ]
+        if quote.note:
+            lines.append(quote.note)
+        for line in quote.lines or []:
+            lines.append(f"- {line.name} x{line.qty:g} 单价 {line.unit_price} 小计 {line.amount}")
+        return "\n".join(lines)
+    except QuoteError as exc:
+        return str(exc)
+    finally:
+        db.close()
+
+
 # 工具注册表：供 MCP Server 和测试使用
 TOOLS: Dict[str, Dict] = {
     "search_knowledge": {
@@ -682,5 +788,39 @@ TOOLS: Dict[str, Dict] = {
         "fn": get_workorder_stats,
         "description": "查询工单统计（总量/进行中/已完成）。",
         "parameters": {},
+    },
+    "query_compatible_parts": {
+        "fn": query_compatible_parts,
+        "description": "按品牌、车系、年款、发动机或车牌查询适配备件和库存。year 传 0 表示不限年款。",
+        "parameters": {
+            "brand": {"type": "string", "description": "品牌，对应车辆品牌", "required": False},
+            "series": {"type": "string", "description": "车系，对应车辆车型", "required": False},
+            "year": {"type": "integer", "description": "年款，0 表示不限", "required": False},
+            "engine": {"type": "string", "description": "发动机", "required": False},
+            "plate": {"type": "string", "description": "车牌，能在档案里找到时优先用档案", "required": False},
+            "keyword": {"type": "string", "description": "备件名称或编码", "required": False},
+        },
+    },
+    "recommend_service": {
+        "fn": recommend_service,
+        "description": "按车型、里程和症状推荐保养套餐。mileage 传 -1 表示未知里程。",
+        "parameters": {
+            "brand": {"type": "string", "description": "品牌", "required": False},
+            "series": {"type": "string", "description": "车系", "required": False},
+            "mileage": {"type": "integer", "description": "里程公里，-1 表示未知", "required": False},
+            "symptoms": {"type": "string", "description": "症状描述", "required": False},
+            "plate": {"type": "string", "description": "车牌", "required": False},
+        },
+    },
+    "draft_quote": {
+        "fn": draft_quote,
+        "description": "根据工单领料、问诊建议或保养套餐生成报价草案，不确认、不收款。",
+        "parameters": {
+            "work_order_id": {"type": "integer", "description": "工单 id，0 表示不关联工单", "required": False},
+            "consult_text": {"type": "string", "description": "问诊建议原文", "required": False},
+            "mileage": {"type": "integer", "description": "里程公里，-1 表示未知", "required": False},
+            "symptoms": {"type": "string", "description": "症状", "required": False},
+            "include_packages": {"type": "boolean", "description": "是否写入匹配的保养套餐", "required": False},
+        },
     },
 }

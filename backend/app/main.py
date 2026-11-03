@@ -30,6 +30,9 @@ from app.api.service_domain import (
     appointments_router,
     part_skus_router,
 )
+from app.api.service_catalog import packages_router, skus_router
+from app.api.quotes import router as quotes_router
+from app.api.payments import router as payments_router
 from app.api.manual_codes import router as manual_codes_router
 from app.api.dingtalk import router as dingtalk_router, ensure_oa_services_started
 from app.api.session import router as session_router
@@ -133,6 +136,10 @@ app.include_router(stores_router, prefix="/api/v1/stores", tags=["门店"])
 app.include_router(bays_router, prefix="/api/v1/bays", tags=["工位"])
 app.include_router(appointments_router, prefix="/api/v1/appointments", tags=["预约"])
 app.include_router(part_skus_router, prefix="/api/v1/part-skus", tags=["配件目录"])
+app.include_router(packages_router, prefix="/api/v1/service-packages", tags=["保养套餐"])
+app.include_router(skus_router, prefix="/api/v1/service-skus", tags=["服务项目"])
+app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["报价"])
+app.include_router(payments_router, prefix="/api/v1/payments", tags=["支付占位"])
 
 # ============================================================
 # MCP Server（Streamable HTTP）：仅本机可访问，可配置 API Key

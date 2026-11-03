@@ -181,8 +181,45 @@ class AnswerGenerator:
     def handle_inventory_query(self, question: str, db: Session) -> AnswerResult:
         """处理库存查询：从 SparePart 表中搜索匹配部件并返回库存信息"""
         from app.models.spare_part import SparePart
+        from app.domain.fitment import looks_like_fitment_question, parse_fitment_question, spec_is_empty
 
         q = question.strip()
+        if looks_like_fitment_question(q):
+            from app.agents.inventory_tools import (
+                format_compatible_text, list_compatible_parts, resolve_fitment_spec,
+            )
+            parsed = parse_fitment_question(q)
+            spec, error = resolve_fitment_spec(
+                db,
+                plate=parsed.get("plate") or None,
+                brand=parsed.get("brand") or None,
+                series=parsed.get("series") or None,
+                year=parsed.get("year"),
+                engine=parsed.get("engine") or None,
+            )
+            if error:
+                answer, count = error, 0
+            elif spec_is_empty(spec):
+                answer = "请提供品牌、车系、年款或车牌，例如：大众 速腾 2018 1.4T 适配刹车片"
+                count = 0
+            else:
+                parts = list_compatible_parts(
+                    db,
+                    brand=spec["brand"],
+                    series=spec["series"],
+                    year=spec["year"],
+                    engine=spec["engine"],
+                    keyword=parsed.get("keyword") or None,
+                    limit=10,
+                )
+                answer, count = format_compatible_text(spec, parts), len(parts)
+            return AnswerResult(
+                question=question,
+                answer=answer,
+                references=[],
+                confidence=0,
+                sources_count=count,
+            )
         # 从问题中提取可能的部件关键词
         search_terms = self._extract_part_keywords(q)
 
@@ -259,6 +296,10 @@ class AnswerGenerator:
                 lines[-1] += f" | 规格: {sp.specification}"
             if sp.location:
                 lines[-1] += f" | 存放: {sp.location}"
+            from app.domain.fitment import fitment_brief
+            brief = fitment_brief(getattr(sp, "fitment", None))
+            if brief:
+                lines[-1] += f" | 适配: {brief}"
             lines.append("")
 
         return AnswerResult(

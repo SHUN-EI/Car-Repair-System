@@ -118,6 +118,60 @@ class SMSService:
             logger.error(f"[SMS] 发送异常: {e}")
             return False
 
+    def send_notice(self, phone: str, template_param: dict) -> str:
+        """车主状态通知。
+
+        返回 sent / mock / failed / skipped。
+        未打开 SMS_ENABLED 时只打印，不请求阿里云。
+        打开后必须单独配置 SMS_NOTICE_TEMPLATE_CODE，不会占用验证码模板。
+        模板变量名固定为 work_order_no、status。
+        """
+        phone = (phone or "").strip()
+        if not phone:
+            return "skipped"
+        payload = {
+            "work_order_no": str((template_param or {}).get("work_order_no") or "-"),
+            "status": str((template_param or {}).get("status") or "状态更新"),
+        }
+        if not settings.SMS_ENABLED:
+            logger.info(f"[SMS][Mock] 车主通知 {phone}: {payload}")
+            print(f"\n{'=' * 50}")
+            print("  [车主状态短信][未启用阿里云]")
+            print(f"  手机号: {phone}")
+            print(f"  工单:   {payload['work_order_no']}")
+            print(f"  状态:   {payload['status']}")
+            print(f"{'=' * 50}\n")
+            return "mock"
+
+        template_code = settings.SMS_NOTICE_TEMPLATE_CODE
+        sign_name = settings.SMS_SIGN_NAME
+        if not template_code or not sign_name:
+            logger.error("[SMS] 车主通知未发送：缺少 SMS_NOTICE_TEMPLATE_CODE 或 SMS_SIGN_NAME")
+            return "failed"
+
+        client = self._get_client()
+        if client is None:
+            return "failed"
+        try:
+            from alibabacloud_dysmsapi20170525 import models as dysmsapi_models
+
+            request = dysmsapi_models.SendSmsRequest(
+                phone_numbers=phone,
+                sign_name=sign_name,
+                template_code=template_code,
+                template_param=json.dumps(payload, ensure_ascii=False),
+            )
+            response = client.send_sms(request)
+            body = response.body
+            if body.code == "OK":
+                logger.info(f"[SMS] 车主通知已发送: phone={phone}, status={payload['status']}")
+                return "sent"
+            logger.error(f"[SMS] 车主通知失败: code={body.code}, message={body.message}")
+            return "failed"
+        except Exception as e:
+            logger.error(f"[SMS] 车主通知异常: {e}")
+            return "failed"
+
 
 # 全局单例
 sms_service = SMSService()

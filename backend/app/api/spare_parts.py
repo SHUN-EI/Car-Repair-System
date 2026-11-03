@@ -8,6 +8,8 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.notification import notification_service
 from app.core.cache_service import cache_service
+from app.agents.inventory_tools import format_compatible_text, list_compatible_parts, resolve_fitment_spec
+from app.domain.fitment import normalize_fitment, spec_is_empty
 from app.models.spare_part import SparePart
 from app.models.user import User
 from app.schemas import SparePartCreate, SparePartUpdate, SparePartResponse, PaginatedResponse
@@ -16,7 +18,23 @@ router = APIRouter()
 
 
 def _sp_to_dict(s: SparePart) -> dict:
-    return {c.name: getattr(s, c.name) for c in s.__table__.columns}
+    data = {c.name: getattr(s, c.name) for c in s.__table__.columns}
+    if data.get("fitment") is not None:
+        try:
+            data["fitment"] = normalize_fitment(data["fitment"])
+        except ValueError:
+            data["fitment"] = data["fitment"]
+    return data
+
+
+def _fitment_payload(data):
+    payload = data.model_dump()
+    if "fitment" in payload:
+        try:
+            payload["fitment"] = normalize_fitment(payload.get("fitment"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return payload
 
 
 # ==================== 进货单导入 Schema ====================
@@ -118,6 +136,50 @@ def check_stock_alerts(db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/compatible", summary="按车辆或车型查询适配备件")
+def list_compatible(
+    vehicle_id: Optional[int] = None,
+    plate: Optional[str] = None,
+    brand: Optional[str] = None,
+    series: Optional[str] = None,
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    engine: Optional[str] = None,
+    keyword: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """给定车辆或品牌/车系/年款/发动机，只返回 fitment 命中的备件和库存。"""
+    spec, error = resolve_fitment_spec(
+        db,
+        vehicle_id=vehicle_id,
+        plate=plate,
+        brand=brand,
+        series=series,
+        year=year,
+        engine=engine,
+    )
+    if error:
+        raise HTTPException(status_code=404, detail=error)
+    if spec_is_empty(spec):
+        raise HTTPException(status_code=400, detail="请指定车辆，或提供品牌、车系、年款、发动机中的至少一项")
+    parts = list_compatible_parts(
+        db,
+        brand=spec["brand"],
+        series=spec["series"],
+        year=spec["year"],
+        engine=spec["engine"],
+        keyword=keyword,
+        limit=limit,
+    )
+    return {
+        "vehicle": spec,
+        "total": len(parts),
+        "items": [_sp_to_dict(part) for part in parts],
+        "summary": format_compatible_text(spec, parts),
+    }
+
+
 @router.get("/{part_id}", response_model=SparePartResponse, summary="获取备件详情（带缓存）")
 def get_spare_part(part_id: int, db: Session = Depends(get_db)):
     cache_key = f"spare_part:{part_id}"
@@ -139,7 +201,7 @@ def create_spare_part(data: SparePartCreate, db: Session = Depends(get_db)):
     existing = db.query(SparePart).filter(SparePart.part_code == data.part_code).first()
     if existing:
         raise HTTPException(status_code=400, detail="备件编码已存在")
-    part = SparePart(**data.model_dump())
+    part = SparePart(**_fitment_payload(data))
     db.add(part)
     db.commit()
     db.refresh(part)
@@ -152,7 +214,13 @@ def update_spare_part(part_id: int, data: SparePartUpdate, db: Session = Depends
     part = db.query(SparePart).filter(SparePart.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="备件不存在")
-    for key, val in data.model_dump(exclude_unset=True).items():
+    changes = _fitment_payload(data)
+    # model_dump 默认包含未传字段；这里只写客户端真正提交的键。
+    sent = data.model_dump(exclude_unset=True)
+    for key in list(changes):
+        if key not in sent:
+            changes.pop(key)
+    for key, val in changes.items():
         setattr(part, key, val)
     db.commit()
     db.refresh(part)

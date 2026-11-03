@@ -1118,6 +1118,26 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
         except Exception as e:
             logger.warning(f"[Transition] 钉钉进度卡片刷新失败（不影响工单状态）: {e}")
 
+    if work_order.customer_id or work_order.vehicle_id:
+        try:
+            from app.domain.owner_notify import notify_owner
+            from app.models.vehicle import Vehicle
+            plate = ""
+            if work_order.vehicle_id:
+                vehicle = db.query(Vehicle).filter(Vehicle.id == work_order.vehicle_id).first()
+                plate = vehicle.plate if vehicle else ""
+            notify_owner(
+                db,
+                customer_id=work_order.customer_id,
+                vehicle_id=work_order.vehicle_id,
+                work_order_id=work_order.id,
+                work_order_no=work_order.work_order_no,
+                status_label=STATUS_LABELS.get(to_status_val, to_status_val),
+                plate=plate,
+            )
+        except Exception as e:
+            logger.warning(f"[Transition] 车主通知失败（不影响工单状态）: {e}")
+
     logger.info(f"[WorkOrder] 状态流转 #{work_order.id}: {from_status_val} → {to_status_val} by {current_user.real_name}")
     return _build_work_order_response(work_order, db)
 
