@@ -13,6 +13,10 @@ request.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    const storeId = localStorage.getItem('current_store_id')
+    if (storeId) {
+      config.headers['X-Store-Id'] = storeId
+    }
     // 规范化 URL：根路径资源补尾斜杠，避免 FastAPI 307 重定向丢失 Authorization header
     if (config.url) {
       const qIdx = config.url.indexOf('?')

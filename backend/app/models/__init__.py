@@ -24,6 +24,9 @@ from app.models.part_sku import PartSku
 from app.models.service_catalog import ServicePackage, ServiceSku
 from app.models.quote import Quote, QuoteLine
 from app.models.payment import PaymentIntent
+from app.models.follow_up import FollowUpReminder
+from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine
+from app.models.stock import StockMovement, StorePartStock
 
 __all__ = [
     "Device", "WorkOrder", "WorkOrderStatus",
@@ -49,4 +52,7 @@ __all__ = [
     "ServicePackage", "ServiceSku",
     "Quote", "QuoteLine",
     "PaymentIntent",
+    "FollowUpReminder",
+    "PurchaseOrder", "PurchaseOrderLine",
+    "StockMovement", "StorePartStock",
 ]

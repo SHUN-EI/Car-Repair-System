@@ -132,8 +132,9 @@ def test_migration_is_single_head():
     assert "e7f8a9b0c1d2" in revisions
     assert revisions["e7f8a9b0c1d2"] == "c3d4e5f6a7b9"
     assert revisions["f8a9b0c1d2e3"] == "e7f8a9b0c1d2"
+    assert revisions["a9b8c7d6e5f4"] == "f8a9b0c1d2e3"
     heads = [rev for rev in revisions if rev not in parents]
-    assert heads == ["f8a9b0c1d2e3"]
+    assert heads == ["a9b8c7d6e5f4"]
 
 
 def test_domain_routers_import():

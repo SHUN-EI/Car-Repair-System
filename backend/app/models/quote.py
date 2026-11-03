@@ -13,7 +13,7 @@ class Quote(BaseModel):
     work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="SET NULL"), nullable=True, index=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True)
-    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
     status = Column(String(30), nullable=False, default="DRAFT", index=True, comment="DRAFT/STAFF_CONFIRMED/CUSTOMER_CONFIRMED/REJECTED/CANCELLED")
     customer_confirm = Column(Boolean, nullable=False, default=False, comment="车主是否已确认")
     total = Column(Float, nullable=False, default=0.0, comment="合计")

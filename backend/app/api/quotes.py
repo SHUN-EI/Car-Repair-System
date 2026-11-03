@@ -1,5 +1,5 @@
 """报价草案、店员确认、车主确认。"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -10,6 +10,7 @@ from app.domain.owner_access import customer_ids_for_user, is_owner
 from app.domain.owner_notify import notify_owner
 from app.domain.quote_service import QuoteError, add_manual_line, apply_status, create_draft, delete_line
 from app.domain.quote_status import QUOTE_LABELS, QUOTE_TRANSITIONS
+from app.domain.store_scope import StoreScopeError, apply_store_column, ensure_writable_store, resolve_store_scope, row_in_scope
 from app.models.quote import Quote
 from app.models.user import User
 from app.models.vehicle import Vehicle
@@ -85,8 +86,20 @@ def _owner_can_see(db: Session, user: User, quote: Quote) -> bool:
     return False
 
 
+def _quote_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+    requested = store_id
+    if requested is None and x_store_id and str(x_store_id).strip().isdigit():
+        requested = int(str(x_store_id).strip())
+    try:
+        return resolve_store_scope(user, requested)
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
+
+
 def _ensure_visible(db: Session, user: User, quote: Quote):
     if is_owner(user) and not _owner_can_see(db, user, quote):
+        raise HTTPException(status_code=404, detail="报价单不存在")
+    if not row_in_scope(_quote_scope(user), quote.store_id):
         raise HTTPException(status_code=404, detail="报价单不存在")
 
 
@@ -96,10 +109,12 @@ def list_quotes(
     page_size: int = Query(20, ge=1, le=100),
     work_order_id: Optional[int] = None,
     status: Optional[str] = None,
+    store_id: Optional[int] = None,
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Quote)
+    query = apply_store_column(db.query(Quote), Quote.store_id, _quote_scope(current_user, store_id, x_store_id))
     if work_order_id:
         query = query.filter(Quote.work_order_id == work_order_id)
     if status:
@@ -130,6 +145,15 @@ def draft_quote(
 ):
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="车主不能出具报价")
+    if data.work_order_id:
+        from app.models.work_order import WorkOrder
+        work_order = db.query(WorkOrder).filter(WorkOrder.id == data.work_order_id).first()
+        if work_order and not row_in_scope(_quote_scope(current_user), work_order.store_id):
+            raise HTTPException(status_code=404, detail="工单不存在")
+        try:
+            ensure_writable_store(current_user, work_order.store_id if work_order else None)
+        except StoreScopeError as exc:
+            raise HTTPException(status_code=403, detail=exc.message)
     try:
         quote = create_draft(
             db,
@@ -145,6 +169,11 @@ def draft_quote(
         )
     except QuoteError as exc:
         _raise_quote(exc)
+    scope = _quote_scope(current_user)
+    if scope.mode == "store" and quote.store_id is None:
+        quote.store_id = scope.store_id
+        db.commit()
+        db.refresh(quote)
     return _to_response(quote)
 
 

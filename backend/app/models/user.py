@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Integer, DateTime
+from sqlalchemy import Column, String, Boolean, Integer, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
@@ -29,6 +29,7 @@ class User(BaseModel):
     dingtalk_name = Column(String(100), nullable=True, comment="钉钉账号昵称")
     dingtalk_union_id = Column(String(100), nullable=True, index=True, comment="钉钉 unionId（跨应用唯一，机器人识别用）")
     dingtalk_bound_at = Column(DateTime, nullable=True, comment="钉钉账号绑定时间")
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="所属门店，空表示未绑定")
     department = Column(String(200))
     title = Column(String(100))
     skills = Column(String(500), comment="旧:技能标签(逗号分隔),保留1个月")

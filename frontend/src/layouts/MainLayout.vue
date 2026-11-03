@@ -11,6 +11,22 @@
         </div>
       </div>
       <div class="topbar-right">
+        <div class="store-switch" v-if="storeContext.loaded">
+          <span class="store-label">当前门店</span>
+          <el-select
+            v-if="storeContext.canSwitch"
+            v-model="selectedStoreId"
+            placeholder="全部门店"
+            clearable
+            filterable
+            size="small"
+            class="store-select"
+            @change="onStoreChange"
+          >
+            <el-option v-for="item in storeOptions" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+          <el-tag v-else size="small" type="info">{{ storeContext.storeName }}</el-tag>
+        </div>
         <!-- 消息通知 -->
         <el-popover
           placement="bottom-end"
@@ -167,6 +183,14 @@
                 <el-icon><Tickets /></el-icon>
                 <template #title>保养套餐</template>
               </el-menu-item>
+              <el-menu-item index="/purchase-orders">
+                <el-icon><Goods /></el-icon>
+                <template #title>采购入库</template>
+              </el-menu-item>
+              <el-menu-item index="/follow-ups">
+                <el-icon><Bell /></el-icon>
+                <template #title>回访提醒</template>
+              </el-menu-item>
 
               <div class="menu-group-label">主管中心</div>
               <el-menu-item index="/supervisor/dispatch">
@@ -232,6 +256,14 @@
                 <el-icon><Box /></el-icon>
                 <template #title>仓库库存</template>
               </el-menu-item>
+              <el-menu-item index="/purchase-orders">
+                <el-icon><Goods /></el-icon>
+                <template #title>采购入库</template>
+              </el-menu-item>
+              <el-menu-item index="/follow-ups">
+                <el-icon><Bell /></el-icon>
+                <template #title>回访提醒</template>
+              </el-menu-item>
 
               <div class="menu-group-label">系统工具</div>
               <el-menu-item index="/fault-codes">
@@ -296,6 +328,12 @@
                 <el-menu-item index="/service-packages">
                   <el-icon><Tickets /></el-icon>
                 </el-menu-item>
+                <el-menu-item index="/purchase-orders">
+                  <el-icon><Goods /></el-icon>
+                </el-menu-item>
+                <el-menu-item index="/follow-ups">
+                  <el-icon><Bell /></el-icon>
+                </el-menu-item>
                 <el-menu-item index="/supervisor/dispatch">
                   <el-icon><SetUp /></el-icon>
                 </el-menu-item>
@@ -338,6 +376,12 @@
                 </el-menu-item>
                 <el-menu-item index="/warehouse">
                   <el-icon><Box /></el-icon>
+                </el-menu-item>
+                <el-menu-item index="/purchase-orders">
+                  <el-icon><Goods /></el-icon>
+                </el-menu-item>
+                <el-menu-item index="/follow-ups">
+                  <el-icon><Bell /></el-icon>
                 </el-menu-item>
                 <el-menu-item index="/fault-codes">
                   <el-icon><Connection /></el-icon>
@@ -391,7 +435,7 @@ import request from '../api'
 import {
   User, Lock, QuestionFilled, SwitchButton,
   SetUp, Histogram, Calendar, Upload,
-  DataAnalysis, Document, ChatLineSquare, Reading, Monitor, Grid, Box, Connection
+  DataAnalysis, Document, ChatLineSquare, Reading, Monitor, Grid, Box, Connection, Goods, Bell
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -454,7 +498,55 @@ const noticeTabs = [
   { key: 'all', label: '全部' },
   { key: 'system', label: '系统' },
   { key: 'work_order', label: '工单' },
+  { key: 'follow_up', label: '回访' },
 ]
+
+const storeOptions = ref([])
+const selectedStoreId = ref(null)
+const storeContext = reactive({
+  loaded: false,
+  canSwitch: false,
+  storeName: '未绑定门店',
+})
+
+const loadStoreContext = async () => {
+  try {
+    const ctx = await request.get('/stores/context')
+    storeContext.canSwitch = !!ctx.can_switch
+    storeContext.storeName = ctx.store?.name || (ctx.scope === 'legacy' ? '未绑定门店' : '全部门店')
+    if (!ctx.can_switch && ctx.bound_store_id) {
+      localStorage.setItem('current_store_id', String(ctx.bound_store_id))
+      selectedStoreId.value = ctx.bound_store_id
+    } else if (ctx.can_switch) {
+      const saved = localStorage.getItem('current_store_id')
+      selectedStoreId.value = saved ? Number(saved) : null
+      const res = await request.get('/stores/', { params: { page: 1, page_size: 200 } })
+      storeOptions.value = res.items || []
+      if (selectedStoreId.value) {
+        const hit = storeOptions.value.find(item => item.id === selectedStoreId.value)
+        if (hit) storeContext.storeName = hit.name
+      }
+    } else {
+      localStorage.removeItem('current_store_id')
+    }
+  } catch {
+    storeContext.storeName = '门店未加载'
+  } finally {
+    storeContext.loaded = true
+  }
+}
+
+const onStoreChange = (value) => {
+  if (value) {
+    localStorage.setItem('current_store_id', String(value))
+    const hit = storeOptions.value.find(item => item.id === value)
+    storeContext.storeName = hit ? hit.name : '当前门店'
+  } else {
+    localStorage.removeItem('current_store_id')
+    storeContext.storeName = '全部门店'
+  }
+  window.location.reload()
+}
 
 const notices = ref([])
 const unreadCount = ref(0)
@@ -518,6 +610,8 @@ const handleNoticeClick = async (item) => {
   // 根据通知类型跳转
   if (item.type === 'work_order') {
     router.push('/work-orders')
+  } else if (item.type === 'follow_up') {
+    router.push('/follow-ups')
   } else {
     router.push('/dashboard')
   }
@@ -545,6 +639,7 @@ const handleLogout = async () => {
     })
     localStorage.removeItem('auth_token')
     localStorage.removeItem('current_user')
+    localStorage.removeItem('current_store_id')
     ElMessage.success('已退出登录')
     router.push('/login')
   } catch { /* 取消 */ }
@@ -552,6 +647,7 @@ const handleLogout = async () => {
 
 onMounted(() => {
   fetchCurrentUser()
+  loadStoreContext()
   fetchUnreadCount()
   // 每 30 秒轮询未读数
   noticePollTimer = setInterval(fetchUnreadCount, 30000)
@@ -598,6 +694,9 @@ watch(() => route.path, () => {
 }
 .system-name { font-size:16px; font-weight:600; color:var(--color-text-primary); white-space:nowrap; }
 .topbar-right { display:flex; align-items:center; gap:16px; flex-shrink:0; }
+.store-switch { display:flex; align-items:center; gap:8px; }
+.store-label { font-size:12px; color:var(--color-text-tertiary); white-space:nowrap; }
+.store-select { width: 180px; }
 .notice-badge { cursor:pointer; }
 .user-area {
   display:flex; align-items:center; gap:8px; cursor:pointer;

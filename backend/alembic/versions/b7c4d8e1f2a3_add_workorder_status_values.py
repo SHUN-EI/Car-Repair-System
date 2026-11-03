@@ -18,13 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    conn = op.get_bind()
+    # 这些值里有的在建表时已经在枚举里。重复 ADD VALUE 会让事务失败，
+    # Python 的 try/except 不能把 PostgreSQL 事务恢复回来。
     new_values = ['ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'ARCHIVED', 'STANDARDIZED', 'CLASSIFIED']
-    for val in new_values:
-        try:
-            conn.execute(sa.text(f"ALTER TYPE workorderstatus ADD VALUE '{val}'"))
-        except Exception:
-            pass
+    with op.get_context().autocommit_block():
+        for val in new_values:
+            op.execute(sa.text(f"ALTER TYPE workorderstatus ADD VALUE IF NOT EXISTS '{val}'"))
 
 
 def downgrade() -> None:

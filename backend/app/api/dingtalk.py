@@ -58,7 +58,8 @@ def ensure_oa_services_started(app) -> None:
         from apscheduler.schedulers.background import BackgroundScheduler
     except Exception:
         logger.info("[OA-Sync] 未安装 apscheduler，跳过内置兜底定时任务。"
-                    "可自行用系统 cron 调用 POST /dingtalk/schedule/sync-oa-leaves 接口。")
+                    "可自行用系统 cron 调用 POST /dingtalk/schedule/sync-oa-leaves，"
+                    "以及 POST /api/v1/follow-ups/dispatch 发送到期回访提醒。")
         return
 
     try:
@@ -79,8 +80,20 @@ def ensure_oa_services_started(app) -> None:
             id="oa_leaves_daily_sync",
             replace_existing=True,
         )
+
+        def _job_follow_up_reminders():
+            from app.domain.follow_up import run_follow_up_dispatch
+            run_follow_up_dispatch()
+
+        scheduler.add_job(
+            _job_follow_up_reminders,
+            "interval",
+            minutes=30,
+            id="follow_up_reminders",
+            replace_existing=True,
+        )
         scheduler.start()
-        logger.info("[OA-Sync] APScheduler 兜底同步任务已注册：每天 01:00 跑一次（近 3 天）")
+        logger.info("[OA-Sync] APScheduler 已注册：每天 01:00 同步近 3 天审批；每 30 分钟发送到期回访提醒")
 
         # app shutdown 时停 scheduler 和 stream
         @app.on_event("shutdown")

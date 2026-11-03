@@ -4,7 +4,7 @@
 主管只读，和设备台账一致。
 """
 from datetime import date, datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -24,6 +24,7 @@ from app.domain.appointment_status import (
     is_allowed_appointment_transition,
 )
 from app.domain.owner_access import customer_ids_for_user, ensure_customer_for_user, is_owner
+from app.domain.store_scope import StoreScopeError, apply_store_column, ensure_writable_store, resolve_store_scope, row_in_scope
 from app.models.appointment import Appointment
 from app.models.customer import Customer
 from app.models.part_sku import PartSku
@@ -157,6 +158,25 @@ def list_stores(
         query = query.filter(Store.name.ilike(like) | Store.code.ilike(like))
     total, items = _page(query.order_by(Store.id.desc()), page, page_size)
     return {"total": total, "items": items, "page": page, "page_size": page_size}
+
+
+@stores_router.get("/context", summary="当前门店")
+def store_context(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """店内角色返回绑定门店，不能切换。管理员可以在界面上自选，选择只作为筛选条件。"""
+    scope = resolve_store_scope(current_user)
+    store = None
+    if scope.mode == "store" and scope.store_id:
+        store = db.query(Store).filter(Store.id == scope.store_id).first()
+    return {
+        "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
+        "bound_store_id": getattr(current_user, "store_id", None),
+        "can_switch": scope.mode == "all" and (current_user.role.value if hasattr(current_user.role, "value") else current_user.role) == "ADMIN",
+        "scope": scope.mode,
+        "store": None if store is None else {"id": store.id, "code": store.code, "name": store.name},
+    }
 
 
 @stores_router.get("/{store_id}", response_model=StoreResponse, summary="门店详情")
@@ -411,6 +431,7 @@ def list_appointments(
     page_size: int = Query(10, ge=1, le=200),
     store_id: Optional[int] = None,
     status: Optional[str] = None,
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -420,8 +441,10 @@ def list_appointments(
         if not ids:
             return {"total": 0, "items": [], "page": page, "page_size": page_size}
         query = query.filter(Appointment.customer_id.in_(ids))
-    if store_id:
-        query = query.filter(Appointment.store_id == store_id)
+    requested = store_id
+    if requested is None and x_store_id and str(x_store_id).strip().isdigit():
+        requested = int(str(x_store_id).strip())
+    query = apply_store_column(query, Appointment.store_id, resolve_store_scope(current_user, requested))
     if status:
         query = query.filter(Appointment.status == status.upper())
     total, items = _page(query.order_by(Appointment.scheduled_at.desc()), page, page_size)
@@ -438,14 +461,24 @@ def get_appointment(appointment_id: int, db: Session = Depends(get_db), current_
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="预约不存在")
+    if not is_owner(current_user) and not row_in_scope(resolve_store_scope(current_user), row.store_id):
+        raise HTTPException(status_code=404, detail="预约不存在")
     return _appointment_out(row)
 
 
 @appointments_router.post("/", response_model=AppointmentResponse, summary="新增预约")
 def create_appointment(data: AppointmentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _ensure_writer(current_user)
-    _check_appointment_links(db, data.store_id, data.bay_id, data.customer_id, data.vehicle_id)
-    row = Appointment(**data.model_dump(), status="PENDING")
+    try:
+        store_id = ensure_writable_store(current_user, data.store_id)
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
+    if store_id is None:
+        raise HTTPException(status_code=403, detail="当前账号未绑定门店，不能新建预约")
+    payload = data.model_dump()
+    payload["store_id"] = store_id
+    _check_appointment_links(db, payload["store_id"], payload.get("bay_id"), payload.get("customer_id"), payload.get("vehicle_id"))
+    row = Appointment(**payload, status="PENDING")
     db.add(row)
     _commit(db, "预约保存失败")
     db.refresh(row)
@@ -461,7 +494,7 @@ def update_appointment(
 ):
     _ensure_writer(current_user)
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="预约不存在")
     changes = data.model_dump(exclude_unset=True)
     next_status = changes.pop("status", None)
@@ -492,7 +525,7 @@ def update_appointment(
 def delete_appointment(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _ensure_writer(current_user)
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="预约不存在")
     db.delete(row)
     _commit(db, "预约已被工单引用，无法删除")
