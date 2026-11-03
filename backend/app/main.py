@@ -33,6 +33,8 @@ from app.api.service_domain import (
 from app.api.service_catalog import packages_router, skus_router
 from app.api.quotes import router as quotes_router
 from app.api.payments import router as payments_router
+from app.api.follow_ups import router as follow_ups_router
+from app.api.purchase_orders import router as purchase_orders_router
 from app.api.manual_codes import router as manual_codes_router
 from app.api.dingtalk import router as dingtalk_router, ensure_oa_services_started
 from app.api.session import router as session_router
@@ -41,7 +43,10 @@ from app.api.cascade_data import router as cascade_data_router
 from app.api.upload import router as upload_router
 from app.api.auth import router as auth_router
 from app.api.dingtalk_mock import router as dingtalk_mock_router
+from app.mcp.public import public_http_app
 from app.mcp.server import mcp_http_app
+from app.mcp.access import decide_mcp_access
+from app.core.security import decode_access_token
 
 logger.remove()
 logger.add(
@@ -67,6 +72,7 @@ logger.add(
 
 # MCP Server 实例（lifespan 与 mount 复用同一实例）
 _mcp_app = mcp_http_app()
+_mcp_public_app = public_http_app()
 
 
 @asynccontextmanager
@@ -88,9 +94,10 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning(f"⚠️ 推理服务探测失败: {e}")
-    # MCP Server 生命周期（StreamableHTTPSessionManager 任务组初始化）
+    # MCP Server 生命周期（内部工具 + 第三方只读入口）
     async with _mcp_app.lifespan(app):
-        yield
+        async with _mcp_public_app.lifespan(app):
+            yield
     logger.info("👋 应用关闭中...")
 
 
@@ -140,6 +147,8 @@ app.include_router(packages_router, prefix="/api/v1/service-packages", tags=["�
 app.include_router(skus_router, prefix="/api/v1/service-skus", tags=["服务项目"])
 app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["报价"])
 app.include_router(payments_router, prefix="/api/v1/payments", tags=["支付占位"])
+app.include_router(follow_ups_router, prefix="/api/v1/follow-ups", tags=["回访提醒"])
+app.include_router(purchase_orders_router, prefix="/api/v1/purchase-orders", tags=["采购单"])
 
 # ============================================================
 # MCP Server（Streamable HTTP）：仅本机可访问，可配置 API Key
@@ -149,19 +158,30 @@ _MCP_ALLOWED_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 @app.middleware("http")
 async def mcp_access_guard(request: Request, call_next):
-    """MCP 访问控制：优先 API Key 认证；未配置 Key 时仅允许本机 IP"""
+    """内部 /mcp：API Key、登录令牌或本机。公开 /mcp/public：只读，必须带 Key 或登录令牌。"""
     if request.url.path.startswith("/mcp"):
-        if settings.MCP_API_KEY:
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {settings.MCP_API_KEY}":
-                return JSONResponse(status_code=403, content={"detail": "Forbidden: invalid MCP API key"})
-        else:
-            client_host = request.client.host if request.client else ""
-            if client_host not in _MCP_ALLOWED_HOSTS:
-                return JSONResponse(status_code=403, content={"detail": "Forbidden: MCP only accessible from localhost"})
+        auth = request.headers.get("Authorization", "")
+        payload = None
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+            if token and token != (settings.MCP_API_KEY or ""):
+                payload = decode_access_token(token)
+        decision = decide_mcp_access(
+            path=request.url.path,
+            authorization=auth,
+            api_key=settings.MCP_API_KEY or "",
+            token_payload=payload,
+            client_host=request.client.host if request.client else "",
+            localhost_hosts=_MCP_ALLOWED_HOSTS,
+            public_enabled=settings.MCP_PUBLIC_ENABLED,
+        )
+        if decision:
+            status_code, detail = decision
+            return JSONResponse(status_code=status_code, content={"detail": detail})
     return await call_next(request)
 
 
+app.mount("/mcp/public", _mcp_public_app, name="mcp-public")
 app.mount("/mcp", _mcp_app, name="mcp")
 
 # ============================================================

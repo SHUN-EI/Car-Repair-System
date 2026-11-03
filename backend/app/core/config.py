@@ -118,6 +118,8 @@ class Settings(BaseSettings):
 
     # MCP 服务配置
     MCP_API_KEY: str = ""  # MCP 认证密钥（配置后要求 Authorization: Bearer <key>，未配置则仅允许本机 IP）
+    MCP_PUBLIC_ENABLED: bool = True  # 第三方只读入口 /mcp/public
+    MCP_ENABLE_WRITE_TOOLS: bool = False  # 默认不把写工具挂到 HTTP MCP
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

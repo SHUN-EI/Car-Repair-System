@@ -861,8 +861,12 @@ const saveLoginUser = (user) => {
     dingtalk_userid: user.dingtalk_userid || '',
     dingtalk_name: user.dingtalk_name || '',
     dingtalk_bound_at: user.dingtalk_bound_at || null,
+    store_id: user.store_id || null,
   }
   localStorage.setItem('current_user', JSON.stringify(data))
+  if (user.store_id) {
+    localStorage.setItem('current_store_id', String(user.store_id))
+  }
   // 保存 JWT token
   if (user.token) {
     localStorage.setItem('auth_token', user.token)

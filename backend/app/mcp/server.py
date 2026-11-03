@@ -11,6 +11,7 @@ import asyncio
 from fastmcp import FastMCP
 from loguru import logger
 
+from app.core.config import settings
 from app.mcp import tools
 
 mcp = FastMCP("Smart-Repair-System")
@@ -35,7 +36,6 @@ async def search_knowledge(query: str) -> str:
     return await _call(tools.search_knowledge, SMART_TIMEOUT, query)
 
 
-@mcp.tool()
 async def guided_repair_chat(staff_id: str, message: str) -> str:
     """追踪维修模式：按钉钉企业 userId 维护多轮会话，逐步引导维修员排查故障，每轮只给出一步【分析】+【操作】。输入用户最近发送的故障现象或上一步检查结果。可能耗时数秒至十几秒。"""
     return await _call(tools.guided_repair_chat, SMART_TIMEOUT, staff_id, message)
@@ -111,7 +111,6 @@ async def recommend_service(
     return await _call(tools.recommend_service, 10.0, brand, series, mileage, symptoms, plate)
 
 
-@mcp.tool()
 async def draft_quote(
     work_order_id: int = 0,
     consult_text: str = "",
@@ -124,6 +123,12 @@ async def draft_quote(
         tools.draft_quote, 10.0,
         work_order_id, consult_text, mileage, symptoms, include_packages,
     )
+
+
+if settings.MCP_ENABLE_WRITE_TOOLS:
+    # 默认关闭。打开后写工具才出现在内部 /mcp，公开入口仍然不挂。
+    mcp.tool()(guided_repair_chat)
+    mcp.tool()(draft_quote)
 
 
 def mcp_http_app():

@@ -384,6 +384,7 @@ class SparePartCreate(BaseModel):
     supplier: Optional[str] = None
     sku_id: Optional[int] = None
     fitment: Optional[List[FitmentRule]] = None
+    store_id: Optional[int] = None
 
 
 class SparePartUpdate(BaseModel):
@@ -414,6 +415,8 @@ class SparePartResponse(BaseModel):
     supplier: Optional[str]
     sku_id: Optional[int] = None
     fitment: Optional[List[FitmentRule]] = None
+    store_id: Optional[int] = None
+    store_on_hand: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -429,6 +432,7 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     role: Optional[str] = "TECHNICIAN"
+    store_id: Optional[int] = None
 
 
 class UserUpdate(BaseModel):
@@ -440,6 +444,7 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     department: Optional[str] = None
     title: Optional[str] = None
+    store_id: Optional[int] = None
 
 
 class UserResponse(BaseModel):
@@ -451,6 +456,7 @@ class UserResponse(BaseModel):
     phone: Optional[str]
     role: str
     is_active: bool
+    store_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

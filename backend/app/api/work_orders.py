@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import cast, Date, or_
 from typing import Optional, List, Dict, Any
@@ -31,6 +31,13 @@ from app.domain.work_order_status import (
     status_value as _status_value,
 )
 from app.domain.owner_access import customer_ids_for_user, is_owner
+from app.domain.store_scope import (
+    StoreScopeError,
+    apply_store_column,
+    ensure_writable_store,
+    resolve_store_scope,
+    row_in_scope,
+)
 
 router = APIRouter()
 
@@ -59,10 +66,13 @@ def list_work_orders(
     device_type: Optional[str] = Query(None, description="设备类型筛选"),
     date_from: Optional[date] = Query(None, description="创建日期起始"),
     date_to: Optional[date] = Query(None, description="创建日期截止"),
+    store_id: Optional[int] = Query(None, description="门店，管理员可筛选；店内角色锁定本店"),
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(WorkOrder)
+    query = apply_store_column(query, WorkOrder.store_id, _work_order_scope(current_user, store_id, x_store_id))
     if status:
         query = query.filter(WorkOrder.status == status)
     if keyword:
@@ -265,6 +275,8 @@ def get_work_order(
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order or not _owner_may_view(db, current_user, work_order):
         raise HTTPException(status_code=404, detail="工单不存在")
+    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
     resp = WorkOrderResponse.model_validate(work_order)
     # 设备信息（设备类型/名称）直接从关联设备返回，前端不依赖本地设备列表拼接
     if work_order.device:
@@ -307,6 +319,21 @@ def _scope_owner_work_orders(query, db: Session, current_user: User):
     if vehicle_ids:
         clauses.append(WorkOrder.vehicle_id.in_(vehicle_ids))
     return query.filter(or_(*clauses))
+
+
+def _parse_store_header(store_id: Optional[int], x_store_id: Optional[str]) -> Optional[int]:
+    if store_id:
+        return store_id
+    if x_store_id and str(x_store_id).strip().isdigit():
+        return int(str(x_store_id).strip())
+    return None
+
+
+def _work_order_scope(current_user: User, store_id: Optional[int], x_store_id: Optional[str]):
+    try:
+        return resolve_store_scope(current_user, _parse_store_header(store_id, x_store_id))
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
 
 
 def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> bool:
@@ -380,6 +407,12 @@ def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), curr
     if existing:
         raise HTTPException(status_code=400, detail="工单编号已存在")
     payload = data.model_dump(exclude_unset=True)
+    try:
+        stamped = ensure_writable_store(current_user, payload.get("store_id"))
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
+    if stamped is not None:
+        payload["store_id"] = stamped
     requested = str(payload.pop("status", "DRAFT") or "DRAFT").upper()
     payload.pop("created_by", None)
     requested_tech = payload.pop("technician_id", None)
@@ -442,6 +475,12 @@ def create_work_order_from_appointment(
         raise HTTPException(status_code=404, detail="预约不存在")
     if appointment.status in ("CANCELLED", "COMPLETED"):
         raise HTTPException(status_code=400, detail="该预约已结束，不能接车")
+    if not row_in_scope(_work_order_scope(current_user, None, None), appointment.store_id):
+        raise HTTPException(status_code=404, detail="预约不存在")
+    try:
+        ensure_writable_store(current_user, appointment.store_id)
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
     existing = db.query(WorkOrder).filter(WorkOrder.appointment_id == appointment.id).first()
     if existing:
         return _build_work_order_response(existing, db)
@@ -498,6 +537,8 @@ def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = D
     """维修过程中逐步保存表单内容。创建者、被指派的维修员或管理员可编辑。"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
         raise HTTPException(status_code=404, detail="工单不存在")
     if work_order.status == WorkOrderStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="已完成工单不可修改")
@@ -989,6 +1030,8 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
     )
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
+    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
 
     from_status_val = work_order.status.value if work_order.status else None
 
@@ -1137,6 +1180,18 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
             )
         except Exception as e:
             logger.warning(f"[Transition] 车主通知失败（不影响工单状态）: {e}")
+
+    if to_status_val == WorkOrderStatus.CLOSED.value:
+        try:
+            from app.domain.follow_up import schedule_after_delivery
+            schedule_after_delivery(db, work_order, created_by=current_user.id)
+            db.commit()
+        except Exception as e:
+            logger.warning(f"[Transition] 回访提醒排期失败（不影响工单状态）: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     logger.info(f"[WorkOrder] 状态流转 #{work_order.id}: {from_status_val} → {to_status_val} by {current_user.real_name}")
     return _build_work_order_response(work_order, db)

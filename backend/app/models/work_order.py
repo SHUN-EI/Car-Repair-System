@@ -72,7 +72,7 @@ class WorkOrder(BaseModel):
     # 汽修域关联，全部可空，旧工单不受影响
     vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联车辆")
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联客户")
-    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, comment="服务门店")
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="服务门店")
     bay_id = Column(Integer, ForeignKey("bays.id", ondelete="SET NULL"), nullable=True, comment="占用工位")
     appointment_id = Column(Integer, ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, comment="来源预约")
 

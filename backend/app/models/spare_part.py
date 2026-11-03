@@ -17,6 +17,7 @@ class SparePart(BaseModel):
     location = Column(String(200))
     supplier = Column(String(200))
     sku_id = Column(Integer, ForeignKey("part_skus.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联配件目录 SKU")
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="归属门店，空表示未分店")
     fitment = Column(JSONB, comment="适配规则 [{brand, series, year_from, year_to, engine}]，空字段表示该维不限")
 
     def __repr__(self):

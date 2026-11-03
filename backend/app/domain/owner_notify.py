@@ -46,15 +46,17 @@ def notify_owner(
     status_label: str = "",
     plate: str = "",
     title: str = "",
+    content: Optional[str] = None,
+    notice_type: str = "work_order",
 ) -> dict:
-    """失败只记在返回值里，不抛给工单流转。"""
+    """失败只记在返回值里，不抛给工单流转。content 为空时仍用状态进度文案。"""
     result = {"sms": "skipped", "dingtalk": "skipped", "inbox": "skipped"}
     try:
         customer = _customer_for(db, customer_id, vehicle_id)
         if customer is None:
             result["reason"] = "无客户"
             return result
-        content = owner_status_text(work_order_no or "-", status_label or "状态更新", plate)
+        content = content or owner_status_text(work_order_no or "-", status_label or "状态更新", plate)
         notice_title = title or f"工单进度 {work_order_no or ''}".strip()
         if customer.phone:
             result["sms"] = sms_service.send_notice(customer.phone, {
@@ -67,7 +69,7 @@ def notify_owner(
         if user is not None:
             db.add(Notification(
                 user_id=user.id,
-                type="work_order",
+                type=notice_type or "work_order",
                 title=notice_title[:200],
                 content=content,
                 work_order_id=work_order_id,
