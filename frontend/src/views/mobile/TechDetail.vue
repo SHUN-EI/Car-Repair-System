@@ -31,7 +31,7 @@
     <div class="info-section" v-if="wo.fault_media?.length">
       <h3>现场照片</h3>
       <div class="media-grid">
-        <img v-for="(url, i) in wo.fault_media" :key="i" :src="url" class="media-img" />
+        <img v-for="(url, i) in mediaUrls" :key="i" :src="url" class="media-img" />
       </div>
     </div>
 
@@ -47,9 +47,9 @@
     </div>
 
     <!-- 操作按钮 -->
-    <div class="action-bar" v-if="['ASSIGNED', 'IN_PROGRESS'].includes(wo.status)">
+    <div class="action-bar" v-if="['ASSIGNED', 'ACCEPTED', 'ARRIVED', 'INSPECTING', 'IN_PROGRESS'].includes(wo.status)">
       <button
-        v-if="wo.status === 'ASSIGNED'"
+        v-if="['ASSIGNED', 'ACCEPTED', 'ARRIVED', 'INSPECTING'].includes(wo.status)"
         class="action-btn primary"
         @click="handleStart"
         :disabled="loading"
@@ -102,11 +102,13 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../../api'
+import { toAuthObjectUrl } from '../../utils/authMedia'
 
 const route = useRoute()
 const router = useRouter()
 const wo = ref(null)
 const inventory = ref(null)
+const mediaUrls = ref([])
 const loading = ref(false)
 const completing = ref(false)
 const showReport = ref(false)
@@ -115,7 +117,9 @@ const reportForm = ref({ work_hours: 1.0, solution_desc: '', completion_photos: 
 
 
 const statusLabel = (s) => ({
-  ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成', APPROVED: '报价已确认',
+  ASSIGNED: '待接单', ACCEPTED: '已接单', ARRIVED: '已到达', INSPECTING: '检查中',
+  IN_PROGRESS: '维修中', QC: '质检', ARCHIVING: '待归档', ARCHIVED: '已归档',
+  COMPLETED: '已完成', APPROVED: '报价已确认',
   INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中', QC: '质检', CLOSED: '已结案', CANCELLED: '已取消',
 }[s] || s)
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : '-'
@@ -125,6 +129,7 @@ const fetchData = async () => {
     const res = await request.get(`/dingtalk/tech/detail/${route.params.id}`)
     wo.value = res
     inventory.value = res.inventory
+    mediaUrls.value = await Promise.all((res.fault_media || []).map((url) => toAuthObjectUrl(url)))
   } catch { /* handled */ }
 }
 

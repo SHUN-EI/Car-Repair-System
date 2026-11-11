@@ -6,6 +6,7 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_user
+from app.domain.store_scope import role_name
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus
 from app.models.user import User
 from app.models.work_order import WorkOrder
@@ -60,7 +61,8 @@ def search_knowledge(
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     limit: int = 5,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         from app.core.vector_store import vector_store
@@ -79,7 +81,7 @@ def search_knowledge(
 
 
 @router.get("/{knowledge_id}", response_model=KnowledgeResponse, summary="获取知识条目详情")
-def get_knowledge_item(knowledge_id: int, db: Session = Depends(get_db)):
+def get_knowledge_item(knowledge_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     item = db.query(KnowledgeItem).filter(KnowledgeItem.id == knowledge_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="知识条目不存在")
@@ -87,7 +89,7 @@ def get_knowledge_item(knowledge_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=KnowledgeResponse, summary="创建知识条目")
-def create_knowledge_item(data: KnowledgeCreate, db: Session = Depends(get_db)):
+def create_knowledge_item(data: KnowledgeCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     item = KnowledgeItem(**data.model_dump())
     db.add(item)
     db.commit()
@@ -96,13 +98,18 @@ def create_knowledge_item(data: KnowledgeCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目（只读禁止）")
-def update_knowledge_item(knowledge_id: int, data: KnowledgeUpdate, db: Session = Depends(get_db)):
+def update_knowledge_item(
+    knowledge_id: int,
+    data: KnowledgeUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """知识库为只读，禁止修改已收录的知识条目（防止污染检索依据）"""
     raise HTTPException(status_code=403, detail="知识库为只读，禁止修改知识条目")
 
 
 @router.delete("/{knowledge_id}", summary="删除知识条目（只读禁止）")
-def delete_knowledge_item(knowledge_id: int, db: Session = Depends(get_db)):
+def delete_knowledge_item(knowledge_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """知识库为只读，禁止删除已收录的知识条目"""
     raise HTTPException(status_code=403, detail="知识库为只读，禁止删除知识条目")
 
@@ -110,7 +117,11 @@ def delete_knowledge_item(knowledge_id: int, db: Session = Depends(get_db)):
 # ==================== 从工单提取知识 ====================
 
 @router.post("/extract", response_model=KnowledgeExtractResponse, summary="从工单提取知识条目")
-def extract_from_work_order(req: KnowledgeExtractRequest, db: Session = Depends(get_db)):
+def extract_from_work_order(
+    req: KnowledgeExtractRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     从已审批工单中提取知识条目：
     1. LLM 提取结构化知识
@@ -188,6 +199,7 @@ def review_knowledge(
     knowledge_id: int,
     review: KnowledgeReviewRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     知识审核操作：
@@ -209,6 +221,8 @@ def review_knowledge(
 
     if review.action not in action_map:
         raise HTTPException(status_code=400, detail=f"不支持的审核操作: {review.action}")
+    if review.action in ("publish", "deprecate") and role_name(current_user) not in ("ADMIN", "SUPERVISOR"):
+        raise HTTPException(status_code=403, detail="仅管理员或主管可发布或废弃知识")
 
     new_status, allowed_from = action_map[review.action]
     if item.status not in allowed_from:
@@ -246,7 +260,7 @@ def review_knowledge(
 # ==================== 手动去重检测 ====================
 
 @router.post("/{knowledge_id}/check-duplicate", response_model=KnowledgeDedupResult, summary="检测重复知识")
-def check_duplicate(knowledge_id: int, db: Session = Depends(get_db)):
+def check_duplicate(knowledge_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """对已有知识条目执行去重检测"""
     item = db.query(KnowledgeItem).filter(KnowledgeItem.id == knowledge_id).first()
     if not item:
@@ -561,6 +575,7 @@ def query_solutions(
     device_type: Optional[str] = Query(None),
     top_k: int = Query(5, ge=1, le=20),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     根据关键词和设备类型搜索知识库中的处理步骤。

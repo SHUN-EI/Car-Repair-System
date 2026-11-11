@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import hashlib
+import hmac
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
 from typing import Optional, List
 from pydantic import BaseModel
 from datetime import datetime
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_optional_user
 from app.models.device import Device
 from app.models.work_order import WorkOrder
 from app.models.user import User
@@ -21,6 +24,27 @@ def _ensure_not_pure_supervisor(current_user: User):
     """纯主管只允许查看，不允许修改"""
     if current_user.role == 'SUPERVISOR':
         raise HTTPException(status_code=403, detail="主管仅具备设备查看权限，如需修改请联系管理员")
+
+
+def _device_sync_ok(api_key: Optional[str], signature: Optional[str], body: bytes) -> bool:
+    """外部系统：X-Device-Sync-Key 必填；配置了 HMAC 密钥时还要校验正文签名。"""
+    expected = (settings.DEVICE_SYNC_API_KEY or "").strip()
+    if not expected or not api_key or not hmac.compare_digest(api_key, expected):
+        return False
+    secret = (settings.DEVICE_SYNC_HMAC_SECRET or "").strip()
+    if not secret:
+        return True
+    if not signature:
+        return False
+    digest = hmac.new(secret.encode(), body or b"", hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, digest)
+
+
+def _require_device_sync(api_key: Optional[str], signature: Optional[str], body: bytes) -> None:
+    if not (settings.DEVICE_SYNC_API_KEY or "").strip():
+        raise HTTPException(status_code=503, detail="设备同步未配置 DEVICE_SYNC_API_KEY")
+    if not _device_sync_ok(api_key, signature, body):
+        raise HTTPException(status_code=401, detail="设备同步密钥或签名无效")
 
 
 def _device_to_dict(d: Device) -> dict:
@@ -68,7 +92,7 @@ def list_devices(
 
 
 @router.get("/{device_id}", response_model=DeviceResponse, summary="获取设备详情")
-def get_device(device_id: int, db: Session = Depends(get_db)):
+def get_device(device_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
@@ -128,7 +152,11 @@ def delete_device(
 # ==================== 设备历史维修摘要 ====================
 
 @router.get("/{device_id}/maintenance-summary", summary="设备历史维修摘要")
-def get_device_maintenance_summary(device_id: int, db: Session = Depends(get_db)):
+def get_device_maintenance_summary(
+    device_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """查询设备近6个月维修次数和最近一次故障摘要"""
     from datetime import datetime, timedelta
     from sqlalchemy import desc
@@ -182,6 +210,7 @@ class DeviceMonitorStats(BaseModel):
 def get_device_monitor_stats(
     device_type: Optional[str] = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     query = db.query(Device)
     if device_type:
@@ -225,10 +254,14 @@ class DeviceStatusSyncResponse(BaseModel):
 
 
 @router.post("/monitor/sync-status", response_model=DeviceStatusSyncResponse, summary="批量同步设备状态（外部上报系统调用）")
-def sync_device_status(
+async def sync_device_status(
     items: List[DeviceStatusSyncItem],
+    request: Request,
     db: Session = Depends(get_db),
+    x_device_sync_key: Optional[str] = Header(None, alias="X-Device-Sync-Key"),
+    x_device_sync_signature: Optional[str] = Header(None, alias="X-Device-Sync-Signature"),
 ):
+    _require_device_sync(x_device_sync_key, x_device_sync_signature, await request.body())
     """
     中心化同步入口：给外部故障上报系统调用。
     匹配优先级：ext_system_id > device_code > device_id。
@@ -293,7 +326,14 @@ class FaultTagReport(BaseModel):
 
 
 @router.post("/monitor/report-faults", summary="上报设备故障标签（外部系统→本系统同步）")
-def report_fault_tags(report: FaultTagReport, db: Session = Depends(get_db)):
+async def report_fault_tags(
+    report: FaultTagReport,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_device_sync_key: Optional[str] = Header(None, alias="X-Device-Sync-Key"),
+    x_device_sync_signature: Optional[str] = Header(None, alias="X-Device-Sync-Signature"),
+):
+    _require_device_sync(x_device_sync_key, x_device_sync_signature, await request.body())
     """
     外部故障上报系统标故障时调用：把故障标签同步到设备上。
     返回更新后的设备监控字段。
@@ -350,9 +390,17 @@ def report_fault_tags(report: FaultTagReport, db: Session = Depends(get_db)):
 def clear_fault_tags(
     device_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
+    x_device_sync_key: Optional[str] = Header(None, alias="X-Device-Sync-Key"),
+    x_device_sync_signature: Optional[str] = Header(None, alias="X-Device-Sync-Signature"),
 ):
-    _ensure_not_pure_supervisor(current_user)
+    """页面登录用户可清理；外部系统改走设备同步密钥。两种凭证满足一种即可。"""
+    if current_user is not None:
+        _ensure_not_pure_supervisor(current_user)
+    elif not _device_sync_ok(x_device_sync_key, x_device_sync_signature, b""):
+        if not (settings.DEVICE_SYNC_API_KEY or "").strip():
+            raise HTTPException(status_code=401, detail="未提供认证令牌")
+        raise HTTPException(status_code=401, detail="设备同步密钥或签名无效")
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")

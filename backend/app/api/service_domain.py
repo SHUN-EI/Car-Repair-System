@@ -24,7 +24,8 @@ from app.domain.appointment_status import (
     is_allowed_appointment_transition,
 )
 from app.domain.owner_access import customer_ids_for_user, ensure_customer_for_user, is_owner
-from app.domain.store_scope import StoreScopeError, apply_store_column, ensure_writable_store, resolve_store_scope, row_in_scope
+from app.domain.store_scope import StoreScopeError, apply_store_column, ensure_writable_store, resolve_store_scope, role_name, row_in_scope
+from app.models.work_order import WorkOrder
 from app.models.appointment import Appointment
 from app.models.customer import Customer
 from app.models.part_sku import PartSku
@@ -47,6 +48,62 @@ stores_router = APIRouter()
 bays_router = APIRouter()
 appointments_router = APIRouter()
 part_skus_router = APIRouter()
+
+
+def _customer_visible_ids(db: Session, user: User):
+    """客户表没有 store_id。店内账号只看本店工单/预约关联的客户，以及尚未分到别的店的客户。"""
+    scope = resolve_store_scope(user)
+    if scope.mode == "all":
+        return None
+    here = []
+    elsewhere = []
+    if scope.mode == "store":
+        here = [
+            row[0] for row in db.query(Appointment.customer_id).filter(
+                Appointment.store_id == scope.store_id, Appointment.customer_id.isnot(None)
+            ).all()
+        ]
+        here += [
+            row[0] for row in db.query(WorkOrder.customer_id).filter(
+                WorkOrder.store_id == scope.store_id, WorkOrder.customer_id.isnot(None)
+            ).all()
+        ]
+        elsewhere = [
+            row[0] for row in db.query(Appointment.customer_id).filter(
+                Appointment.store_id.isnot(None),
+                Appointment.store_id != scope.store_id,
+                Appointment.customer_id.isnot(None),
+            ).all()
+        ]
+        elsewhere += [
+            row[0] for row in db.query(WorkOrder.customer_id).filter(
+                WorkOrder.store_id.isnot(None),
+                WorkOrder.store_id != scope.store_id,
+                WorkOrder.customer_id.isnot(None),
+            ).all()
+        ]
+    else:
+        elsewhere = [
+            row[0] for row in db.query(Appointment.customer_id).filter(
+                Appointment.store_id.isnot(None), Appointment.customer_id.isnot(None)
+            ).all()
+        ]
+        elsewhere += [
+            row[0] for row in db.query(WorkOrder.customer_id).filter(
+                WorkOrder.store_id.isnot(None), WorkOrder.customer_id.isnot(None)
+            ).all()
+        ]
+    return set(here), set(elsewhere)
+
+
+def _customer_query(query, db: Session, user: User):
+    visible = _customer_visible_ids(db, user)
+    if visible is None:
+        return query
+    here, elsewhere = visible
+    if elsewhere:
+        query = query.filter(~Customer.id.in_(list(elsewhere - here)))
+    return query
 
 
 def _ensure_writer(current_user: User):
@@ -87,7 +144,7 @@ def list_customers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Customer)
+    query = _customer_query(db.query(Customer), db, current_user)
     if keyword:
         like = f"%{keyword.strip()}%"
         query = query.filter(Customer.name.ilike(like) | Customer.phone.ilike(like))
@@ -97,7 +154,7 @@ def list_customers(
 
 @customers_router.get("/{customer_id}", response_model=CustomerResponse, summary="客户详情")
 def get_customer(customer_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    row = db.query(Customer).filter(Customer.id == customer_id).first()
+    row = _customer_query(db.query(Customer), db, current_user).filter(Customer.id == customer_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="客户不存在")
     return row
@@ -153,6 +210,11 @@ def list_stores(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Store)
+    scope = resolve_store_scope(current_user)
+    if scope.mode == "store":
+        query = query.filter(Store.id == scope.store_id)
+    elif scope.mode == "legacy":
+        query = query.filter(Store.id == -1)
     if keyword:
         like = f"%{keyword.strip()}%"
         query = query.filter(Store.name.ilike(like) | Store.code.ilike(like))
@@ -182,14 +244,15 @@ def store_context(
 @stores_router.get("/{store_id}", response_model=StoreResponse, summary="门店详情")
 def get_store(store_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     row = db.query(Store).filter(Store.id == store_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.id):
         raise HTTPException(status_code=404, detail="门店不存在")
     return row
 
 
 @stores_router.post("/", response_model=StoreResponse, summary="新增门店")
 def create_store(data: StoreCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _ensure_writer(current_user)
+    if role_name(current_user) != "ADMIN":
+        raise HTTPException(status_code=403, detail="仅管理员可新增门店")
     code = data.code.strip()
     if db.query(Store.id).filter(Store.code == code).first():
         raise HTTPException(status_code=400, detail="门店编码已存在")
@@ -233,12 +296,14 @@ def list_bays(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=200),
     store_id: Optional[int] = None,
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Bay)
-    if store_id:
-        query = query.filter(Bay.store_id == store_id)
+    requested = store_id
+    if requested is None and x_store_id and str(x_store_id).strip().isdigit():
+        requested = int(str(x_store_id).strip())
+    query = apply_store_column(db.query(Bay), Bay.store_id, resolve_store_scope(current_user, requested))
     total, items = _page(query.order_by(Bay.id.desc()), page, page_size)
     return {"total": total, "items": items, "page": page, "page_size": page_size}
 
@@ -246,7 +311,7 @@ def list_bays(
 @bays_router.get("/{bay_id}", response_model=BayResponse, summary="工位详情")
 def get_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     row = db.query(Bay).filter(Bay.id == bay_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="工位不存在")
     return row
 
@@ -254,6 +319,8 @@ def get_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Dep
 @bays_router.post("/", response_model=BayResponse, summary="新增工位")
 def create_bay(data: BayCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _ensure_writer(current_user)
+    if not row_in_scope(resolve_store_scope(current_user), data.store_id):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     _must(db, Store, data.store_id, "门店")
     code = data.code.strip()
     exists = db.query(Bay.id).filter(Bay.store_id == data.store_id, Bay.code == code).first()
@@ -272,7 +339,7 @@ def create_bay(data: BayCreate, db: Session = Depends(get_db), current_user: Use
 def update_bay(bay_id: int, data: BayUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _ensure_writer(current_user)
     row = db.query(Bay).filter(Bay.id == bay_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="工位不存在")
     changes = data.model_dump(exclude_unset=True)
     if "code" in changes and changes["code"]:
@@ -292,7 +359,7 @@ def update_bay(bay_id: int, data: BayUpdate, db: Session = Depends(get_db), curr
 def delete_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _ensure_writer(current_user)
     row = db.query(Bay).filter(Bay.id == bay_id).first()
-    if not row:
+    if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="工位不存在")
     db.delete(row)
     _commit(db, "工位已被预约或工单引用，无法删除")

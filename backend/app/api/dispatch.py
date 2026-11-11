@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.domain.store_scope import StoreScopeError, ensure_writable_store, resolve_store_scope, row_in_scope
 from app.models.work_order import WorkOrder, WorkOrderStatus
 from app.models.user import User, UserRole
 
@@ -101,6 +102,10 @@ def confirm_dispatch(
     """主管确认派工：验证维修员 → 在岗校验 → 创建工单 → 钉钉推送，一个事务完成"""
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管或管理员可确认派工")
+    try:
+        stamped_store = ensure_writable_store(current_user, None)
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
 
     # 1. 验证维修员
     technician = db.query(User).filter(User.id == data.technician_id).first()
@@ -110,6 +115,8 @@ def confirm_dispatch(
         raise HTTPException(status_code=400, detail="指派的维修员已停用")
     if technician.role not in (UserRole.TECHNICIAN.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=400, detail="被指派人必须是维修员角色")
+    if stamped_store and technician.store_id and int(technician.store_id) != int(stamped_store):
+        raise HTTPException(status_code=403, detail="不能指派其他门店的维修员")
 
     # 2. 在岗校验
     from app.models.duty_schedule import DutySchedule
@@ -171,6 +178,7 @@ def confirm_dispatch(
         tags=data.tags,
         status=WorkOrderStatus.ASSIGNED,
         created_by=current_user.id,
+        store_id=stamped_store,
     )
     db.add(work_order)
     db.flush()
@@ -228,6 +236,9 @@ def bind_dispatch(
     work_order = db.query(WorkOrder).filter(WorkOrder.id == data.work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
+    scope = resolve_store_scope(current_user)
+    if not row_in_scope(scope, work_order.store_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
     from app.domain.work_order_status import is_auto_repair_lane
     if not is_auto_repair_lane(
         status=work_order.status,
@@ -244,6 +255,8 @@ def bind_dispatch(
         raise HTTPException(status_code=400, detail="指派的维修员不存在或已停用")
     if technician.role not in (UserRole.TECHNICIAN.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=400, detail="被指派人必须是维修员角色")
+    if scope.mode == "store" and technician.store_id and int(technician.store_id) != int(scope.store_id):
+        raise HTTPException(status_code=403, detail="不能指派其他门店的维修员")
 
     if data.bay_id is not None:
         from app.models.store import Bay

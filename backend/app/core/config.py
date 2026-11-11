@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     MILVUS_REST_PORT: int = 9091
     MILVUS_COLLECTION: str = "knowledge"
     MILVUS_LOG_CODE_COLLECTION: str = "log_code"  # 设备手册错误码向量集合
-    MILVUS_VECTOR_SIZE: int = 1024  # Embedding 维度 (Qwen3-0.6B hidden_size=1024)
+    MILVUS_VECTOR_SIZE: int = 1024  # Embedding 维度（BAAI/bge-m3 dense，1024）
     MINIO_HOST: str = "localhost"
     MINIO_PORT: int = 9000
     MINIO_ACCESS_KEY: str = "minioadmin"
@@ -68,10 +68,19 @@ class Settings(BaseSettings):
     # 服务器公开访问地址（用于生成可扫码的真实 URL）
     SERVER_PUBLIC_URL: str = "http://127.0.0.1:8000"
 
-    # JWT 配置
+    # JWT 配置。生产（DEBUG=false）拒绝占位密钥，见 assert_production_secrets。
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # 调度接口令牌。不设默认口令；未配置时调度 HTTP 入口拒绝调用。
+    SCHEDULER_TOKEN: str = ""
+    # 设备外部同步。密钥必填才接受 report/sync；HMAC 密钥可选，配置后还要校验签名。
+    DEVICE_SYNC_API_KEY: str = ""
+    DEVICE_SYNC_HMAC_SECRET: str = ""
+    # 钉钉通讯录同步等内部入口。空则只能用管理员 JWT，不接受匿名。
+    DINGTALK_INTERNAL_TOKEN: str = ""
+    # 非调试时的浏览器来源，逗号分隔。调试模式仍允许任意来源。
+    CORS_ORIGINS: str = ""
 
     # 日志配置
     LOG_LEVEL: str = "INFO"
@@ -118,7 +127,7 @@ class Settings(BaseSettings):
 
     # MCP 服务配置
     MCP_API_KEY: str = ""  # MCP 认证密钥（配置后要求 Authorization: Bearer <key>，未配置则仅允许本机 IP）
-    MCP_PUBLIC_ENABLED: bool = True  # 第三方只读入口 /mcp/public
+    MCP_PUBLIC_ENABLED: bool = False  # 第三方只读入口 /mcp/public，生产默认关，需要时显式打开
     MCP_ENABLE_WRITE_TOOLS: bool = False  # 默认不把写工具挂到 HTTP MCP
 
     def __init__(self, **kwargs):
@@ -149,3 +158,18 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_DEFAULT_SECRET = "your-secret-key-change-this-in-production"
+_KNOWN_SCHEDULER_TOKENS = {"", "sched_token_2026"}
+
+
+def assert_production_secrets() -> None:
+    """DEBUG 关闭时拒绝占位 JWT 密钥和未配置/已公开的调度令牌。本地调试不拦截。"""
+    if settings.DEBUG:
+        return
+    secret = (settings.SECRET_KEY or "").strip()
+    if secret == _DEFAULT_SECRET or len(secret) < 24:
+        raise RuntimeError("生产环境拒绝默认或过短的 SECRET_KEY，请设置随机密钥后再启动")
+    token = (settings.SCHEDULER_TOKEN or "").strip()
+    if token in _KNOWN_SCHEDULER_TOKENS:
+        raise RuntimeError("生产环境必须设置 SCHEDULER_TOKEN，且不能使用已公开的默认值")

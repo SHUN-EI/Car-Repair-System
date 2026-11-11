@@ -577,11 +577,17 @@ def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = D
 
 
 @router.post("/{work_order_id}/analyze", response_model=TicketAnalysisResponse, summary="AI 分析工单")
-def analyze_work_order(work_order_id: int, db: Session = Depends(get_db)):
+def analyze_work_order(
+    work_order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """对工单执行 AI 标准化分析，返回分析结果但不改变状态"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
+    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
 
     wo_data = {
         "fault_description": work_order.fault_description,
@@ -638,7 +644,11 @@ def analyze_work_order(work_order_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{work_order_id}/complete", summary="提交完成工单（AI 分析+去重+收录知识）")
-def complete_work_order(work_order_id: int, db: Session = Depends(get_db)):
+def complete_work_order(
+    work_order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     维修人员确认全部填写完成并提交：
     1. AI 标准化分析（补全缺失的标准化字段）
@@ -646,10 +656,15 @@ def complete_work_order(work_order_id: int, db: Session = Depends(get_db)):
     3. 非重复 → 发布到知识库 → 同步 Milvus
     4. 工单状态改为 COMPLETED
     返回 knowledge_synced 标识知识是否被收录
+
+    角色约束与状态机里转到 COMPLETED 的分支一致：登录且工单在当前门店范围内即可。
+    工业报表仍从 IN_PROGRESS 调用本接口，不把这条已有捷径改成非法流转。
     """
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
+    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     if work_order.status == WorkOrderStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="工单已完成")
 

@@ -1,3 +1,8 @@
+-- 不要用本文件建库。
+-- 工单状态枚举仍是早期工业状态，和 Alembic / domain/work_order_status.py 不是同一套。
+-- 新环境请在 backend 目录执行：alembic upgrade head
+-- 本文件只留作历史对照，执行它会和现网迁移分叉。
+
 -- 混合库方案：向量存储由 Milvus 管理，PostgreSQL 仅存储关系型数据
 
 -- 创建枚举类型

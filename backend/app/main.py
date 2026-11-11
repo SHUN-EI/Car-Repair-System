@@ -1,7 +1,12 @@
 import sys
 import os
+import uuid
 
-# 将 backend 目录添加到 Python 搜索路径（确保 app 模块可被找到）
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
+from loguru import logger
 # __file__ = backend/app/main.py → dirname = backend/app → dirname = backend
 _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
@@ -12,12 +17,7 @@ _project_root = os.path.dirname(_backend_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from contextlib import asynccontextmanager
-from loguru import logger
 
 from app.core.config import settings
 from app.api import work_orders, knowledge, devices, spare_parts, users, categories, search, dashboard, dispatch, duty_schedules, leave_requests, notifications
@@ -78,6 +78,8 @@ _mcp_public_app = public_http_app()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
+    from app.core.config import assert_production_secrets
+    assert_production_secrets()
     logger.info(f"📊 数据库: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'N/A'}")
     logger.info(f"🔴 Redis: {settings.REDIS_URL}")
     logger.info(f"🤖 DeepSeek API: {'已配置' if settings.DEEPSEEK_API_KEY else '未配置'}")
@@ -110,7 +112,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] if settings.DEBUG else [
+        origin.strip() for origin in (settings.CORS_ORIGINS or "").split(",") if origin.strip()
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -181,6 +185,15 @@ async def mcp_access_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """给每个响应带上请求号，便于把日志和一次调用对上。"""
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 app.mount("/mcp/public", _mcp_public_app, name="mcp-public")
 app.mount("/mcp", _mcp_app, name="mcp")
 
@@ -189,10 +202,8 @@ app.mount("/mcp", _mcp_app, name="mcp")
 # ============================================================
 ensure_oa_services_started(app)
 
-# 静态文件服务 - 上传附件目录
-_uploads_dir = os.path.join(_backend_dir, "uploads")
-os.makedirs(_uploads_dir, exist_ok=True)
-app.mount("/api/v1/upload/files", StaticFiles(directory=_uploads_dir), name="upload_files")
+# 上传附件不再公开挂载。读取走 /api/v1/upload/files/{name}，必须登录。
+os.makedirs(os.path.join(_backend_dir, "uploads"), exist_ok=True)
 
 
 # ============================================================
@@ -225,13 +236,55 @@ else:
 
 @app.get("/health", tags=["系统"])
 async def health_check():
-    return {
-        "status": "healthy",
-        "database": "connected",
-        "redis": "connected",
+    """数据库和 Redis 决定整体状态。Milvus 与推理服务单独探测，超时不拖死本接口。"""
+    from sqlalchemy import text
+    import socket
+
+    database = "down"
+    try:
+        from app.core.database import engine
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        database = "connected"
+    except Exception as exc:
+        logger.warning(f"[Health] 数据库探测失败: {exc}")
+
+    redis_status = "down"
+    try:
+        import redis
+        client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.4, socket_timeout=0.4)
+        client.ping()
+        redis_status = "connected"
+    except Exception as exc:
+        logger.warning(f"[Health] Redis 探测失败: {exc}")
+
+    milvus = "down"
+    try:
+        sock = socket.create_connection((settings.MILVUS_HOST, int(settings.MILVUS_PORT)), timeout=0.4)
+        sock.close()
+        milvus = "reachable"
+    except Exception:
+        milvus = "down"
+
+    embedding = "down"
+    try:
+        import httpx
+        response = httpx.get(f"{settings.EMBEDDING_SERVER_URL.rstrip('/')}/health", timeout=0.4)
+        embedding = "ready" if response.status_code == 200 else "down"
+    except Exception:
+        embedding = "down"
+
+    core_ok = database == "connected" and redis_status == "connected"
+    body = {
+        "status": "healthy" if core_ok else "degraded",
+        "database": database,
+        "redis": redis_status,
+        "milvus": milvus,
+        "embedding": embedding,
         "version": settings.APP_VERSION,
-        "mcp": "ok"
+        "mcp": "ok",
     }
+    return JSONResponse(status_code=200 if core_ok else 503, content=body)
 
 
 if os.path.isdir(_frontend_dist):

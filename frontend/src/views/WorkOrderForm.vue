@@ -39,8 +39,8 @@
             <div v-if="!attachments.length">-</div>
             <div v-if="attachments.length" class="attach-gallery">
               <div v-for="(f, i) in attachments" :key="i" class="attach-item">
-                <img v-if="f.type === 'image'" :src="f.url" class="attach-thumb" />
-                <video v-if="f.type !== 'image'" :src="f.url" class="attach-thumb" controls />
+                <img v-if="f.type === 'image'" :src="previewMap[f.url] || ''" class="attach-thumb" />
+                <video v-if="f.type !== 'image'" :src="previewMap[f.url] || ''" class="attach-thumb" controls />
                 <span class="attach-name">{{ f.name }}</span>
               </div>
             </div>
@@ -724,6 +724,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import request from '../api'
 import dayjs from 'dayjs'
+import { toAuthObjectUrl } from '../utils/authMedia'
 
 const route = useRoute()
 const router = useRouter()
@@ -792,6 +793,22 @@ const faultPhenomenaOptions = ref([])
 const rootCauseCascader = ref([])
 const rootCauseOptions = ref([])
 const attachments = ref([])
+const previewMap = ref({})
+
+const hydrateAttachmentPreviews = async (list) => {
+  const next = {}
+  for (const file of list || []) {
+    if (!file || !file.url) continue
+    next[file.url] = await toAuthObjectUrl(file.url)
+  }
+  previewMap.value = next
+  uploadFileList.value = (list || []).map((file, index) => ({
+    uid: index,
+    name: file.name,
+    url: next[file.url] || '',
+    status: 'success',
+  }))
+}
 const uploadFileList = ref([])
 const devices = ref([])
 const deviceFiltered = ref([])
@@ -1319,6 +1336,7 @@ const uploadFile = async (option) => {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     attachments.value.push({ url: res.url, name: res.name, type: res.type })
+    await hydrateAttachmentPreviews(attachments.value)
     option.onSuccess(res)
   } catch (e) {
     option.onError(e)
@@ -1807,7 +1825,7 @@ onMounted(async () => {
 
       if (res.attachments && Array.isArray(res.attachments)) {
         attachments.value = res.attachments
-        uploadFileList.value = res.attachments.map((f, i) => ({ uid: i, name: f.name, url: f.url, status: 'success' }))
+        await hydrateAttachmentPreviews(res.attachments)
       }
 
       if (res.fault_phenomenon_type) {

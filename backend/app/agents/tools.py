@@ -657,7 +657,8 @@ def _load_error_code_whitelist() -> Set[str]:
         db = SessionLocal()
         try:
             rows = db.query(ManualCodeEntry.error_code).distinct().all()
-            _ERROR_CODE_WHITELIST = {(r[0] or "").strip().upper() for r in rows if r[0]}
+            from app.core.manual_text import normalize_error_code
+            _ERROR_CODE_WHITELIST = {normalize_error_code(r[0]) for r in rows if r[0]}
         finally:
             db.close()
     except Exception as e:
@@ -686,17 +687,19 @@ def extract_error_codes(query: str, whitelist: Optional[Set[str]] = None) -> Lis
     codes = set()
     if not query:
         return []
+    from app.core.manual_text import normalize_error_code
 
     # 1. 字母+数字混合错误码
     mixed_matches = list(_ERROR_CODE_RE.finditer(query))
     for m in mixed_matches:
-        tok = re.sub(r'[\s-]', '', m.group(0)).upper()
+        tok = normalize_error_code(m.group(0))
         if len(tok) >= 3 and not tok.isdigit():
             codes.add(tok)
 
     # 2. 纯数字 4~6 位报警码：白名单过滤（排除年份/时间戳/数值）
     #    先剔除已匹配的混合码片段（防 "ALM-6401" 再单独抠出 "6401"），再找独立数字串
-    allowed = whitelist if whitelist is not None else _load_error_code_whitelist()
+    raw_allowed = whitelist if whitelist is not None else _load_error_code_whitelist()
+    allowed = {normalize_error_code(code) for code in (raw_allowed or set()) if code}
     numeric_text = query
     for m in mixed_matches:
         numeric_text = numeric_text[:m.start()] + ' ' * (m.end() - m.start()) + numeric_text[m.end():]
@@ -713,11 +716,11 @@ def extract_error_codes(query: str, whitelist: Optional[Set[str]] = None) -> Lis
     #    匹配成功按码表原形态加入（manual_code_search 按原码精确查询）
     if allowed:
         for code in allowed:
-            if code in codes:
+            if code in codes or not code or code.isdigit():
                 continue
             if re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])",
                          query, re.IGNORECASE):
-                codes.add(code)
+                codes.add(normalize_error_code(code))
 
     return sorted(codes)
 
@@ -1094,10 +1097,18 @@ class RetrievalTools:
         if not error_codes:
             return ToolResult(success=True, data=[], metadata={"method": "manual_code_exact", "count": 0})
         try:
+            from sqlalchemy import func
             from app.models.manual_code import ManualCodeEntry
+            from app.core.manual_text import normalize_error_code
             db = self.db_factory()
             try:
-                q = db.query(ManualCodeEntry).filter(ManualCodeEntry.error_code.in_(error_codes))
+                wanted = [normalize_error_code(code) for code in error_codes if code]
+                stored = func.replace(
+                    func.replace(func.upper(ManualCodeEntry.error_code), "-", ""),
+                    " ",
+                    "",
+                )
+                q = db.query(ManualCodeEntry).filter(stored.in_(wanted))
                 if device_type:
                     q = q.filter(ManualCodeEntry.device_type == device_type)
                 rows = q.order_by(ManualCodeEntry.id.asc()).limit(top_k).all()

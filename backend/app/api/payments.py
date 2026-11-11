@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -10,6 +10,7 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.domain.owner_access import customer_ids_for_user, is_owner
+from app.domain.store_scope import apply_store_column, resolve_store_scope, row_in_scope
 from app.domain.payment_status import PAYMENT_CHANNEL, PAYMENT_LABELS
 from app.models.payment import PaymentIntent
 from app.models.quote import Quote
@@ -18,6 +19,19 @@ from app.models.vehicle import Vehicle
 from app.schemas import PaginatedResponse, PaymentIntentCreate, PaymentIntentResponse
 
 router = APIRouter()
+
+
+def _payment_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+    requested = store_id
+    if requested is None and x_store_id and str(x_store_id).strip().isdigit():
+        requested = int(str(x_store_id).strip())
+    return resolve_store_scope(user, requested)
+
+
+def _quote_in_scope(user: User, quote: Optional[Quote], store_id: Optional[int] = None, x_store_id: Optional[str] = None) -> bool:
+    if quote is None:
+        return False
+    return row_in_scope(_payment_scope(user, store_id, x_store_id), quote.store_id)
 
 
 def _role(user: User) -> str:
@@ -48,6 +62,8 @@ def list_intents(
     page_size: int = Query(20, ge=1, le=100),
     quote_id: Optional[int] = None,
     work_order_id: Optional[int] = None,
+    store_id: Optional[int] = None,
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -68,6 +84,9 @@ def list_intents(
             filters.append(Quote.vehicle_id.in_(vehicle_ids))
         owned = [row.id for row in db.query(Quote.id).filter(or_(*filters)).all()] if filters else []
         query = query.filter(PaymentIntent.quote_id.in_(owned or [-1]))
+    else:
+        query = query.join(Quote, PaymentIntent.quote_id == Quote.id)
+        query = apply_store_column(query, Quote.store_id, _payment_scope(current_user, store_id, x_store_id))
     total = query.count()
     items = query.order_by(PaymentIntent.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {
@@ -89,6 +108,8 @@ def create_intent(
     quote = db.query(Quote).filter(Quote.id == data.quote_id).first()
     if not quote:
         raise HTTPException(status_code=404, detail="报价单不存在")
+    if not is_owner(current_user) and not _quote_in_scope(current_user, quote):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     if quote.status != "CUSTOMER_CONFIRMED" or not quote.customer_confirm:
         raise HTTPException(status_code=400, detail="车主尚未确认报价，不能创建支付意向")
     existing = (
@@ -121,6 +142,11 @@ def get_intent(intent_id: int, db: Session = Depends(get_db), current_user: User
     row = db.query(PaymentIntent).filter(PaymentIntent.id == intent_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="支付意向不存在")
+    quote = db.query(Quote).filter(Quote.id == row.quote_id).first() if row.quote_id else None
+    if is_owner(current_user):
+        return _to_response(row)
+    if not _quote_in_scope(current_user, quote):
+        raise HTTPException(status_code=404, detail="支付意向不存在")
     return _to_response(row)
 
 
@@ -131,6 +157,9 @@ def cancel_intent(intent_id: int, db: Session = Depends(get_db), current_user: U
     row = db.query(PaymentIntent).filter(PaymentIntent.id == intent_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="支付意向不存在")
+    quote = db.query(Quote).filter(Quote.id == row.quote_id).first() if row.quote_id else None
+    if not _quote_in_scope(current_user, quote):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     if row.status != "CREATED":
         raise HTTPException(status_code=400, detail="该支付意向已取消")
     row.status = "CANCELLED"

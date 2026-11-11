@@ -1,7 +1,8 @@
 # 汽修 Agent 平台改造方案
 
 > 完整交互版 Page：[汽修 Agent 平台改造方案](https://cursor.com/canvas/store-43fbe953-ceec-47c3-af70-105eda1218a1/4839ba78-2871-467b-9658-fa61d77a51c8)  
-> 依据：Smart-Repair-System / Car-Repair-System 现有代码 + 技术梳理；**文档冲突采信代码**。
+> 同目录：[代码完善清单](./代码完善清单.md)、[开源模型后训练技术方案](./开源模型后训练技术方案.md)、[Phase 2 启用说明](./phase2-启用说明.md)、[Phase 3 启用说明](./phase3-启用说明.md)  
+> 依据：Smart-Repair-System / Car-Repair-System 现有代码 + 技术梳理；**文档冲突采信代码**。本文没有被覆盖重写，只补了互链。
 
 ## 一句话定位
 
@@ -252,7 +253,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 文档冲突提醒（采信代码）
 
-- 召回默认 **bge-m3**，非 README 中的 Qwen3-Embedding-4B
+- 召回默认 **bge-m3**（1024 维）。README 已按代码改为 bge-m3，不再把 Qwen3-Embedding-4B / 4096 维写成现网
 - 前端 **无 Pinia**
 - 粗筛默认 **0.45**
 - 所谓 BM25 为 **PG ILIKE 加权**，不是独立 BM25 引擎

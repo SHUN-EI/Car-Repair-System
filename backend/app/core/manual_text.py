@@ -6,14 +6,19 @@
 2. 内容文本（build_manual_content_text）：给 LLM/前端展示的完整结构化文本
    conditions 非空时按情形分组输出；为空回退旧平铺格式（过渡期兼容）
 """
+import re
 from typing import Dict, List, Optional
 
 from app.core.config import settings
 
 
 def normalize_error_code(code: str) -> str:
-    """错误码归一化：去首尾空白 + 转大写（与 extract_error_codes 的归一化一致）"""
-    return (code or "").strip().upper()
+    """错误码归一化：去首尾空白、转大写、去掉连字符和空格。
+
+    下划线保留。手册种子码（ALM_01、CW_OT）把下划线当作码本身。
+    与提取混合码一致：ALM-6401 → ALM6401。入库、白名单和提取都走这里。
+    """
+    return re.sub(r"[\s\-]", "", (code or "").strip().upper())
 
 
 def build_manual_embedding_text(e: Dict) -> str:

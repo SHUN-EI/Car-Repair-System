@@ -12,6 +12,8 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_user
+from app.core.rate_limit import hit
+from app.models.user import User
 from app.agents.tools import RetrievalTools, rrf_merge
 from app.agents.retrieval_flow import (
     make_tools as _make_tools,
@@ -113,6 +115,7 @@ def quick_search(
     fault_code: Optional[str] = Query(None),
     top_k: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """快速语义检索 - 仅向量检索，适合自动补全等场景"""
     try:
@@ -145,6 +148,7 @@ def quick_search(
 def hybrid_search(
     request: SearchRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """向量 + BM25 混合检索 + RRF 融合排序（确定性流程，无 ReAct）"""
     tools = _make_tools()
@@ -203,6 +207,7 @@ def hybrid_search(
 def agent_search(
     request: SearchRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     使用 RetrievalAssistantAgent 的完整 ReAct 检索流程。
@@ -210,6 +215,7 @@ def agent_search(
     流程：思考 → 选择策略 → 执行检索 → 观察结果 → 判断质量 →
           不足则改写查询 → 重试 → 直到满足要求或达到最大迭代次数
     """
+    hit(f"search-agent:{current_user.id}", limit=20, window_seconds=60)
     try:
         tools = _make_tools()
         agent = RetrievalAssistantAgent(tools=tools)
@@ -268,6 +274,7 @@ def agent_search(
 def manual_lookup(
     request: ManualLookupRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """工单"错误码录入"模式预填接口：粘贴设备日志/屏幕原文（或错误码/故障描述），
     返回手册标准处理（权威，带章节/页码出处 + 情形清单）+ 相关工单案例（真实处理记录），

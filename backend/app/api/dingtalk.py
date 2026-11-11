@@ -1,5 +1,5 @@
 """钉钉 H5 相关 API"""
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -12,11 +12,15 @@ import uuid
 import time
 import json
 import re
+import hmac
 
 from app.core.database import get_db
 from app.core.dingtalk import dingtalk
 from app.core.config import settings
 from app.core.notification import notification_service
+from app.core.security import create_access_token, get_current_user, get_optional_user
+from app.domain.store_scope import StoreScopeError, ensure_writable_store, resolve_store_scope, role_name, row_in_scope
+from app.domain.work_order_status import allowed_transitions, is_auto_repair_lane
 from app.models.work_order import WorkOrder, WorkOrderStatus
 from app.models.user import User, UserRole
 from app.agents.ticket_agent import ticket_agent
@@ -30,6 +34,64 @@ from app.core import dingtalk_oa_sync  # noqa: E402
 from app.core import dingtalk_stream  # noqa: E402
 
 router = APIRouter()
+
+
+def _require_scheduler_token(token: str) -> None:
+    expected = (settings.SCHEDULER_TOKEN or "").strip()
+    if not expected or expected == "sched_token_2026":
+        raise HTTPException(status_code=503, detail="调度令牌未配置")
+    if not hmac.compare_digest(token or "", expected):
+        raise HTTPException(status_code=403, detail="token 不正确")
+
+
+def _internal_token_ok(token: Optional[str]) -> bool:
+    expected = (settings.DINGTALK_INTERNAL_TOKEN or "").strip()
+    if not expected or not token:
+        return False
+    return hmac.compare_digest(token, expected)
+
+
+def _status_value(status) -> str:
+    return status.value if hasattr(status, "value") else str(status or "")
+
+
+def _load_tech_order(db: Session, work_order_id: int, user: User) -> WorkOrder:
+    wo = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
+    if not wo or not row_in_scope(resolve_store_scope(user), wo.store_id):
+        raise HTTPException(status_code=404, detail="工单不存在")
+    return wo
+
+
+def _claim_actor(wo: WorkOrder, user: User) -> None:
+    role = role_name(user)
+    if role in ("ADMIN", "SUPERVISOR"):
+        return
+    if wo.assignee_id != user.id and wo.technician_id != user.id:
+        raise HTTPException(status_code=403, detail="只能处理指派给自己的工单")
+    if wo.technician_id is None:
+        wo.technician_id = user.id
+
+
+def _walk_transitions(wo: WorkOrder, user: User, db: Session, targets: list[str]) -> list[str]:
+    from app.api.work_orders import _do_transition
+    from app.schemas import WorkOrderTransition
+    moved = []
+    for target in targets:
+        db.refresh(wo)
+        current = _status_value(wo.status)
+        if current == target:
+            continue
+        if target not in allowed_transitions(current):
+            break
+        _do_transition(
+            wo.id,
+            WorkOrderTransition(to_status=target, source="DINGTALK", remark="技师端"),
+            db,
+            user,
+        )
+        moved.append(target)
+    db.refresh(wo)
+    return moved
 
 
 # ============================================================
@@ -337,7 +399,7 @@ def dingtalk_login(req: DingTalkLoginRequest, db: Session = Depends(get_db)):
         title=user.title or "",
         department=user.department or "",
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
-        token="todo-jwt-token",
+        token=create_access_token(user.id, user.username),
     )
 
 
@@ -357,12 +419,18 @@ def _infer_role(dept_name: str, title: str, userid: str) -> str:
 # ==================== 通讯录同步 ====================
 
 @router.post("/sync-contacts", response_model=ContactSyncResponse, summary="同步钉钉通讯录")
-def sync_contacts(db: Session = Depends(get_db)):
+def sync_contacts(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+):
     """
     从钉钉拉取部门+用户列表，upsert 到本地 users 表
     - 按 dingtalk_userid 匹配
     - 自动推断角色
     """
+    if not ((current_user is not None and role_name(current_user) == "ADMIN") or _internal_token_ok(x_internal_token)):
+        raise HTTPException(status_code=401, detail="通讯录同步需要管理员登录或内部令牌")
     sync_result = dingtalk.sync_contacts()
     departments = sync_result["departments"]
     users = sync_result["users"]
@@ -420,13 +488,16 @@ def sync_contacts(db: Session = Depends(get_db)):
 
 
 @router.get("/departments", summary="获取部门列表")
-def list_departments():
+def list_departments(current_user: User = Depends(get_current_user)):
     """获取钉钉部门列表（Mock/真实）"""
     return dingtalk.get_department_list()
 
 
 @router.get("/contacts", summary="获取用户列表")
-def list_contacts(dept_id: int = Query(0, description="部门ID，0为全部")):
+def list_contacts(
+    dept_id: int = Query(0, description="部门ID，0为全部"),
+    current_user: User = Depends(get_current_user),
+):
     """获取钉钉用户列表"""
     return dingtalk.get_user_list(dept_id)
 
@@ -434,13 +505,21 @@ def list_contacts(dept_id: int = Query(0, description="部门ID，0为全部")):
 # ==================== 移动端极简上报 ====================
 
 @router.post("/report", summary="移动端极简上报")
-def mobile_report(req: MobileReportRequest, db: Session = Depends(get_db)):
+def mobile_report(
+    req: MobileReportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     工作人员通过移动端扫码/拍照/语音上报故障
     - 自动生成工单编号
     - 触发 AI 分析和派工
     - 返回工单状态
     """
+    try:
+        store_id = ensure_writable_store(current_user, None)
+    except StoreScopeError as exc:
+        raise HTTPException(status_code=403, detail=exc.message)
     today = datetime.now().strftime("%Y%m%d")
     count = db.query(WorkOrder).filter(
         WorkOrder.work_order_no.like(f"WO-{today}-%")
@@ -453,7 +532,9 @@ def mobile_report(req: MobileReportRequest, db: Session = Depends(get_db)):
         fault_description=req.fault_description,
         fault_media=req.media,
         location=req.location,
-        reporter_id=req.reporter_id,
+        reporter_id=current_user.id,
+        created_by=current_user.id,
+        store_id=store_id,
         priority=req.priority,
         status=WorkOrderStatus.SUBMITTED,
     )
@@ -473,25 +554,30 @@ def mobile_report(req: MobileReportRequest, db: Session = Depends(get_db)):
 
 @router.get("/tech/queue", summary="维修人员工单队列")
 def tech_queue(
-    userid: str = Query(...),
     page: int = Query(1, ge=1),
     page_size: int = Query(10),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """获取当前维修人员的待处理工单列表"""
-    user = db.query(User).filter(
-        (User.username == userid) | (User.dingtalk_userid == userid)
-    ).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-
+    """获取当前登录维修人员的待处理工单列表。身份来自登录令牌，不再接受 userid 查询参数。"""
+    scope = resolve_store_scope(current_user)
     query = db.query(WorkOrder).filter(
-        WorkOrder.assignee_id == user.id,
+        (WorkOrder.assignee_id == current_user.id) | (WorkOrder.technician_id == current_user.id),
         WorkOrder.status.in_([
             WorkOrderStatus.ASSIGNED,
+            WorkOrderStatus.ACCEPTED,
+            WorkOrderStatus.ARRIVED,
+            WorkOrderStatus.INSPECTING,
             WorkOrderStatus.IN_PROGRESS,
+            WorkOrderStatus.QC,
+            WorkOrderStatus.ARCHIVING,
+            WorkOrderStatus.COMPLETED,
         ]),
     ).order_by(WorkOrder.priority.desc(), WorkOrder.created_at.desc())
+    if scope.mode == "store":
+        query = query.filter(WorkOrder.store_id == scope.store_id)
+    elif scope.mode == "legacy":
+        query = query.filter(WorkOrder.store_id.is_(None))
 
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -514,11 +600,13 @@ def tech_queue(
 
 
 @router.get("/tech/detail/{work_order_id}", summary="维修人员工单详情")
-def tech_detail(work_order_id: int, db: Session = Depends(get_db)):
+def tech_detail(
+    work_order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """获取工单完整详情（含分析结果、库存关联）"""
-    wo = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-    if not wo:
-        raise HTTPException(status_code=404, detail="工单不存在")
+    wo = _load_tech_order(db, work_order_id, current_user)
 
     inventory = {}
     analysis = wo.analysis_result if isinstance(wo.analysis_result, dict) else {}
@@ -553,17 +641,25 @@ def tech_detail(work_order_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/tech/start/{work_order_id}", summary="开始维修")
-def tech_start_work(work_order_id: int, db: Session = Depends(get_db)):
-    """维修人员接单，状态 → IN_PROGRESS"""
-    wo = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-    if not wo:
-        raise HTTPException(status_code=404, detail="工单不存在")
-    if wo.status != WorkOrderStatus.ASSIGNED:
-        raise HTTPException(status_code=400, detail=f"工单状态为 {wo.status.value}，无法接单")
-    wo.status = WorkOrderStatus.IN_PROGRESS
-    wo.start_time = datetime.utcnow()
-    db.commit()
-    return {"message": "已开始维修", "status": wo.status.value}
+def tech_start_work(
+    work_order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """维修人员接单。按状态机从已派工走到维修中，不再直接改状态。"""
+    wo = _load_tech_order(db, work_order_id, current_user)
+    _claim_actor(wo, current_user)
+    current = _status_value(wo.status)
+    if current == WorkOrderStatus.IN_PROGRESS.value:
+        return {"message": "已开始维修", "status": current}
+    moved = _walk_transitions(wo, current_user, db, ["ACCEPTED", "ARRIVED", "INSPECTING", "IN_PROGRESS"])
+    status = _status_value(wo.status)
+    if not moved and status != WorkOrderStatus.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"工单状态为 {current}，无法接单，允许: {allowed_transitions(current)}",
+        )
+    return {"message": "已开始维修", "status": status}
 
 
 @router.post("/tech/complete/{work_order_id}", summary="提交完成报告")
@@ -571,27 +667,53 @@ def tech_complete_work(
     work_order_id: int,
     report: CompletionReportRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """维修完成，提交报告，状态 → COMPLETED"""
-    wo = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-    if not wo:
-        raise HTTPException(status_code=404, detail="工单不存在")
-    if wo.status != WorkOrderStatus.IN_PROGRESS:
-        raise HTTPException(status_code=400, detail=f"工单状态为 {wo.status.value}，无法完成")
-
-    wo.status = WorkOrderStatus.COMPLETED
-    wo.end_time = datetime.utcnow()
+    """提交完成报告，并按状态机走到允许的完成态。工业单进入待归档，汽修单质检后完成。"""
+    wo = _load_tech_order(db, work_order_id, current_user)
+    _claim_actor(wo, current_user)
+    current = _status_value(wo.status)
     wo.completion_report = {
         "work_hours": report.work_hours,
         "used_parts": report.used_parts,
         "solution_desc": report.solution_desc,
         "completion_photos": report.completion_photos,
-        "completed_at": wo.end_time.isoformat(),
+        "completed_at": datetime.utcnow().isoformat(),
     }
     if report.solution_desc:
         wo.solution_steps = report.solution_desc
+    if report.work_hours:
+        wo.work_hours = report.work_hours
+    db.flush()
 
-    db.commit()
+    auto = is_auto_repair_lane(
+        status=wo.status,
+        vehicle_id=wo.vehicle_id,
+        appointment_id=wo.appointment_id,
+        store_id=wo.store_id,
+    )
+    if "COMPLETED" in allowed_transitions(current):
+        targets = ["COMPLETED"]
+    elif auto:
+        targets = ["QC", "COMPLETED"]
+    else:
+        targets = ["ARCHIVING"]
+    moved = _walk_transitions(wo, current_user, db, targets)
+    status = _status_value(wo.status)
+    if not moved:
+        raise HTTPException(
+            status_code=400,
+            detail=f"工单状态为 {current}，无法完成，允许: {allowed_transitions(current)}",
+        )
+
+    knowledge_synced = status == "COMPLETED"
+    if status == "ARCHIVING":
+        try:
+            from app.api.work_orders import _auto_publish_knowledge
+            knowledge_synced = _auto_publish_knowledge(wo, db)
+            db.commit()
+        except Exception as e:
+            logger.warning(f"[Mobile] 知识收录失败: {e}")
 
     try:
         assignee = db.query(User).filter(User.id == wo.assignee_id).first()
@@ -607,17 +729,8 @@ def tech_complete_work(
     except Exception as e:
         logger.warning(f"[Mobile] 完成通知发送失败: {e}")
 
-    # 自动收录知识到向量库
-    knowledge_synced = False
-    try:
-        from app.api.work_orders import _auto_publish_knowledge
-        knowledge_synced = _auto_publish_knowledge(wo, db)
-        db.commit()
-    except Exception as e:
-        logger.warning(f"[Mobile] 知识收录失败: {e}")
-
-    logger.info(f"[Mobile] 工单 {wo.work_order_no} 维修完成，knowledge_synced={knowledge_synced}")
-    return {"message": "维修完成", "status": "COMPLETED", "knowledge_synced": knowledge_synced}
+    logger.info(f"[Mobile] 工单 {wo.work_order_no} 维修完成，status={status}, knowledge_synced={knowledge_synced}")
+    return {"message": "维修完成", "status": status, "knowledge_synced": knowledge_synced}
 
 
 # ====================================================================
@@ -1333,8 +1446,7 @@ def leave_daily_9am_task(token: str = Query(..., description="内部调度 token
     """每天 9:00 触发。外部 cron/APScheduler 调此接口即可（需带 settings.SCHEDULER_TOKEN）。"""
     from app.models.user import User, UserRole
     from app.models.leave_request import LeaveRequest, LeaveRequestStatus
-    if token != getattr(settings, "SCHEDULER_TOKEN", "sched_token_2026"):
-        raise HTTPException(status_code=403, detail="token 不正确")
+    _require_scheduler_token(token)
     items = (
         db.query(LeaveRequest)
         .filter(LeaveRequest.status == LeaveRequestStatus.PENDING.value)
@@ -1367,8 +1479,7 @@ def leave_urgent_check(token: str = Query(..., description="调度 token"),
     from app.models.user import User, UserRole
     from app.models.leave_request import LeaveRequest, LeaveRequestStatus
     from app.core import sys_config as sys_conf
-    if token != getattr(settings, "SCHEDULER_TOKEN", "sched_token_2026"):
-        raise HTTPException(status_code=403, detail="token 不正确")
+    _require_scheduler_token(token)
     timeout = sys_conf.get(db, "leave_pending_timeout_hours", 4)
     threshold = datetime.utcnow() - timedelta(hours=timeout)
     pending = (
@@ -1487,9 +1598,7 @@ def sync_oa_leaves_manually(
       - 你建好模板、填完 .env 的 processCode 后，可以先手动调这个接口把过去 N 天的请假单向系统同步一遍。
       - 未来每天 01:00 APScheduler 会自动跑一次（近 3 天）
     """
-    scheduler_token = getattr(settings, "SCHEDULER_TOKEN", None)
-    if scheduler_token and token and token != scheduler_token:
-        raise HTTPException(status_code=403, detail="token 不正确")
+    _require_scheduler_token(token)
     return sync_recent_oa_leaves(days=days)
 
 

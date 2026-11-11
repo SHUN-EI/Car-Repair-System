@@ -1,5 +1,7 @@
 # Phase 3 启用说明
 
+> 2026-11-11 之后的鉴权、空库迁移和文档索引见 [docs 目录说明](./README.md)。本文讲的是 Phase 3 怎么启用。和代码不一致时以代码为准。
+
 这一阶段在现有门店、工单、报价、备件库存和车主通知上增加四件事：门店数据隔离、交车回访提醒、备件采购入库、第三方只读 MCP。支付仍然只是占位，不接清算。不新增经营指标。
 
 ## 数据库
@@ -12,7 +14,7 @@ alembic upgrade head
 
 这次的修订号是 `a9b8c7d6e5f4`，可以降回 `f8a9b0c1d2e3`。
 
-空库从零升级时，会先经过更早的迁移。其中 `2a5022bf6eca` 会给 `users.employee_id` 写注释，但前面的迁移没有建这一列，空库会停在这里。这是原有迁移链的问题。工单状态枚举的两次追加改成了 `ADD VALUE IF NOT EXISTS`，避免重复追加把整个迁移事务打断。
+空库从零升级时，旧版会停在 `2a5022bf6eca`：那一版只给 `users.employee_id` 改注释，更早的迁移却没建这一列。现在这一步会先检查列在不在，不在就补上 `employee_id` 和唯一索引，再继续往后升。工单状态枚举的两次追加仍是 `ADD VALUE IF NOT EXISTS`，避免重复追加把整个迁移事务打断。新环境可以用空库执行 `alembic upgrade head` 做一次检查。
 
 新增内容：
 
@@ -32,7 +34,7 @@ alembic upgrade head
 
 主管、维修员、操作工如果用户上写了 `store_id`，只能看这家店。请求里另传门店编号也不会切到别的店。还没绑定门店的店内账号，只能看 `store_id` 为空的历史数据，不能给已分店的单据写入。
 
-给账号绑定门店：
+给账号绑定门店：必须先登录。创建用户和改角色只有管理员可以。改 `store_id` 只有管理员或主管可以，主管只能绑到自己的店。下面这条 PUT 不再是无鉴权接口。
 
 ```bash
 curl -X PUT "$BASE/api/v1/users/2" \
@@ -90,7 +92,7 @@ curl -X POST "$BASE/api/v1/purchase-orders/1/receive" \
 MCP_ENABLE_WRITE_TOOLS=true
 ```
 
-第三方用 `/mcp/public`。这个入口默认开启，且必须带凭证，本机匿名也不行。只挂这些只读工具：
+第三方用 `/mcp/public`。这个入口**默认关闭**。要给外部系统用时，显式设置 `MCP_PUBLIC_ENABLED=true`，并且必须带凭证，本机匿名也不行。只挂这些只读工具：
 
 - `query_work_order`
 - `query_compatible_parts`

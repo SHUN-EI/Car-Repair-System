@@ -270,12 +270,12 @@
                 <el-icon><Connection /></el-icon>
                 <template #title>故障码管理</template>
               </el-menu-item>
-              <el-menu-item v-if="isSupervisor || isTechnician" index="/work-order-imports">
+              <el-menu-item v-if="canOpenImports" index="/work-order-imports">
                 <el-icon><Upload /></el-icon>
                 <template #title>历史工单导入</template>
               </el-menu-item>
 
-              <template v-if="isSupervisor">
+              <template v-if="canOpenDispatch">
                 <div class="menu-group-label">主管中心</div>
                 <el-menu-item index="/supervisor/dispatch">
                   <el-icon><SetUp /></el-icon>
@@ -334,6 +334,7 @@
                 <el-menu-item index="/follow-ups">
                   <el-icon><Bell /></el-icon>
                 </el-menu-item>
+                <template v-if="canOpenDispatch">
                 <el-menu-item index="/supervisor/dispatch">
                   <el-icon><SetUp /></el-icon>
                 </el-menu-item>
@@ -343,6 +344,7 @@
                 <el-menu-item index="/supervisor/schedule">
                   <el-icon><Calendar /></el-icon>
                 </el-menu-item>
+                </template>
               </template>
               <!-- 管理员/维修员完整版 -->
               <template v-else>
@@ -386,10 +388,10 @@
                 <el-menu-item index="/fault-codes">
                   <el-icon><Connection /></el-icon>
                 </el-menu-item>
-                <el-menu-item v-if="isSupervisor || isTechnician" index="/work-order-imports">
+                <el-menu-item v-if="canOpenImports" index="/work-order-imports">
                   <el-icon><Upload /></el-icon>
                 </el-menu-item>
-                <template v-if="isSupervisor">
+                <template v-if="canOpenDispatch">
                   <el-menu-item index="/supervisor/dispatch">
                     <el-icon><SetUp /></el-icon>
                   </el-menu-item>
@@ -432,6 +434,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
+import { roleCanAccess } from '../router'
 import {
   User, Lock, QuestionFilled, SwitchButton,
   SetUp, Histogram, Calendar, Upload,
@@ -456,16 +459,11 @@ const activeMenu = computed(() => {
   return path
 })
 
-const isSupervisor = computed(() => {
-  const role = currentUser.role
-  return role === 'SUPERVISOR' || role === 'ADMIN'
-})
+const canOpenDispatch = computed(() => roleCanAccess(currentUser.role, '/supervisor/dispatch'))
+const canOpenImports = computed(() => roleCanAccess(currentUser.role, '/work-order-imports'))
 
 // 纯主管（仅 SUPERVISOR，不含 ADMIN）：菜单精简版
 const isPureSupervisor = computed(() => currentUser.role === 'SUPERVISOR')
-
-// 维修员（TECHNICIAN）：历史工单导入等负责核对确认的功能
-const isTechnician = computed(() => currentUser.role === 'TECHNICIAN')
 
 // ===== 当前用户 =====
 const currentUser = reactive({

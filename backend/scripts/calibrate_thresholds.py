@@ -41,8 +41,8 @@ def check_inference_server():
         sys.exit(1)
 
 
-# 覆盖知识库全部设备类型的代表性维修问题（精密五金工厂场景）
-REPRESENTATIVE_QUERIES = [
+# 工业设备代表性问法。换 embedding 后用这组看分数分布是否还站得住。
+INDUSTRIAL_QUERIES = [
     "CNC车床主轴温升过高报警处理",
     "CNC车床X轴伺服过流报警SV0436",
     "CNC车床轴类零件轴向尺寸超差",
@@ -67,6 +67,29 @@ REPRESENTATIVE_QUERIES = [
     "空压机排气量不足压力低",
     "空压机自动排水阀堵塞含水",
 ]
+
+# 汽修门店问法。和 domain/auto_repair_seed.py 的样例同一类说法，不拿工业语料代替。
+AUTO_REPAIR_QUERIES = [
+    "帕萨特怠速抖动故障灯亮",
+    "刹车有金属摩擦声刹车片磨完了吗",
+    "发动机故障码 P0300 多缸失火",
+    "三元催化 P0420 尾气超标",
+    "ABS 故障码 C0035 轮速传感器",
+    "空调不制冷需要加冷媒吗",
+    "方向盘打死有异响",
+    "电瓶亏电早上打不着火",
+    "变速箱换挡顿挫要不要换油",
+    "冷却液温度高水温报警",
+    "机油灯亮还要不要继续开",
+    "轮胎偏磨需要做四轮定位吗",
+]
+
+REPRESENTATIVE_QUERIES = INDUSTRIAL_QUERIES + AUTO_REPAIR_QUERIES
+QUERY_PROFILES = {
+    "industrial": INDUSTRIAL_QUERIES,
+    "auto": AUTO_REPAIR_QUERIES,
+    "all": REPRESENTATIVE_QUERIES,
+}
 
 
 def _percentile(sorted_vals, p):
@@ -146,7 +169,12 @@ if __name__ == "__main__":
                         help="指定单条查询（默认跑全部代表性查询）")
     parser.add_argument("--top-k", type=int, default=50,
                         help="每条查询召回条数（默认 50）")
+    parser.add_argument("--profile", choices=sorted(QUERY_PROFILES), default="all",
+                        help="问法集：industrial 工业设备，auto 汽修，all 两套都跑")
     args = parser.parse_args()
 
-    queries = [args.query] if args.query else REPRESENTATIVE_QUERIES
+    if args.query:
+        queries = [args.query]
+    else:
+        queries = QUERY_PROFILES[args.profile]
     calibrate(queries, args.top_k)

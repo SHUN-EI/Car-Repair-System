@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from loguru import logger
 
 from app.core.config import settings
+from app.core.manual_text import normalize_error_code
 
 _SYSTEM_PROMPT = """你是设备维修手册的结构化录入助手。用户会粘贴设备手册"错误码表"章节的原文（可能是中文或中英混合），
 你需要把它拆成结构化 JSON。规则：
@@ -112,7 +113,7 @@ def _clean_entry(e: dict) -> dict:
         severity = "OH"
 
     return {
-        "error_code": _str(e.get("error_code")).strip().upper(),
+        "error_code": normalize_error_code(_str(e.get("error_code"))),
         "title": _str(e.get("title")),
         "message_text": _str(e.get("message_text")),
         "description": _str(e.get("description")),

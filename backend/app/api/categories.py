@@ -3,11 +3,17 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.domain.store_scope import role_name
 from app.models.category import Category
 from app.models.user import User
 from app.schemas import CategoryCreate, CategoryUpdate, CategoryResponse
 
 router = APIRouter()
+
+
+def _require_admin(user: User) -> None:
+    if role_name(user) != "ADMIN":
+        raise HTTPException(status_code=403, detail="仅管理员可维护分类")
 
 
 def build_category_tree(categories: List[Category], parent_id: Optional[int] = None) -> List[dict]:
@@ -46,7 +52,7 @@ def list_categories(
 
 
 @router.get("/{category_id}", response_model=CategoryResponse, summary="获取分类详情")
-def get_category(category_id: int, db: Session = Depends(get_db)):
+def get_category(category_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="分类不存在")
@@ -54,7 +60,8 @@ def get_category(category_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=CategoryResponse, summary="创建分类")
-def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
+def create_category(data: CategoryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
     existing = db.query(Category).filter(Category.code == data.code).first()
     if existing:
         raise HTTPException(status_code=400, detail="分类编码已存在")
@@ -66,7 +73,13 @@ def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{category_id}", response_model=CategoryResponse, summary="更新分类")
-def update_category(category_id: int, data: CategoryUpdate, db: Session = Depends(get_db)):
+def update_category(
+    category_id: int,
+    data: CategoryUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="分类不存在")
@@ -78,7 +91,8 @@ def update_category(category_id: int, data: CategoryUpdate, db: Session = Depend
 
 
 @router.delete("/{category_id}", summary="删除分类")
-def delete_category(category_id: int, db: Session = Depends(get_db)):
+def delete_category(category_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_admin(current_user)
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="分类不存在")
