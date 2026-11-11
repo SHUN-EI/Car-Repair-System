@@ -184,7 +184,11 @@ def list_manual_codes(
 
 
 @router.get("/{manual_code_id}", summary="获取手册错误码详情")
-def get_manual_code(manual_code_id: int, db: Session = Depends(get_db)):
+def get_manual_code(
+    manual_code_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     item = db.query(ManualCodeEntry).filter(ManualCodeEntry.id == manual_code_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="手册条目不存在")

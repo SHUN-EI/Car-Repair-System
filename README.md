@@ -36,7 +36,7 @@
 | 前端 | Vue 3、Vite、Pinia、Element Plus、Vue Router、Axios |
 | 后端 | FastAPI、SQLAlchemy 2.0、Alembic、Pydantic v2、Loguru |
 | AI / Agent | LangChain、LangGraph、FastMCP、DeepSeek、RAGFlow/LangFuse/local 追踪 |
-| 召回 / 精排 | Qwen3-Embedding-4B 召回（4096 维）、Qwen3-Reranker-0.6B 精排 |
+| 召回 / 精排 | BAAI/bge-m3 召回（1024 维）、Qwen3-Reranker-0.6B 精排 |
 | 数据存储 | PostgreSQL 16、Redis 7、Milvus 2.4、MinIO、etcd |
 | 集成 | 钉钉开放平台、阿里云短信、RAGFlow |
 | 测试 | Pytest、pytest-asyncio、pytest-cov |
@@ -79,18 +79,18 @@
 
 | | PostgreSQL | Milvus |
 | --- | --- | --- |
-| 定位 | 正本档案室：全部业务数据 + 结构化检索 | 语义储物柜：只存 4096 维向量副本 |
+| 定位 | 正本档案室：全部业务数据 + 结构化检索 | 语义储物柜：只存 1024 维向量副本 |
 | 集合/表 | `knowledge_items`、`manual_code_entries`、工单/设备/备件等 | `knowledge`（知识案例）、`log_code`（手册错误码） |
 | 承担检索路 | BM25 关键词路（ILIKE 加权）、手册精确路（错误码等值） | 知识向量路、手册语义路（COSINE ANN） |
 
 ### 3.3 两级模型（都托管在统一推理服务 8010）
 
-| | Qwen3-Embedding-4B（召回） | Qwen3-Reranker-0.6B（精排） |
+| | BAAI/bge-m3（召回） | Qwen3-Reranker-0.6B（精排） |
 | --- | --- | --- |
 | 类型 | bi-encoder，离线预计算文档向量 | cross-encoder，query×文档联合编码 |
-| 输出 | 4096 维 dense 向量（已 L2 归一化） | 0~1 相关分 |
-| 接口 | `POST /v1/embeddings`（OpenAI 兼容，RAGFlow 共用） | `POST /v1/rerank`（分块调用，防显存/内存峰值） |
-| 部署 | vLLM 托管于 GPU（4B fp16 约 8GB 显存 + 0.6B 约 1.2GB，A10/A30 单卡即可），OpenAI 兼容 | 同左 |
+| 输出 | 1024 维 dense 向量（已 L2 归一化） | 0~1 相关分 |
+| 接口 | `POST /v1/embeddings`（OpenAI 兼容） | `POST /v1/rerank`（分块调用，防内存峰值） |
+| 部署 | 现网默认 `python -m app.core.embedding_server`（CPU 可跑 bge-m3）。不要把未重建索引的别的 embedding 当成现网 | 同一推理服务 `/v1/rerank` |
 
 ### 3.4 一次智能问答的数据流
 
@@ -243,7 +243,7 @@ flowchart TD
 | MinIO | 9000 / 9001 | Milvus 依赖的对象存储 |
 | Milvus | 19530 / 9091 | 知识向量、手册错误码向量 |
 | Attu | 8080 | Milvus Web 管理界面 |
-| 统一推理服务 | 8010 | Qwen3-Embedding-4B 编码 + Qwen3-Reranker 精排 |
+| 统一推理服务 | 8010 | bge-m3 编码 + Qwen3-Reranker 精排 |
 | 后端 API | 18080 | FastAPI，Swagger 在 `/docs` |
 | 前端开发服务器 | 4173 | Vite，代理 `/api` 和 `/dingtalk` 到 18080 |
 
@@ -296,7 +296,7 @@ Smart-Repair-System/
 
 ### 部署形态（企业生产环境）
 
-系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）由 **vLLM 在 GPU 上托管 Qwen3-Embedding-4B（召回）+ Qwen3-Reranker（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。
+系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）跑 **BAAI/bge-m3（召回，1024 维）+ Qwen3-Reranker-0.6B（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。生产环境把 `DEBUG` 设为 false，并设置独立的 `SECRET_KEY`、`SCHEDULER_TOKEN`。
 
 以下「初始化与启动」说明为**本地开发/排查**用途。
 
@@ -336,7 +336,7 @@ Smart-Repair-System/
 # 1. 启动基础设施
 docker compose -f docker-compose.dev.yml up -d
 
-# 2. 启动推理服务（Qwen3-Embedding-4B + Qwen3-Reranker，GPU 加载约 1-2 分钟）
+# 2. 启动推理服务（bge-m3 + Qwen3-Reranker）
 cd backend
 python -m app.core.embedding_server --host 0.0.0.0 --port 8010
 
@@ -498,12 +498,17 @@ MCP 访问控制：配置 `MCP_API_KEY` 后要求 `Authorization: Bearer <key>`�
 | --- | --- |
 | `DEEPSEEK_API_KEY` | AI 问答、知识抽取、Agent 的必填密钥 |
 | `EMBEDDING_SERVER_URL` | 推理服务地址，默认 `http://localhost:8010` |
-| `EMBEDDING_MODEL_NAME` | 召回模型，默认 Qwen3-Embedding-4B |
+| `EMBEDDING_MODEL_NAME` | 召回模型，默认 `BAAI/bge-m3`（1024 维） |
+| `MILVUS_VECTOR_SIZE` | 向量维度，必须与 bge-m3 一致，默认 1024 |
 | `RERANKER_MODEL_NAME` | 精排模型，默认 Qwen3-Reranker-0.6B |
 | `RERANKER_ENABLED` | 模型精排总开关 |
 | `RECALL_TOP_K` / `FINAL_TOP_N` | 召回候选数（30）/ 最终送 LLM 条数（10） |
-| `RETRIEVAL_COARSE_THRESHOLD` | 粗筛向量相似度下限，默认 0.15 |
+| `RETRIEVAL_COARSE_THRESHOLD` | 粗筛相似度下限，默认 0.45 |
 | `RERANKER_CANDIDATES` | 送入精排模型的候选条数，默认 30 |
+| `SECRET_KEY` | JWT 密钥。`DEBUG=false` 时拒绝默认占位值 |
+| `SCHEDULER_TOKEN` | 钉钉定时任务入口令牌，生产必须单独设置 |
+| `DEVICE_SYNC_API_KEY` | 设备外部同步密钥 |
+| `MCP_PUBLIC_ENABLED` | 第三方只读 MCP，默认关闭 |
 | `TRACING_BACKEND` | `ragflow` / `langfuse` / `local` |
 | `DINGTALK_*` | 钉钉登录、机器人、OA 审批配置 |
 | `SMS_*` | 阿里云短信配置，`SMS_ENABLED=false` 时不发送真实短信 |

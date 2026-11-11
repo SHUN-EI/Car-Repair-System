@@ -12,7 +12,7 @@ from app.core.notification import notification_service
 from app.models.spare_part import SparePart
 
 
-def check_and_notify_stock_alerts(db: Session = None) -> Dict:
+def check_and_notify_stock_alerts(db: Session = None, query_filter=None) -> Dict:
     """
     检查库存并发送预警通知
     返回预警结果摘要
@@ -23,14 +23,16 @@ def check_and_notify_stock_alerts(db: Session = None) -> Dict:
         close_db = True
 
     try:
-        low_stock = db.query(SparePart).filter(
+        low_query = db.query(SparePart).filter(
             SparePart.stock_quantity > 0,
             SparePart.stock_quantity <= SparePart.safety_stock,
-        ).all()
-
-        out_of_stock = db.query(SparePart).filter(
-            SparePart.stock_quantity <= 0,
-        ).all()
+        )
+        out_query = db.query(SparePart).filter(SparePart.stock_quantity <= 0)
+        if query_filter is not None:
+            low_query = query_filter(low_query)
+            out_query = query_filter(out_query)
+        low_stock = low_query.all()
+        out_of_stock = out_query.all()
 
         alerts: List[Dict] = []
 

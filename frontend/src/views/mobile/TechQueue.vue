@@ -58,17 +58,17 @@ const statusLabel = (s) => ({
 const fetchData = async () => {
   try {
     const res = await request.get('/dingtalk/tech/queue', {
-      params: { userid: 'demo_user', page_size: 50 }
+      params: { page_size: 50 }
     })
     list.value = (res.items || []).filter(wo => {
       if (activeTab.value === 'pending') return wo.status === 'ASSIGNED'
-      if (activeTab.value === 'inprogress') return wo.status === 'IN_PROGRESS'
-      if (activeTab.value === 'completed') return wo.status === 'COMPLETED'
+      if (activeTab.value === 'inprogress') return ['ACCEPTED', 'ARRIVED', 'INSPECTING', 'IN_PROGRESS', 'QC'].includes(wo.status)
+      if (activeTab.value === 'completed') return ['COMPLETED', 'ARCHIVING', 'ARCHIVED', 'CLOSED'].includes(wo.status)
       return true
     })
     tabs.value[0].count = (res.items || []).filter(w => w.status === 'ASSIGNED').length
-    tabs.value[1].count = (res.items || []).filter(w => w.status === 'IN_PROGRESS').length
-    tabs.value[2].count = (res.items || []).filter(w => w.status === 'COMPLETED').length
+    tabs.value[1].count = (res.items || []).filter(w => ['ACCEPTED', 'ARRIVED', 'INSPECTING', 'IN_PROGRESS', 'QC'].includes(w.status)).length
+    tabs.value[2].count = (res.items || []).filter(w => ['COMPLETED', 'ARCHIVING', 'ARCHIVED', 'CLOSED'].includes(w.status)).length
   } catch { /* handled */ }
 }
 

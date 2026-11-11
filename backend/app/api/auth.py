@@ -70,7 +70,6 @@ class DingTalkRegisterRequest(BaseModel):
 
 
 class BindPhoneRequest(BaseModel):
-    user_id: int
     phone: str
     code: str
 
@@ -923,8 +922,12 @@ def dingtalk_unbind(
 
 
 @router.post("/bind-phone", summary="绑定手机号")
-def bind_phone(req: BindPhoneRequest, db: Session = Depends(get_db)):
-    """已登录用户绑定手机号"""
+def bind_phone(
+    req: BindPhoneRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """当前登录用户绑定手机号。目标账号来自令牌，不接受请求体里的 user_id。"""
     stored = _verify_codes.get(req.phone)
     if not stored:
         raise HTTPException(status_code=400, detail="请先获取验证码")
@@ -939,16 +942,12 @@ def bind_phone(req: BindPhoneRequest, db: Session = Depends(get_db)):
     _verify_codes.pop(req.phone, None)
 
     # 检查手机号是否已被其他账号绑定
-    existing = db.query(User).filter(User.phone == req.phone, User.id != req.user_id).first()
+    existing = db.query(User).filter(User.phone == req.phone, User.id != current_user.id).first()
     if existing:
         raise HTTPException(status_code=400, detail="该手机号已被其他账号绑定")
 
-    user = db.query(User).filter(User.id == req.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-
-    user.phone = req.phone
+    current_user.phone = req.phone
     db.commit()
 
-    logger.info(f"[Auth] 手机号绑定成功: user={user.real_name}, phone={req.phone}")
+    logger.info(f"[Auth] 手机号绑定成功: user={current_user.real_name}, phone={req.phone}")
     return {"message": "手机号绑定成功", "phone": req.phone}

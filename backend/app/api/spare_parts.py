@@ -213,13 +213,22 @@ def get_stock_alerts(
 
 
 @router.post("/check-alerts", summary="手动触发库存预警检查")
-def check_stock_alerts(db: Session = Depends(get_db)):
-    """
-    手动触发库存预警检查，发送钉钉通知
-    返回预警结果
-    """
+def check_stock_alerts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+):
+    """手动触发库存预警检查。只通知当前门店范围内的备件，且仅主管或管理员可调用。"""
+    from app.domain.store_scope import role_name
+    if role_name(current_user) not in ("ADMIN", "SUPERVISOR"):
+        raise HTTPException(status_code=403, detail="仅主管或管理员可触发库存预警")
+    scope = _part_scope(current_user, None, x_store_id)
+
+    def _filter(query):
+        return _scope_part_query(query, db, scope)
+
     from app.core.stock_alert import check_and_notify_stock_alerts
-    result = check_and_notify_stock_alerts(db)
+    result = check_and_notify_stock_alerts(db, query_filter=_filter)
     return result
 
 
@@ -337,10 +346,20 @@ def create_spare_part(
 
 
 @router.put("/{part_id}", response_model=SparePartResponse, summary="更新备件")
-def update_spare_part(part_id: int, data: SparePartUpdate, db: Session = Depends(get_db)):
+def update_spare_part(
+    part_id: int,
+    data: SparePartUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+):
     part = db.query(SparePart).filter(SparePart.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="备件不存在")
+    scope = _part_scope(current_user, None, x_store_id)
+    stock_row = _stock_map(db, [part.id], scope.store_id).get(part.id)
+    if not _part_visible(part, scope, stock_row):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     changes = _fitment_payload(data)
     # model_dump 默认包含未传字段；这里只写客户端真正提交的键。
     sent = data.model_dump(exclude_unset=True)
@@ -348,6 +367,11 @@ def update_spare_part(part_id: int, data: SparePartUpdate, db: Session = Depends
         if key not in sent:
             changes.pop(key)
     for key, val in changes.items():
+        if key == "store_id":
+            try:
+                val = ensure_writable_store(current_user, val)
+            except StoreScopeError as exc:
+                raise HTTPException(status_code=403, detail=exc.message)
         setattr(part, key, val)
     db.commit()
     db.refresh(part)
@@ -357,10 +381,19 @@ def update_spare_part(part_id: int, data: SparePartUpdate, db: Session = Depends
 
 
 @router.delete("/{part_id}", summary="删除备件")
-def delete_spare_part(part_id: int, db: Session = Depends(get_db)):
+def delete_spare_part(
+    part_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+):
     part = db.query(SparePart).filter(SparePart.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="备件不存在")
+    scope = _part_scope(current_user, None, x_store_id)
+    stock_row = _stock_map(db, [part.id], scope.store_id).get(part.id)
+    if not _part_visible(part, scope, stock_row):
+        raise HTTPException(status_code=403, detail="只能操作本门店数据")
     db.delete(part)
     db.commit()
     cache_service.delete(f"spare_part:{part_id}")

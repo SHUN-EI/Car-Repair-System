@@ -57,3 +57,12 @@ class TestExtractErrorCodes:
 
     def test_empty_query(self):
         assert extract_error_codes("", whitelist=_SEED_WHITELIST) == []
+
+    def test_hyphen_form_matches_canonical_and_underscore_codes_stay(self):
+        from app.core.manual_text import normalize_error_code
+        assert normalize_error_code(" alm-6401 ") == "ALM6401"
+        assert normalize_error_code("ALM_01") == "ALM_01"
+        assert normalize_error_code("CW_OT") == "CW_OT"
+        assert extract_error_codes("ALM-6401", whitelist={"ALM-6401"}) == ["ALM6401"]
+        assert extract_error_codes("报警 CW_OT", whitelist={"CW_OT"}) == ["CW_OT"]
+        assert extract_error_codes("ALM_01 报警", whitelist={"ALM_01"}) == ["ALM_01"]

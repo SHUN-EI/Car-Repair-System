@@ -161,6 +161,11 @@ def _sort_key(m: dict) -> float:
     return m.get("rrf_score", 0)
 
 
+def case_rank_score(item: dict) -> float:
+    """质量阀门和生成门槛与排序同一把尺子：优先 rerank_score。"""
+    return float(_sort_key(item or {}) or 0)
+
+
 def rank_manual_conditions(items: List[dict], query: str) -> List[dict]:
     """按日志/提问中的伴随信号对手册条目的 conditions 重排（不改变条目间顺序）
 
@@ -366,8 +371,8 @@ def evaluate_retrieval_quality(results: List[dict]) -> dict:
     """
     if not results:
         return {"sufficient": False, "reason": "无结果", "count": 0, "max_score": 0.0}
-    high = sum(1 for r in results if r.get("score", 0) >= settings.AGENT_QUALITY_HIGH_SCORE)
-    max_score = max((r.get("score", 0) for r in results), default=0.0)
+    high = sum(1 for r in results if case_rank_score(r) >= settings.AGENT_QUALITY_HIGH_SCORE)
+    max_score = max((case_rank_score(r) for r in results), default=0.0)
     if len(results) >= 3 and (high >= 2 or max_score >= settings.AGENT_QUALITY_TARGET_SCORE):
         return {"sufficient": True, "reason": f"结果充足 ({len(results)} 条, 最高分 {max_score:.2f})",
                 "count": len(results), "max_score": round(max_score, 4)}

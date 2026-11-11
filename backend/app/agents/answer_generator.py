@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
+from app.agents.retrieval_flow import case_rank_score
 
 
 @dataclass
@@ -430,7 +431,7 @@ class AnswerGenerator:
             )
 
         # 案例相关度过低 → 视为无匹配
-        max_score = max((c.get("score", 0) for c in cases), default=0)
+        max_score = max((case_rank_score(c) for c in cases), default=0)
         if max_score < self.SCORE_THRESHOLD:
             return AnswerResult(
                 question=question,
@@ -449,7 +450,7 @@ class AnswerGenerator:
                 content=c.get("content", "")[:300],
                 device_type=c.get("device_type", ""),
                 fault_code=c.get("fault_code", ""),
-                score=c.get("score", 0),
+                score=case_rank_score(c),
                 summary=self._generate_case_summary(c),
             ))
 
@@ -481,7 +482,7 @@ class AnswerGenerator:
         for i, c in enumerate(cases[:5], 1):
             title = c.get("title", "")
             content = c.get("content", "")[:1500]
-            score = c.get("score", 0)
+            score = case_rank_score(c)
             device_type = c.get("device_type", "")
             fault_code = c.get("fault_code", "")
             # 来源标注：手册条目带出处（手册名/章节/页码/错误码），工单案例标 CASE
@@ -594,7 +595,7 @@ class AnswerGenerator:
             return
 
         # 案例相关度过低 → 视为无匹配（阈值仍是检索粗筛，不因问诊场景放宽）
-        max_score = max((c.get("score", 0) for c in cases), default=0)
+        max_score = max((case_rank_score(c) for c in cases), default=0)
         if max_score < self.SCORE_THRESHOLD:
             yield f"data: {json.dumps({'type': 'answer', 'content': empty_answer}, ensure_ascii=False)}\n\n"
             if emit_done:
@@ -606,7 +607,7 @@ class AnswerGenerator:
         for i, c in enumerate(cases[:5], 1):
             title = c.get("title", "")
             content = c.get("content", "")[:1500]
-            score = c.get("score", 0)
+            score = case_rank_score(c)
             device_type = c.get("device_type", "")
             fault_code = c.get("fault_code", "")
             # 来源标注：手册条目带出处（手册名/章节/页码/错误码），工单案例标 CASE
@@ -703,7 +704,7 @@ class AnswerGenerator:
 
         # 没有任何案例或相关度过低 → 视为无匹配
         all_cases = [c for f in faults for c in f.get("cases", [])]
-        max_score = max((c.get("score", 0) for c in all_cases), default=0)
+        max_score = max((case_rank_score(c) for c in all_cases), default=0)
         if not all_cases or max_score < self.SCORE_THRESHOLD:
             answer = "未检索到与该问题相关的历史案例。请尝试使用更具体的设备型号或故障描述重新提问。"
             yield f"data: {json.dumps({'type': 'answer', 'content': answer}, ensure_ascii=False)}\n\n"
@@ -723,7 +724,7 @@ class AnswerGenerator:
             for j, c in enumerate(cases[:5], 1):
                 title = c.get("title", "")
                 content = c.get("content", "")[:1500]
-                score = c.get("score", 0)
+                score = case_rank_score(c)
                 device_type = c.get("device_type", "")
                 fault_code = c.get("fault_code", "")
                 faults_text += f"""
@@ -793,7 +794,7 @@ class AnswerGenerator:
         """估算回答匹配度（基于检索案例与问题的相关度）"""
         if not cases:
             return 0.0
-        scores = [c.get("score", 0) for c in cases]
+        scores = [case_rank_score(c) for c in cases]
         max_score = max(scores)
         avg_score = sum(scores) / len(scores)
         count_factor = min(len(cases) / 3.0, 1.0)

@@ -8,6 +8,7 @@ from loguru import logger
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.domain.store_scope import role_name
 from app.models.fault_code import FaultCodeMapping
 from app.models.user import User
 
@@ -85,7 +86,7 @@ def list_fault_codes(
 
 
 @router.get("/device-types", summary="获取所有不重复的设备类型")
-def get_device_types(db: Session = Depends(get_db)):
+def get_device_types(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """返回故障码表中所有不重复的设备类型列表，供前端下拉筛选使用"""
     results = db.query(FaultCodeMapping.device_type).filter(
         FaultCodeMapping.device_type.isnot(None),
@@ -96,7 +97,7 @@ def get_device_types(db: Session = Depends(get_db)):
 
 
 @router.get("/{mapping_id}", summary="查看故障码详情")
-def get_fault_code(mapping_id: int, db: Session = Depends(get_db)):
+def get_fault_code(mapping_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """查看单条故障码映射"""
     item = db.query(FaultCodeMapping).filter(FaultCodeMapping.id == mapping_id).first()
     if not item:
@@ -105,14 +106,14 @@ def get_fault_code(mapping_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/create", summary="新增故障码（自动生成 + 重复检测）")
-def create_fault_code(req: FaultCodeCreateRequest, db: Session = Depends(get_db)):
-    """
-    维修员仅填写故障描述，系统自动完成：
-    1. 重复检测 → 若描述相似度≈90%则返回已有码，不重复创建
-    2. 根据设备类型分配编码前缀
-    3. 自动生成下一个可用序号（4位补齐）
-    4. 收录到故障码映射表
-    """
+def create_fault_code(
+    req: FaultCodeCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """维修员填写故障描述后由管理员账号写入码表。重复描述不新建。"""
+    if role_name(current_user) != "ADMIN":
+        raise HTTPException(status_code=403, detail="仅管理员可新增故障码")
     desc = req.fault_description.strip()
     device_type = req.device_type or ""
 

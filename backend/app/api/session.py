@@ -1,11 +1,14 @@
 """会话管理 API - 摘要压缩"""
 import time
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
 from loguru import logger
 
 from app.agents.session_summarizer import session_summarizer
+from app.core.rate_limit import hit
+from app.core.security import get_current_user
+from app.models.user import User
 
 router = APIRouter()
 
@@ -28,8 +31,9 @@ class SummarizeResponse(BaseModel):
 
 
 @router.post("/summarize", response_model=SummarizeResponse, summary="会话摘要压缩")
-def summarize_session(request: SummarizeRequest):
+def summarize_session(request: SummarizeRequest, current_user: User = Depends(get_current_user)):
     """将会话历史消息压缩为结构化摘要，用于替代原始消息降低存储"""
+    hit(f"session-summarize:{current_user.id}", limit=10, window_seconds=60)
     start = time.time()
     try:
         messages_dict = [{"role": m.role, "content": m.content} for m in request.messages]

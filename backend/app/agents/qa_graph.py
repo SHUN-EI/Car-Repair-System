@@ -18,6 +18,7 @@ from typing import Optional, Any, TypedDict
 from loguru import logger
 from langgraph.graph import StateGraph, END
 from app.core.config import settings
+from app.agents.retrieval_flow import case_rank_score
 
 
 class QaState(TypedDict, total=False):
@@ -135,7 +136,7 @@ def fault_filter_node(state: QaState) -> dict:
             error_codes=error_codes,
         )
     else:
-        filtered = [m for m in cases if not m.get("rrf_only", False) and m.get("score", 0) >= settings.RETRIEVAL_COARSE_THRESHOLD][:settings.FINAL_TOP_N]
+        filtered = [m for m in cases if not m.get("rrf_only", False) and case_rank_score(m) >= settings.RETRIEVAL_COARSE_THRESHOLD][:settings.FINAL_TOP_N]
 
     payload["cases"] = filtered
     return {"payload": payload}

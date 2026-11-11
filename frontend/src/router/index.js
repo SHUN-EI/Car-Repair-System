@@ -40,7 +40,7 @@ const router = createRouter({
         { path: 'search', redirect: '/ai-assistant' },
         { path: 'ai-assistant', name: 'AiAssistant', component: () => import('../views/AiAssistant.vue'), meta: { title: 'AI 问答看板' } },
         { path: 'fault-codes', name: 'FaultCodes', component: () => import('../views/FaultCodes.vue'), meta: { title: '故障码管理' } },
-        { path: 'work-order-imports', name: 'WorkOrderImports', component: () => import('../views/ImportWorkOrders.vue'), meta: { title: '历史工单导入', roles: ['ADMIN', 'TECHNICIAN'] } },
+        { path: 'work-order-imports', name: 'WorkOrderImports', component: () => import('../views/ImportWorkOrders.vue'), meta: { title: '历史工单导入', roles: ['ADMIN', 'SUPERVISOR', 'TECHNICIAN'] } },
         { path: 'profile', name: 'Profile', component: () => import('../views/Profile.vue'), meta: { title: '个人设置' } },
         { path: 'security', name: 'Security', component: () => import('../views/Security.vue'), meta: { title: '账号安全' } },
         { path: 'help', name: 'Help', component: () => import('../views/Help.vue'), meta: { title: '帮助中心' } },
@@ -89,7 +89,19 @@ router.beforeEach((to, from, next) => {
     next('/m/book')
     return
   }
+  const requiredRoles = to.meta && to.meta.roles
+  if (Array.isArray(requiredRoles) && requiredRoles.length && !requiredRoles.includes(role)) {
+    next(role === 'OWNER' ? '/m/book' : '/dashboard')
+    return
+  }
   next()
 })
+
+export function roleCanAccess(role, path) {
+  const record = router.resolve(path)
+  const required = record.meta && record.meta.roles
+  if (!Array.isArray(required) || !required.length) return true
+  return required.includes(role || '')
+}
 
 export default router
