@@ -38,7 +38,7 @@ const router = createRouter({
         { path: 'users', name: 'Users', component: () => import('../views/Users.vue'), meta: { title: '用户管理' } },
         { path: 'categories', name: 'Categories', component: () => import('../views/Categories.vue'), meta: { title: '分类管理' } },
         { path: 'search', redirect: '/ai-assistant' },
-        { path: 'ai-assistant', name: 'AiAssistant', component: () => import('../views/AiAssistant.vue'), meta: { title: 'AI 问答看板' } },
+        { path: 'ai-assistant', name: 'AiAssistant', component: () => import('../views/AiAssistant.vue'), meta: { title: '咨询 / 引导 Agent' } },
         { path: 'fault-codes', name: 'FaultCodes', component: () => import('../views/FaultCodes.vue'), meta: { title: '故障码管理' } },
         { path: 'work-order-imports', name: 'WorkOrderImports', component: () => import('../views/ImportWorkOrders.vue'), meta: { title: '历史工单导入', roles: ['ADMIN', 'SUPERVISOR', 'TECHNICIAN'] } },
         { path: 'profile', name: 'Profile', component: () => import('../views/Profile.vue'), meta: { title: '个人设置' } },

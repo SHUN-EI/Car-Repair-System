@@ -85,7 +85,7 @@
       <!-- 顶部标题栏 -->
       <div class="top-bar">
         <div class="top-bar-left">
-          <h2 class="top-bar-title">AI 智能维修助手</h2>
+          <h2 class="top-bar-title">咨询 / 引导 Agent</h2>
           <div class="mode-switch">
             <span
               class="mode-tab"
@@ -111,10 +111,10 @@
         </div>
       </div>
 
-      <!-- ===== 三种模式介绍（可折叠，默认记住收起状态） ===== -->
+      <!-- ===== 咨询/引导 Agent 的模式介绍（可折叠，默认记住收起状态） ===== -->
       <div class="mode-intro" :class="{ collapsed: !modeIntroExpanded }">
         <div class="mode-intro-title" @click="toggleModeIntro">
-          <span class="mi-label">怎么选模式？</span>
+          <span class="mi-label">咨询 / 引导 Agent · 怎么选模式？</span>
           <span class="mi-tip">{{ modeIntroExpanded ? '点击卡片切换模式，点标题栏收起' : '点击展开查看适用场景' }}</span>
           <el-icon class="mi-arrow" :class="{ expanded: modeIntroExpanded }"><ArrowDown /></el-icon>
         </div>
@@ -384,7 +384,7 @@ const welcomeTitle = computed(() => {
   if (repairMode.value === 'guided') return '追踪维修模式'
   if (repairMode.value === 'expert') return '专家问答模式'
   if (repairMode.value === 'consult') return '车主问诊'
-  return '向 AI 助手提问'
+  return '向咨询 / 引导 Agent 提问'
 })
 const welcomeText = computed(() => {
   if (repairMode.value === 'guided') return '描述设备故障现象，AI 将逐步引导排查和维修'
@@ -393,7 +393,7 @@ const welcomeText = computed(() => {
   return '描述设备故障现象，AI 将检索知识库中的维修案例和解决方案'
 })
 
-// ===== 三种模式介绍（维修人员视角） =====
+// ===== 咨询/引导 Agent 的模式介绍（维修人员视角；工单写入走工单 Agent） =====
 const modeIntroCards = [
   {
     mode: 'qa',

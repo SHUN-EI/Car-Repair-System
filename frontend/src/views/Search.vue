@@ -1,7 +1,7 @@
 <template>
   <div class="page ai-chat-page">
     <div class="page-header">
-      <h2 class="page-title">AI 知识问答</h2>
+      <h2 class="page-title">咨询 / 引导 Agent</h2>
     </div>
 
     <!-- 对话区 -->
@@ -12,7 +12,7 @@
           <el-icon :size="40"><ChatLineSquare /></el-icon>
         </div>
         <h3>检修知识助手</h3>
-        <p class="welcome-desc">描述设备故障现象，AI 将检索历史维修案例，提供维修方向与思路</p>
+        <p class="welcome-desc">本页属于咨询 / 引导 Agent。描述设备故障现象，将检索历史维修案例，提供维修方向与思路</p>
         <div class="hint-list">
           <div
             v-for="h in hints"

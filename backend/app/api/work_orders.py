@@ -18,8 +18,7 @@ from app.schemas import (
     TicketAnalysisResponse, WorkOrderTransition, WorkOrderDispatchCreate,
     WorkOrderFromAppointment, WorkOrderProgressLogResponse,
 )
-from app.agents.ticket_agent import ticket_agent
-from app.agents.knowledge_extractor import knowledge_extractor
+from app.agents.work_order_agent import work_order_agent
 from app.agents.tools import extract_error_codes
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus
 from app.domain.work_order_status import (
@@ -401,6 +400,7 @@ def _complete_linked_appointment(db: Session, appointment_id: int) -> None:
 @router.post("/", response_model=WorkOrderResponse, summary="创建草稿工单")
 def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """创建工单。工业单仍是草稿；带车辆/门店/预约的汽修单直接进入接车，状态只靠流转接口推进。"""
+    work_order_agent.claim_write("create_work_order")
     if not data.work_order_no:
         data.work_order_no = _next_work_order_no(db)
     existing = db.query(WorkOrder).filter(WorkOrder.work_order_no == data.work_order_no).first()
@@ -467,6 +467,7 @@ def create_work_order_from_appointment(
     current_user: User = Depends(get_current_user),
 ):
     """预约到店：生成 INTAKE 工单并带上车辆、客户、门店、工位。已开过单则直接返回。"""
+    work_order_agent.claim_write("create_work_order")
     if current_user.role not in (UserRole.ADMIN.value, UserRole.SUPERVISOR.value, UserRole.TECHNICIAN.value):
         raise HTTPException(status_code=403, detail="仅门店人员可从预约接车")
     from app.models.appointment import Appointment
@@ -601,7 +602,7 @@ def analyze_work_order(
         "repair_result": work_order.repair_result,
         "work_hours": work_order.work_hours,
     }
-    analysis = ticket_agent.analyze(wo_data)
+    analysis = work_order_agent.analyze_ticket(wo_data)
 
     # 保存分析结果
     work_order.analysis_result = {
@@ -660,6 +661,7 @@ def complete_work_order(
     角色约束与状态机里转到 COMPLETED 的分支一致：登录且工单在当前门店范围内即可。
     工业报表仍从 IN_PROGRESS 调用本接口，不把这条已有捷径改成非法流转。
     """
+    work_order_agent.claim_write("complete_work_order")
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -682,7 +684,7 @@ def complete_work_order(
         "work_hours": work_order.work_hours,
     }
     try:
-        analysis = ticket_agent.analyze(wo_data)
+        analysis = work_order_agent.analyze_ticket(wo_data)
         work_order.confidence = analysis.confidence
         work_order.analysis_result = {
             "device_type": analysis.device_type,
@@ -798,7 +800,7 @@ def _auto_publish_knowledge(wo: WorkOrder, db: Session) -> bool:
         "tags": wo.tags or [],
     }
 
-    extracted = knowledge_extractor.extract(wo_data)
+    extracted = work_order_agent.extract_knowledge(wo_data)
     if not extracted.title:
         logger.warning(f"[WorkOrder] 工单 {wo.work_order_no} 知识提取返回空内容")
         return False
@@ -854,6 +856,7 @@ def _deduct_spare_parts(wo: WorkOrder, db: Session) -> List[dict]:
     工单完成时，扣减 used_parts 中备件的库存数量
     返回扣减明细列表
     """
+    work_order_agent.claim_write("deduct_spare_parts")
     used_parts = wo.used_parts
     if not used_parts or not isinstance(used_parts, list) or len(used_parts) == 0:
         return []
@@ -1021,6 +1024,7 @@ def transition_work_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    work_order_agent.claim_write("transition_status")
     try:
         return _do_transition(work_order_id, data, db, current_user)
     except HTTPException:
@@ -1232,7 +1236,7 @@ def complete_work_order_internal(work_order_id: int, db: Session):
         "work_hours": work_order.work_hours,
     }
     try:
-        analysis = ticket_agent.analyze(wo_data)
+        analysis = work_order_agent.analyze_ticket(wo_data)
         work_order.confidence = analysis.confidence
         work_order.analysis_result = {
             "device_type": analysis.device_type,
@@ -1455,6 +1459,7 @@ def create_work_order_from_dispatch(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    work_order_agent.claim_write("create_work_order")
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管或管理员可通过派工创建工单")
 

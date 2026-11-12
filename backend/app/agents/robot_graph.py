@@ -1,11 +1,11 @@
-"""钉钉机器人意图路由：LangGraph 图与子图实现
+"""钉钉机器人渠道适配器：LangGraph 图与子图实现。
+
+本模块不是第一类 Agent。分类统一走 AgentRouter（consult | work_order），
+再映射到渠道节点：维修/帮助/库存咨询 → 咨询/引导；建单/待办/查单 → 工单 Agent。
 
 架构：
-- 主图（RobotGraph）：router 条件路由 → help / create / todo / inventory / repair 意图节点
+- 主图（RobotGraph）：router 条件路由 → help / create / todo / inventory / repair 等节点
 - 子图（WoQueryGraph）：工单查询（工单号提取规范化 → 查询并格式化），作为主图节点复用
-
-与旧版 robot_handler._route 的 if-else 相比，意图分发改为图结构，
-后续可平滑扩展新节点（如请假、排班查询）而无需改动路由函数。
 """
 from __future__ import annotations
 
@@ -113,67 +113,17 @@ def _classify_intent_llm(text: str) -> str:
 
 
 def route_intent(state: RobotState) -> str:
+    """钉钉适配器分发：意图分类只走 AgentRouter，避免与产品路由双分发。"""
+    from app.agents.router import agent_router
     text = (state.get("text") or "").strip()
-    if not text:
-        return "help"
-    # ---- 快速通道：模式唯一/意图明确，零成本不经 LLM ----
-    if any(k in text for k in ("帮助", "菜单", "功能", "help", "hello", "你好")):
-        return "help"
-    if any(k in text for k in ("录入工单", "新增工单", "创建工单", "工单录入", "报修")):
-        return "create"
-    # 工单号查询：WO-YYYYMMDD-XXX 或 6 位以上纯数字
-    if re.search(r"WO[-_ ]?[\d-]{6,}", text, re.IGNORECASE) or re.search(r"\d{6,}", text):
-        return "workorder"
-    # 库存意图快速通道：提前于 LLM 判定，避免库存类误被 LLM 打成 none 或 repair
-    try:
-        from app.agents.answer_generator import answer_generator
-        if answer_generator.is_inventory_query(text):
-            return "inventory"
-    except Exception:
-        pass
-    # 纯设备名快速通道：只有设备名、无故障现象、也不是库存 → 走 repair 引导
-    # （LLM 分类规则"描述模糊返回 none"会把纯设备名误打成 none，这里前置兜底）
-    try:
-        from app.agents.tools import get_device_terms
-        dev_terms = get_device_terms()
-        for t in sorted(dev_terms, key=len, reverse=True):
-            if text == t or text.strip() == t:  # 全文就是设备名本身
-                return "repair"
-    except Exception:
-        pass
-    # ---- LLM 分类：处理 todo / duty / repair 等自然语言 ----
-    label = _classify_intent_llm(text)
-    if label:
-        # LLM 返回 none 时再做一次设备命中判定：纯设备名（如"自动排水阀"）无故障描述但用户显然想了解设备，
-        # 不应当成闲聊，按 repair 放行让维修意图阀门做最终裁定
-        if label == "none":
-            try:
-                from app.agents.tools import get_device_terms
-                dev_terms = get_device_terms()
-                if any(t in text for t in dev_terms if t and len(t) >= 2):
-                    return "repair"
-            except Exception:
-                pass
-        return label
-    # ---- LLM 失败降级：规则兜底，默认追踪维修 ----
-    if any(k in text for k in ("我的待办", "我的工单", "待办", "代办", "任务")):
-        return "todo"
-    if any(k in text for k in ("排班", "值班", "班表", "班次")):
-        return "duty"
-    # LLM 失败时仍信任设备命中
-    try:
-        from app.agents.tools import get_device_terms
-        dev_terms = get_device_terms()
-        if any(t in text for t in dev_terms if t and len(t) >= 2):
-            return "repair"
-    except Exception:
-        pass
-    return "repair"
+    result = agent_router.classify(text, entry="dingtalk")
+    action = result.channel_action or ("help" if not text else "repair")
+    allowed = {"help", "create", "todo", "workorder", "inventory", "duty", "repair", "none"}
+    if action not in allowed:
+        action = "repair" if result.agent == "consult" else "todo"
+    return action
 
 
-# ============================================================
-# 主图意图节点
-# ============================================================
 def help_node(state: RobotState) -> dict:
     return {"reply": HELP_TEXT}
 

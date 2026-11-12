@@ -8,7 +8,8 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.domain.owner_access import customer_ids_for_user, is_owner
 from app.domain.owner_notify import notify_owner
-from app.domain.quote_service import QuoteError, add_manual_line, apply_status, create_draft, delete_line
+from app.domain.quote_service import QuoteError, add_manual_line, apply_status, delete_line
+from app.agents.work_order_agent import work_order_agent
 from app.domain.quote_status import QUOTE_LABELS, QUOTE_TRANSITIONS
 from app.domain.store_scope import StoreScopeError, apply_store_column, ensure_writable_store, resolve_store_scope, row_in_scope
 from app.models.quote import Quote
@@ -155,7 +156,8 @@ def draft_quote(
         except StoreScopeError as exc:
             raise HTTPException(status_code=403, detail=exc.message)
     try:
-        quote = create_draft(
+        work_order_agent.claim_write("apply_quote")
+        quote = work_order_agent.create_draft_quote(
             db,
             work_order_id=data.work_order_id,
             vehicle_id=data.vehicle_id,

@@ -1,7 +1,8 @@
-"""MCP 工具函数（业务逻辑唯一实现）
+"""MCP 渠道工具（委托咨询/引导 Agent 与工单 Agent）。
 
 钉钉机器人直接调用本模块函数（低延迟，无网络往返），
-MCP Server 也通过本模块暴露同样的工具给外部 AI 客户端，保证单一来源。
+MCP Server 也通过本模块暴露同样的工具给外部 AI 客户端。
+公开入口与写工具默认关闭的策略不变；本模块不再作为第三 Agent。
 """
 from __future__ import annotations
 
@@ -84,28 +85,9 @@ def _normalize_work_order_no(raw: str) -> str:
 # 1. 知识检索（智能工具，可能耗时数秒~十几秒）
 # ============================================================
 def search_knowledge(query: str) -> str:
-    """按系统 /answer 底层逻辑检索：双库检索 → RRF 融合 → 严格过滤重排 → AnswerAgent 回答
-
-    走公共编排层 app.agents.retrieval_flow（与智能问答/专家模式同一套检索逻辑，保证策略一致）。
-    """
-    if not query or not query.strip():
-        return "请输入故障描述，例如：注塑机 温度过高"
-    try:
-        from app.agents.retrieval_flow import retrieve_hybrid, extract_device_and_fault, filter_rerank_cases
-        from app.agents.answer_generator import answer_generator
-
-        merged, error_codes, tools = retrieve_hybrid(query, top_k=10)
-        device, kws = extract_device_and_fault(tools, query)
-        cases = filter_rerank_cases(
-            tools, merged, query, top_n=5,
-            require_device=device, require_keywords=tuple(kws),
-            error_codes=error_codes,
-        )
-        result = answer_generator.answer(query, cases)
-        return result.answer
-    except Exception as e:
-        logger.warning(f"[MCP] 知识检索失败: {e}")
-        return "知识检索暂时不可用，请稍后再试或直接联系资深工程师。"
+    """按系统 /answer 底层逻辑检索，委托咨询/引导 Agent。"""
+    from app.agents.consult_guide_agent import consult_guide_agent
+    return consult_guide_agent.answer_from_retrieval(query)
 
 
 # ============================================================
@@ -124,7 +106,7 @@ def guided_repair_chat(staff_id: str, message: str) -> str:
         return "请输入故障现象，例如：PLC 输入输出通道无响应"
     if not staff_id:
         return "缺少用户标识（钉钉企业 userId），无法维护排查会话。"
-    from app.agents.guided_repair_agent import guided_repair_agent
+    from app.agents.consult_guide_agent import consult_guide_agent
     from app.core.cache_service import cache_service
 
     now = time.time()
@@ -141,7 +123,7 @@ def guided_repair_chat(staff_id: str, message: str) -> str:
             cache_service.set(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}", session_id, ttl=GUIDED_SESSION_TTL)
         cache_service.set(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}", now, ttl=GUIDED_SESSION_TTL)
     try:
-        return guided_repair_agent.chat_sync(session_id, message)
+        return consult_guide_agent.guided_repair_chat_sync(session_id, message)
     except Exception as e:
         logger.warning(f"[MCP] 追踪维修对话失败: {e}")
         return "追踪维修暂时不可用，请稍后再试或直接联系资深工程师。"
@@ -305,7 +287,7 @@ def guided_repair_track(staff_id: str, message: str) -> str:
         return "请输入故障现象，例如：注塑机温度过高、空压机不启动。"
     if not staff_id:
         return "缺少用户标识（钉钉企业 userId），无法维护排查会话。"
-    from app.agents.guided_repair_agent import guided_repair_agent
+    from app.agents.consult_guide_agent import consult_guide_agent
     from app.core.cache_service import cache_service
 
     now = time.time()
@@ -318,16 +300,16 @@ def guided_repair_track(staff_id: str, message: str) -> str:
 
     # ---- 进行中的结构化会话：续接 / 重发指引 / 显式新问题 ----
     if session_id and (now - float(last)) <= GUIDED_SESSION_TTL:
-        status, is_structured = guided_repair_agent.get_session_status(session_id)
+        status, is_structured = consult_guide_agent.guided_session_status(session_id)
         if status == "diagnosing" and is_structured:
             if any(h in message for h in _NEW_FAULT_HINTS):
                 session_id = None  # 显式新问题 → 走下方开新会话
             else:
-                current_options = guided_repair_agent.get_current_options(session_id)
+                current_options = consult_guide_agent.guided_current_options(session_id)
                 feedback = _parse_action_feedback(message, current_options)
                 if feedback:
                     try:
-                        step = guided_repair_agent.next_step(
+                        step = consult_guide_agent.guided_repair_next_step(
                             session_id,
                             selected_option=feedback["selected_option"],
                             action_taken=feedback["action_taken"],
@@ -344,7 +326,7 @@ def guided_repair_track(staff_id: str, message: str) -> str:
 
     # ---- 新会话 / 已结束 / 会话过期 → 开新结构化诊断 ----
     with _GUIDED_LOCK:
-        step = guided_repair_agent.start_diagnosis(message, device_type="")
+        step = consult_guide_agent.start_guided_repair(message, device_type="")
         new_sid = step.session_id
         if new_sid:
             cache_service.set(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}", new_sid, ttl=GUIDED_SESSION_TTL)
@@ -356,82 +338,15 @@ def guided_repair_track(staff_id: str, message: str) -> str:
 # 2. 工单查询
 # ============================================================
 def query_work_order(work_order_no: str) -> str:
-    """按工单号查询工单状态、设备、维修员、进度"""
-    if not work_order_no or not work_order_no.strip():
-        return "请输入工单号，例如：WO-20260804-002"
-    no = _normalize_work_order_no(work_order_no)
-    db = SessionLocal()
-    try:
-        wo = db.query(WorkOrder).filter(WorkOrder.work_order_no == no).first()
-        if not wo:
-            return f"未找到工单 {no}，请确认工单号是否正确。"
-        status = _status_cn(wo.status)
-        tech = None
-        if wo.technician_id:
-            tech = db.query(User).filter(User.id == wo.technician_id).first()
-        lines = [
-            f"### 工单 {wo.work_order_no}",
-            f"- 设备：{wo.device_code or '-'}",
-            f"- 故障：{wo.fault_description or '-'}",
-            f"- 状态：**{status}**",
-            f"- 优先级：{wo.priority or 'MEDIUM'}",
-            f"- 维修员：{tech.real_name if tech else '-'}",
-        ]
-        if wo.location:
-            lines.append(f"- 位置：{wo.location}")
-        if wo.progress_logs:
-            last = wo.progress_logs[-1]
-            lines.append(f"- 最新进度：{last.remark or ''}")
-        return "\n".join(lines)
-    finally:
-        db.close()
+    """按工单号查询工单状态、设备、维修员、进度（委托工单 Agent 只读方法）。"""
+    from app.agents.work_order_agent import work_order_agent
+    return work_order_agent.query_work_order(work_order_no)
 
 
-# ============================================================
-# 3. 我的待办（按钉钉企业 userId 识别用户）
-# ============================================================
 def query_my_workorders(staff_id: str) -> str:
-    """查询指定钉钉用户（企业 userId）名下待处理工单列表"""
-    if not staff_id:
-        return "缺少用户标识（钉钉企业 userId / senderStaffId）。"
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.dingtalk_userid == staff_id).first()
-        if not user:
-            return "未识别到该系统用户，请先在系统中绑定钉钉账号。"
-        wos = (
-            db.query(WorkOrder)
-            .filter(WorkOrder.technician_id == user.id, WorkOrder.status.in_(ACTIVE_STATUS))
-            .order_by(WorkOrder.created_at.desc())
-            .limit(10)
-            .all()
-        )
-        if not wos:
-            return "您名下暂时没有待处理的工单。"
-        lines = [f"您名下共有 **{len(wos)}** 个待处理工单：", ""]
-        for wo in wos:
-            lines.append(f"- {wo.work_order_no}｜{wo.fault_description or '-'}｜{_status_cn(wo.status)}")
-        lines.append("")
-        lines.append("回复工单号可查看详情。")
-        return "\n".join(lines)
-    finally:
-        db.close()
-
-
-# ============================================================
-# 3.5 排班查询
-# ============================================================
-_SHIFT_CN = {"MORNING": "早班", "AFTERNOON": "中班", "NIGHT": "夜班"}
-_LEAVE_TYPE_CN = {
-    "ANNUAL": "年假",
-    "SICK": "病假",
-    "PERSONAL": "事假",
-    "COMPENSATION": "调休",
-    "MARRIAGE": "婚假",
-    "MATERNITY": "产假",
-    "FUNERAL": "丧假",
-    "OTHER": "其他",
-}
+    """查询指定钉钉用户（企业 userId）名下待处理工单列表（委托工单 Agent）。"""
+    from app.agents.work_order_agent import work_order_agent
+    return work_order_agent.query_my_work_orders(staff_id)
 
 
 def _parse_duty_date(text: str) -> date:
@@ -534,16 +449,11 @@ def query_duty_schedule(staff_id: str, text: str = "") -> str:
 # 4. 库存查询（智能工具）
 # ============================================================
 def query_inventory(question: str) -> str:
-    """查询备件库存信息（备件名/编码/设备类型）"""
+    """查询备件库存信息（只读，委托咨询/引导 Agent）。"""
     if not question or not question.strip():
         return "请输入备件查询，例如：查一下保险丝的库存"
-    db = SessionLocal()
-    try:
-        from app.agents.answer_generator import answer_generator
-        result = answer_generator.handle_inventory_query(question.strip(), db)
-        return result.answer
-    finally:
-        db.close()
+    from app.agents.consult_guide_agent import consult_guide_agent
+    return consult_guide_agent.query_inventory_readonly(question.strip())
 
 
 # ============================================================
@@ -645,12 +555,13 @@ def query_compatible_parts(
     keyword: str = "",
 ) -> str:
     """按品牌、车系、年款、发动机或车牌列出适配备件和库存。year 传 0 表示不限年款。"""
-    from app.agents.inventory_tools import format_compatible_text, list_compatible_parts, resolve_fitment_spec
+    from app.agents.work_order_agent import work_order_agent
+    from app.agents.inventory_tools import format_compatible_text
     from app.domain.fitment import spec_is_empty
 
     db = SessionLocal()
     try:
-        spec, error = resolve_fitment_spec(
+        spec, error = work_order_agent.resolve_fitment_spec(
             db,
             plate=plate or None,
             brand=brand or None,
@@ -662,7 +573,7 @@ def query_compatible_parts(
             return error
         if spec_is_empty(spec):
             return "请提供品牌、车系、年款、发动机或车牌。例如：大众 速腾 2018 1.4T。"
-        parts = list_compatible_parts(
+        parts = work_order_agent.list_compatible_parts(
             db,
             brand=spec["brand"],
             series=spec["series"],
@@ -684,11 +595,11 @@ def recommend_service(
     plate: str = "",
 ) -> str:
     """按车型、里程和症状推荐保养套餐。mileage 传 -1 表示未知里程。"""
-    from app.agents.service_tools import format_recommendation, recommend_service_packages
+    from app.agents.work_order_agent import work_order_agent
 
     db = SessionLocal()
     try:
-        result = recommend_service_packages(
+        result = work_order_agent.recommend_packages(
             db,
             plate=plate or None,
             brand=brand or None,
@@ -696,7 +607,7 @@ def recommend_service(
             mileage=None if mileage is None or mileage < 0 else mileage,
             symptoms=symptoms or None,
         )
-        return format_recommendation(result)
+        return work_order_agent.format_recommendation(result)
     finally:
         db.close()
 
@@ -709,13 +620,14 @@ def draft_quote(
     include_packages: bool = False,
 ) -> str:
     """根据工单领料、问诊建议或保养套餐生成报价草案。不自动确认，也不收款。"""
-    from app.domain.quote_service import QuoteError, create_draft
+    from app.domain.quote_service import QuoteError
+    from app.agents.work_order_agent import work_order_agent
 
     if not work_order_id and not (consult_text or "").strip() and not include_packages:
         return "请提供工单号对应的工单 id、问诊建议，或打开套餐推荐。"
     db = SessionLocal()
     try:
-        quote = create_draft(
+        quote = work_order_agent.create_draft_quote(
             db,
             work_order_id=work_order_id or None,
             consult_text=consult_text or None,

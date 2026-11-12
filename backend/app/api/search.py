@@ -22,11 +22,9 @@ from app.agents.retrieval_flow import (
     filter_rerank_cases as _filter_rerank_cases,
     evaluate_retrieval_quality as _evaluate_retrieval_quality,
 )
-from app.agents.retrieval_agent import RetrievalAssistantAgent
 from app.agents.answer_generator import answer_generator
-from app.agents.fault_decomposer import fault_decomposer
-from app.agents.guided_repair_agent import guided_repair_agent
-from app.agents.expert_repair_agent import expert_repair_agent, ExpertOption, ExpertStepResult
+from app.agents.consult_guide_agent import consult_guide_agent
+from app.agents.expert_repair_agent import ExpertStepResult
 
 router = APIRouter()
 
@@ -218,10 +216,9 @@ def agent_search(
     hit(f"search-agent:{current_user.id}", limit=20, window_seconds=60)
     try:
         tools = _make_tools()
-        agent = RetrievalAssistantAgent(tools=tools)
-
-        result = agent.search(
+        result = consult_guide_agent.search_with_react(
             query=request.query,
+            tools=tools,
             device_type=request.device_type,
             fault_code=request.fault_code,
             max_results=request.top_k,
@@ -385,11 +382,10 @@ async def analyze_answer_stream(
         tools = make_tools()
 
         # 走 LangGraph 主图 + 子图：意图路由（聊天/库存/故障）→ 对应子图执行。
-        from app.agents.qa_graph import invoke_qa
         t_retrieve_start = time.monotonic()
         try:
             state = await asyncio.to_thread(
-                invoke_qa,
+                consult_guide_agent.invoke_qa,
                 request.question, request.device_type, request.fault_code, request.top_k,
             )
         except Exception as e:
@@ -504,7 +500,7 @@ async def expert_answer_stream(
         # Step 1: 复合问题拆解（规则预检 + LLM 拆解，单故障直通）
         try:
             sub_queries = await asyncio.wait_for(
-                asyncio.to_thread(fault_decomposer.decompose, request.question),
+                asyncio.to_thread(consult_guide_agent.decompose_fault, request.question),
                 timeout=20,            # 拆解超时 20s → 按单故障处理，不让用户干等
             )
         except asyncio.TimeoutError:
@@ -555,8 +551,8 @@ async def expert_answer_stream(
             references = references[:8]
 
             # 首轮增强：共因/关联判定 + 维修优先级 + 2-3 个方向选项（新增，供多轮引导）
-            first_round = expert_repair_agent.generate_first_round(request.question, faults)
-            session_id = expert_repair_agent.create_session(
+            first_round = consult_guide_agent.expert_first_round(request.question, faults)
+            session_id = consult_guide_agent.expert_create_session(
                 request.question, sub_queries, faults, first_round["analysis"])
 
             yield f"data: {json_module.dumps({'type': 'answer', 'content': first_round['analysis']}, ensure_ascii=False)}\n\n"
@@ -605,8 +601,8 @@ async def expert_answer_stream(
         faults_single = [{"name": sub_queries[0], "cases": filtered_merged}]
 
         # 首轮增强：单故障也生成"定位分析 + 优先级 + 方向选项"并创建会话（供多轮引导）
-        first_round = expert_repair_agent.generate_first_round(request.question, faults_single)
-        session_id = expert_repair_agent.create_session(
+        first_round = consult_guide_agent.expert_first_round(request.question, faults_single)
+        session_id = consult_guide_agent.expert_create_session(
             request.question, sub_queries, faults_single, first_round["analysis"])
 
         yield f"data: {json_module.dumps({'type': 'answer', 'content': first_round['analysis']}, ensure_ascii=False)}\n\n"
@@ -642,7 +638,7 @@ async def expert_next_step(request: ExpertStepRequest,
         yield f"data: {json_module.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(expert_repair_agent.next_step, request.session_id, request.message),
+                asyncio.to_thread(consult_guide_agent.expert_next_step, request.session_id, request.message),
                 timeout=90,          # 引导轮超时 90s（检索+精排+LLM 生成），超时给可感知的降级提示
             )
         except asyncio.TimeoutError:
@@ -674,9 +670,9 @@ def _run_agent_search(tools: RetrievalTools, query: str, device_type: Optional[s
                       fault_code: Optional[str], top_k: int,
                       require_hybrid: bool = False) -> List[dict]:
     """在独立线程中执行一次 ReAct Agent 检索（供多故障并行调用）"""
-    agent = RetrievalAssistantAgent(tools=tools)
-    result = agent.search(
+    result = consult_guide_agent.search_with_react(
         query=query,
+        tools=tools,
         device_type=device_type,
         fault_code=fault_code,
         max_results=top_k,
@@ -769,7 +765,7 @@ class GuidedRepairStepOut(BaseModel):
 def start_guided_repair(request: GuidedRepairStartRequest,
                       current_user = Depends(get_current_user)):
     """根据故障描述启动追踪维修诊断"""
-    result = guided_repair_agent.start_diagnosis(
+    result = consult_guide_agent.start_guided_repair(
         description=request.description,
         device_type=request.device_type or "",
     )
@@ -788,7 +784,7 @@ def start_guided_repair(request: GuidedRepairStartRequest,
 def guided_repair_next_step(session_id: str, request: GuidedRepairStepRequest,
                            current_user = Depends(get_current_user)):
     """维修员反馈操作结果，AI 给出下一步诊断"""
-    result = guided_repair_agent.next_step(
+    result = consult_guide_agent.guided_repair_next_step(
         session_id=session_id,
         selected_option=request.selected_option,
         action_taken=request.action_taken,
@@ -835,7 +831,7 @@ async def guided_repair_chat_stream(request: GuidedRepairChatRequest,
 
         try:
             # 使用新的 achat 异步方法，原生 async for，无死锁风险
-            async for chunk in guided_repair_agent.achat(
+            async for chunk in consult_guide_agent.guided_repair_achat(
                 session_id=sid,
                 message=request.message,
                 device_type=request.device_type or "",

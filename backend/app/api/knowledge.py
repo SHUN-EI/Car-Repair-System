@@ -15,7 +15,7 @@ from app.schemas import (
     KnowledgeExtractRequest, KnowledgeExtractResponse, KnowledgeDedupResult,
     KnowledgeReviewRequest, KnowledgeReviewResponse,
 )
-from app.agents.knowledge_extractor import knowledge_extractor
+from app.agents.work_order_agent import work_order_agent
 
 router = APIRouter()
 
@@ -146,7 +146,7 @@ def extract_from_work_order(
     }
 
     # 2. LLM 提取
-    extracted = knowledge_extractor.extract(wo_data)
+    extracted = work_order_agent.extract_knowledge(wo_data)
     if not extracted.title:
         raise HTTPException(status_code=500, detail="知识提取失败：无法从工单中提取有效内容")
 
@@ -338,8 +338,8 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
             exact_matches = exact_query.order_by(KnowledgeItem.id.desc()).limit(5).all()
             for em in exact_matches:
                 if extracted.content and em.content:
-                    from app.agents.dedup_agent import dedup_agent
-                    decision = dedup_agent.check(
+                    from app.agents.work_order_agent import work_order_agent
+                    decision = work_order_agent.check_dedup(
                         new_item=new_item,
                         existing_item={
                             "title": em.title,
@@ -400,8 +400,8 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
                 if title_sim >= settings.DEDUP_LLM_THRESHOLD and extracted.content:
                     existing_content = r.get("content", "") or ""
                     if existing_content:
-                        from app.agents.dedup_agent import dedup_agent
-                        decision = dedup_agent.check(
+                        from app.agents.work_order_agent import work_order_agent
+                        decision = work_order_agent.check_dedup(
                             new_item=new_item,
                             existing_item={
                                 "title": r.get("title", ""),
@@ -449,8 +449,8 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
                 is_true_dup = False
                 dedup_reason = ""
                 if extracted.content and existing.content:
-                    from app.agents.dedup_agent import dedup_agent
-                    decision = dedup_agent.check(
+                    from app.agents.work_order_agent import work_order_agent
+                    decision = work_order_agent.check_dedup(
                         new_item=new_item,
                         existing_item={
                             "title": existing.title,
@@ -497,8 +497,8 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
                 is_true_dup = False
                 dedup_reason = ""
                 if extracted.content and existing.content:
-                    from app.agents.dedup_agent import dedup_agent
-                    decision = dedup_agent.check(
+                    from app.agents.work_order_agent import work_order_agent
+                    decision = work_order_agent.check_dedup(
                         new_item=new_item,
                         existing_item={
                             "title": existing.title,

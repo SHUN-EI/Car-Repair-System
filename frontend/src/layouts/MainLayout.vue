@@ -220,7 +220,7 @@
               </el-menu-item>
               <el-menu-item index="/ai-assistant">
                 <el-icon><ChatLineSquare /></el-icon>
-                <template #title>AI 问答看板</template>
+                <template #title>咨询 / 引导 Agent</template>
               </el-menu-item>
 
               <div class="menu-group-label">知识管理</div>

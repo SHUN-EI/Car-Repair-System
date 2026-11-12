@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import List
 from loguru import logger
 
-from app.agents.session_summarizer import session_summarizer
+from app.agents.consult_guide_agent import consult_guide_agent
 from app.core.rate_limit import hit
 from app.core.security import get_current_user
 from app.models.user import User
@@ -37,7 +37,7 @@ def summarize_session(request: SummarizeRequest, current_user: User = Depends(ge
     start = time.time()
     try:
         messages_dict = [{"role": m.role, "content": m.content} for m in request.messages]
-        summary = session_summarizer.summarize(messages_dict)
+        summary = consult_guide_agent.summarize(messages_dict)
         elapsed = (time.time() - start) * 1000
         return SummarizeResponse(
             session_id=request.session_id,

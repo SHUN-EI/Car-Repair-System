@@ -22,7 +22,7 @@ from app.models.user import User, UserRole
 from app.models.work_order_import import WorkOrderImportBatch, WorkOrderImportItem
 from app.models.work_order import WorkOrder
 from app.models.device import Device
-from app.agents.work_order_importer import invoke_import_pdf
+from app.agents.work_order_agent import work_order_agent
 
 router = APIRouter(tags=["历史工单导入"])
 
@@ -93,7 +93,7 @@ async def upload_pdf_workorders(
             saved_paths.append(file_path)
 
             try:
-                r = invoke_import_pdf(file_path, f.filename or unique_name, batch.id)
+                r = work_order_agent.import_pdf(file_path, f.filename or unique_name, batch.id)
             except Exception as e:
                 logger.exception(f"[WOImport] 处理异常: {f.filename}")
                 r = {"file_name": f.filename or unique_name, "status": "ERROR",

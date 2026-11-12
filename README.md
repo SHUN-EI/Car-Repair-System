@@ -52,8 +52,8 @@
 ┌────────────────────▼───────────────────────┐
 │ FastAPI 后端（Port 18080）                  │
 │ API 层：21 个路由模块，另挂载 MCP             │
-│ Agent 层：QA Graph、追踪维修、专家模式、      │
-│ 工单导入、钉钉机器人、ReAct                  │
+│ Agent 层：咨询/引导、工单（渠道不是 Agent）   │
+│ 内部能力：问答图、追踪维修、专家模式、导入 DAG │
 │ 公共检索编排层：retrieval_flow.py           │
 └───┬────────┬────────┬────────┬────────────┘
     │        │        │        │ HTTP
@@ -71,7 +71,7 @@
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
 | API 层 | `app/api/` | 21 个路由模块：鉴权、参数校验、同步/异步（长任务用 `asyncio.to_thread` 包同步检索）、SSE 流式下发 |
-| Agent 层 | `app/agents/` | LangGraph 图（智能问答主图、追踪维修、专家模式）+ 单职责 Agent（去重、知识抽取、工单导入流水线） |
+| Agent 层 | `app/agents/` | 第一类 Agent 仅两个门面：`consult_guide_agent`、`work_order_agent`，经 `AgentRouter` 分发。问答图、引导/专家状态机、导入 DAG 等是门面下的内部能力 |
 | 检索编排层 | `agents/retrieval_flow.py` + `agents/tools.py` | 四路召回、RRF 融合、粗筛/精排/过滤、错误码正则提取；**所有 AI 入口共用**，保证行为一致 |
 | 能力层 | `app/core/` | 推理服务客户端（embeddings/reranker）、向量库、缓存、数据库、钉钉/短信/通知 |
 
@@ -147,9 +147,13 @@ validate（字段校验）→ save_draft（存草稿待人工确认）→ END
 
 一句话决策原则：**图解决的是“多个步骤按什么拓扑流转”的问题——没有多步拓扑（单次调用）、拓扑在运行时才确定（循环/多轮会话），就不该用图。**
 
-### 3.7 Agent 盘点：5 个 Agent + 12 个工具模块
+### 3.7 Agent 盘点：2 个第一类 Agent（内部模块为能力）
 
-`agents/` 目录 17 个模块，按职责划分为两类：**5 个 Agent**（承担独立判断/自主决策任务）+ **12 个工具模块**（编排、生成、规则工具）。
+产品与对外文档只承认两个第一类 Agent：**咨询/引导 Agent**（`consult_guide_agent`）和 **工单 Agent**（`work_order_agent`）。HTTP / 前端 / 钉钉 / FastMCP 都是渠道，经 `AgentRouter` 把每个请求派给其中一个。钉钉 `robot_graph` 与手册结构化等不是第三 Agent。设计说明见 [docs/双Agent精简技术方案.md](docs/双Agent精简技术方案.md)。
+
+`agents/` 目录的其余模块是这两个门面下的内部能力（兼容别名），不是并列的对外 Agent。下表仍按实现职责列出，便于对照代码。
+
+按实现职责可再分为：**自主判断/多轮模块** + **工具模块**（编排、生成、规则）。
 
 **Agent 层（5 个）**：
 
