@@ -1,8 +1,7 @@
 # 汽修 Agent 平台改造方案
 
-> 完整交互版 Page：[汽修 Agent 平台改造方案](https://cursor.com/canvas/store-43fbe953-ceec-47c3-af70-105eda1218a1/4839ba78-2871-467b-9658-fa61d77a51c8)  
-> 同目录：[代码完善清单](./代码完善清单.md)、[开源模型后训练技术方案](./开源模型后训练技术方案.md)、[Phase 2 启用说明](./phase2-启用说明.md)、[Phase 3 启用说明](./phase3-启用说明.md)  
-> 依据：Smart-Repair-System / Car-Repair-System 现有代码 + 技术梳理；**文档冲突采信代码**。本文没有被覆盖重写，只补了互链。
+> 完整交互版 Page：[汽修 Agent 平台改造方案](https://cursor.com/canvas/store-43fbe953-ceec-47c3-af70-105eda1218a1/4839ba78-2871-467b-9658-fa61d77a51c8)
+> 依据：Smart-Repair-System / Car-Repair-System 现有代码 + 技术梳理；**文档冲突采信代码**。
 
 ## 一句话定位
 
@@ -72,7 +71,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 门店端 PC ──┼── FastAPI (/api/v1 + SSE + /mcp)
 技师端 ─────┘         │
                       ├── Agent 编排 (qa_graph / guided / expert / retrieval_flow)
-                      │         ├── 检索与知识 (bge-m3 + bge-reranker-v2-m3 + RRF)
+                      │         ├── 检索与知识 (bge-m3 + Qwen3-Reranker-0.6B + RRF)
                       │         └── DeepSeek 生成
                       ├── PG + Redis + Milvus
                       ├── 消息（钉钉 + 短信开关）
@@ -85,19 +84,20 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 4. 数据模型改造
 
-1. **Device → Vehicle**  
+1. **Device → Vehicle**
+
    保留 devices 表或迁移为 vehicles：`plate_no`、`vin`、`brand`、`series`、`model_year`、`mileage`、`last_service_at`；废弃/降级 `run_status` 或改为车况标签。入口：`backend/app/models/device.py`、`api/devices.py`、`Devices.vue`。
+2. **WorkOrder 状态机（维保）**
 
-2. **WorkOrder 状态机（维保）**  
    现枚举含 DRAFT/SUBMITTED/ASSIGNED/ACCEPTED/ARRIVED/INSPECTING/IN_PROGRESS/COMPLETED/ARCHIVING/REJECTED 及旧态。建议映射：`APPOINTMENT_BOOKED → CHECKED_IN → DIAGNOSING → IN_SERVICE → QC → DELIVERED → ARCHIVED`；Alembic 做值映射 + 兼容读旧值。
+3. **新建核心表**
 
-3. **新建核心表**  
    Customer、Store、Bay、Appointment、ServiceSKU/ServicePackage、Quote/QuoteLine；SparePart 增加 `fitment`（JSONB：年款/车型/排量）。
+4. **知识侧拆分**
 
-4. **知识侧拆分**  
    KnowledgeItem 用 category/标签区分案例 / OEM 手册 / 保养规范；ManualCodeEntry 面向 OBD/故障灯；FaultCodeMapping 可映射「故障现象→建议项目」。
+5. **Alembic 建议顺序**
 
-5. **Alembic 建议顺序**  
    ① Store/Customer/Bay → ② vehicles 改字段或新表+FK 回填 → ③ Appointment/ServiceSKU → ④ WorkOrder 状态迁移 → ⑤ spare_parts.fitment → ⑥ Quote → ⑦ 知识标签回填。每步可回滚；先双写再切读。
 
 | 实体 | 来源 | 关键字段（示意） |
@@ -112,7 +112,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 5. Agent 能力设计
 
-检索主干继续复用 `agents/retrieval_flow.py`：四路召回（向量 / ILIKE 加权「BM25」/ 手册精确 / 手册向量）→ RRF(k=60) → 粗筛/精排 → 送 LLM。默认 embedding 仍为代码事实 `BAAI/bge-m3`（1024 维），Reranker `BAAI/bge-reranker-v2-m3`，失败冷却后规则重排。质量阀门阈值仍按原 Qwen3-Reranker 标定，尚未重标。
+检索主干继续复用 `agents/retrieval_flow.py`：四路召回（向量 / ILIKE 加权「BM25」/ 手册精确 / 手册向量）→ RRF(k=60) → 粗筛/精排 → 送 LLM。默认 embedding 仍为代码事实 `BAAI/bge-m3`（1024 维），Reranker `Qwen3-Reranker-0.6B`，失败冷却后规则重排。
 
 ### 话术与工具改造
 
@@ -153,7 +153,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 - [ ] 新建 Store/Customer/Bay/Appointment 最小表
 - [ ] 前端：Devices→Vehicles，移动端文案替换
 
-**风险**：状态枚举硬编码散落 API/前端；需全局搜枚举字符串。  
+**风险**：状态枚举硬编码散落 API/前端；需全局搜枚举字符串。
 **验收**：能创建车辆档案；能开一张预约态工单并派给技师；旧工单只读不报错。
 
 ### Phase 1（3–5 周）P0 门店闭环 + 问诊
@@ -165,8 +165,8 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 - [ ] 问诊 Agent SSE（改 guided + search 话术）
 - [ ] 钉钉门店侧通知复用（状态变更卡片）
 
-**依赖**：Phase 0 模型稳定；准备 ≥50 条脱敏汽修 QA/案例。  
-**风险**：粗筛阈值 0.45 等为工业语料标定，换域后必须重跑 `scripts/calibrate_thresholds.py`（结果【待补充评估】）。  
+**依赖**：Phase 0 模型稳定；准备 ≥50 条脱敏汽修 QA/案例。
+**风险**：粗筛阈值 0.45 等为工业语料标定，换域后必须重跑 `scripts/calibrate_thresholds.py`（结果【待补充评估】）。
 **验收**：车主可预约并看到进度；店长可派工完工；问诊 SSE 能返回带引用的保养/故障建议（人工抽检即可，无虚构命中率）。
 
 ### Phase 2（4–6 周）P1 配件/报价/通知
@@ -253,7 +253,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 文档冲突提醒（采信代码）
 
-- 召回默认 **bge-m3**（1024 维）。README 已按代码改为 bge-m3，不再把 Qwen3-Embedding-4B / 4096 维写成现网
+- 召回默认 **bge-m3**，非 README 中的 Qwen3-Embedding-4B
 - 前端 **无 Pinia**
 - 粗筛默认 **0.45**
 - 所谓 BM25 为 **PG ILIKE 加权**，不是独立 BM25 引擎
