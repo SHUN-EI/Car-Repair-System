@@ -44,10 +44,10 @@ python-jose[cryptography]==3.3.0  # JWT 生成与校验：登录令牌（access_
 passlib[bcrypt]==1.7.4         # 密码哈希：bcrypt 加密存储用户密码
 bcrypt==4.0.1                  # passlib 1.7.4 在 bcrypt 4.1+ 上创建用户会失败，固定在兼容版本
 
-# ---------- Embedding / Rerank 模型（bge-m3 + Qwen3-Reranker-0.6B）----------
+# ---------- Embedding / Rerank 模型（bge-m3 + bge-reranker-v2-m3）----------
 torch==2.6.0                    # PyTorch 深度学习框架：运行本地模型推理（体积最大）
-transformers>=4.40.0            # HuggingFace 模型库：加载/运行 Qwen3-Reranker
-FlagEmbedding>=1.2.10           # BGE 官方库：加载 bge-m3（召回编码）+ Qwen3-Reranker（精排打分）
+transformers>=4.40.0            # HuggingFace 模型库：交叉编码器回退加载 bge-reranker-v2-m3
+FlagEmbedding>=1.2.10           # BGE 官方库：加载 bge-m3（召回编码）+ bge-reranker-v2-m3（精排打分）
 
 # ---------- HTTP 客户端 ----------
 httpx==0.28.1                  # 异步 HTTP 客户端：调用 DeepSeek、钉钉 API

@@ -29,8 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loguru import logger
 
 from app.core.config import settings
-from app.core.vector_store import vector_store
-from app.core.embeddings import encode_texts, is_server_available
+from app.rag.rag_service import encode_texts, is_server_available, search_knowledge_vectors_by_embedding
 
 
 def check_inference_server():
@@ -110,7 +109,7 @@ def calibrate(queries, top_k):
     all_scores = []
 
     for q, vec in zip(queries, vectors):
-        hits = vector_store.search(query_vector=vec, limit=top_k, score_threshold=-1.0)
+        hits = search_knowledge_vectors_by_embedding(vec, limit=top_k, score_threshold=-1.0)
         scores = sorted(h["score"] for h in hits)
         all_scores.extend(scores)
         per_query.append({

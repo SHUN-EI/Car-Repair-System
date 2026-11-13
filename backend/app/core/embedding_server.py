@@ -1,8 +1,8 @@
-"""统一推理服务（OpenAI 兼容）— bge-m3 召回编码 + Qwen3-Reranker-0.6B 精排打分
+"""统一推理服务（OpenAI 兼容）— bge-m3 召回编码 + bge-reranker-v2-m3 精排打分
 
 承担两类职责（纯 CPU 部署，单进程双模型，约 5GB 内存）：
 1. 召回编码：bge-m3 dense 向量（1024 维），/v1/embeddings（OpenAI 兼容，供 RAGFlow 等外部系统）
-2. 精排打分：Qwen3-Reranker-0.6B cross-encoder 打分，/v1/rerank
+2. 精排打分：bge-reranker-v2-m3 交叉编码器打分（FlagReranker，normalize=True 输出 0~1），/v1/rerank
 
 主链路（backend 进程）通过 HTTP 调用本服务，模型推理与业务解耦：
 - 模型可独立升级/扩缩容（生产 GPU 形态用 vLLM/SGLang 托管同类模型，接口不变）
@@ -43,16 +43,16 @@ _EMBEDDING_LOCAL_CANDIDATES = [
     r"D:\models\bge-m3",
 ]
 _RERANKER_LOCAL_CANDIDATES = [
-    r"D:\models\Qwen\Qwen3-Reranker-0___6B",
-    r"D:\models\Qwen\Qwen3-Reranker-0.6B",
-    r"D:\models\Qwen3-Reranker-0.6B",
+    r"D:\models\BAAI\BAAI__bge-reranker-v2-m3",
+    r"D:\models\BAAI\bge-reranker-v2-m3",
+    r"D:\models\bge-reranker-v2-m3",
 ]
 
 # 模块级单例（进程内只加载一次）
 _embed_model = None          # BGEM3FlagModel
-_reranker_model = None       # FlagReranker 或 transformers 手动加载的模型
+_reranker_model = None       # FlagReranker 或 transformers 交叉编码器
 _reranker_tokenizer = None
-_reranker_kind = None        # "flag" | "hf"
+_reranker_kind = None        # "flag" | "cross_encoder"
 _VECTOR_DIM = None
 _started_at = None
 
@@ -108,7 +108,9 @@ def _load_embedding_model():
 
 
 def _load_reranker():
-    """加载 Qwen3-Reranker-0.6B：FlagReranker 优先，版本不支持则 transformers 手动加载
+    """加载 bge-reranker-v2-m3：主路径 FlagReranker（normalize=True），
+    失败则回退 transformers 交叉编码器（SequenceClassification + sigmoid → 0~1）。
+    不用 CausalLM Yes/No 打分（那是旧版 Qwen3-Reranker 路径，会误打 BGE 分数）。
     线程安全：double-check + 锁"""
     global _reranker_model, _reranker_tokenizer, _reranker_kind, _rerank_load_error
     if _reranker_model is not None:
@@ -120,43 +122,39 @@ def _load_reranker():
         model_path = _resolve_model_path(_RERANKER_LOCAL_CANDIDATES, settings.RERANKER_MODEL_NAME)
 
         t0 = time.time()
-        # 方案 1：FlagReranker（官方支持 qwen3-reranker 系列，normalize 开箱即用）
+        # 方案 1：FlagReranker（bge-reranker 官方用法，normalize=True 输出 0~1）
         try:
             from FlagEmbedding import FlagReranker
             _reranker_model = FlagReranker(model_path, use_fp16=False, devices="cpu")
-            # 冒烟打分：transformers 5.x 移除 prepare_for_model 后，旧版 FlagReranker 构造能过
-            # 但 compute_score 会炸（Qwen2Tokenizer has no attribute prepare_for_model），
-            # 加载时自检一次，失败走下方 transformers 手动加载
+            # 加载时冒烟自检：构造成功但 compute_score 失败时，改走下方交叉编码器回退
             _reranker_model.compute_score([["加载自检", "加载自检"]], normalize=True)
             _reranker_kind = "flag"
-            logger.info(f"Qwen3-Reranker 加载完成 (FlagReranker)，耗时 {time.time()-t0:.1f}s")
+            logger.info(f"bge-reranker-v2-m3 加载完成 (FlagReranker)，耗时 {time.time()-t0:.1f}s")
             return
         except Exception as e:
-            logger.warning(f"FlagReranker 加载失败，回退 transformers 手动加载: {e}")
+            logger.warning(f"FlagReranker 加载失败，回退 transformers 交叉编码器: {e}")
             _reranker_model = None
 
-        # 方案 2：transformers 手动加载（decoder-only，取末尾 token 的 Yes/No logits，sigmoid）
+        # 方案 2：transformers 交叉编码器（AutoModelForSequenceClassification + sigmoid）
+        # 与 FlagReranker normalize=True 同为 logit → sigmoid，分数仍在 0~1
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            _reranker_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-            # 左 padding：批内取 logits[:, -1] 才恒为各样本的真实末位 token
-            # （右 padding 时末位是 pad，打分会失真）
-            _reranker_tokenizer.padding_side = "left"
-            _reranker_model = AutoModelForCausalLM.from_pretrained(
-                model_path, trust_remote_code=True, dtype=torch.float32,
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+            _reranker_tokenizer = AutoTokenizer.from_pretrained(model_path)
+            _reranker_model = AutoModelForSequenceClassification.from_pretrained(
+                model_path, dtype=torch.float32,
             )
             _reranker_model.eval()
-            _reranker_kind = "hf"
-            logger.info(f"Qwen3-Reranker 加载完成 (transformers)，耗时 {time.time()-t0:.1f}s")
+            _reranker_kind = "cross_encoder"
+            logger.info(f"bge-reranker-v2-m3 加载完成 (transformers 交叉编码器)，耗时 {time.time()-t0:.1f}s")
         except Exception as e:
-            _rerank_load_error = f"Qwen3-Reranker 加载失败: {e}"
+            _rerank_load_error = f"bge-reranker-v2-m3 加载失败: {e}"
             raise RuntimeError(_rerank_load_error)
 
 
 def _background_load():
     """后台线程加载双模型：进程可立即接受连接，/health 如实报告 loading/ready/error"""
-    logger.info("后台线程开始加载模型（bge-m3 + Qwen3-Reranker，纯 CPU 约 2-5 分钟）...")
+    logger.info("后台线程开始加载模型（bge-m3 + bge-reranker-v2-m3，纯 CPU 约 2-5 分钟）...")
     try:
         _load_embedding_model()
     except Exception as e:
@@ -166,7 +164,7 @@ def _background_load():
         _load_reranker()
     except Exception as e:
         _rerank_load_error = str(e)
-        logger.error(f"⚠️ Qwen3-Reranker 加载失败: {e}")
+        logger.error(f"⚠️ bge-reranker-v2-m3 加载失败: {e}")
     if _embed_model is not None and _reranker_model is not None:
         logger.info(f"✅ 双模型加载完成，推理服务就绪（耗时 {time.time()-_started_at:.1f}s）")
     else:
@@ -177,30 +175,29 @@ def _rerank_scores(query: str, documents: List[str]) -> List[float]:
     """对 (query, doc) 对批量打分，返回 0~1 归一化分数（与 documents 同序）"""
     if _reranker_kind == "flag":
         pairs = [[query, d] for d in documents]
-        # normalize=True 输出 sigmoid 归一化分数
+        # normalize=True 输出 sigmoid 归一化分数，禁止把原始 logit 交出去
         scores = _reranker_model.compute_score(pairs, normalize=True)
         if isinstance(scores, (int, float, np.floating)):
             scores = [float(scores)]
         return [float(s) for s in scores]
 
-    # transformers 手动加载：Qwen3-Reranker 输出 2 类 logits（No/Yes），取末尾 token 的 Yes 分数
+    # transformers 交叉编码器回退：单 logit + sigmoid，与 FlagReranker normalize=True 同尺度
     import torch
     max_len = settings.EMBEDDING_MAX_LENGTH * 2      # query+doc 共 1024 token，封住 attention 内存峰值
     scores: List[float] = []
     for start in range(0, len(documents), _RERANK_BATCH):
-        chunk = [f"{query}{_reranker_tokenizer.eos_token}{d}"
-                 for d in documents[start: start + _RERANK_BATCH]]
+        chunk = documents[start: start + _RERANK_BATCH]
+        pairs = [(query, d) for d in chunk]
         inputs = _reranker_tokenizer(
-            chunk,
+            pairs,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=max_len,
         )
         with torch.no_grad():
-            logits = _reranker_model(**inputs).logits            # [B, L, 2]
-            last_logits = logits[:, -1, :]                        # [B, 2]（左 padding，末位即真实 token）
-            s = torch.sigmoid(last_logits[:, 1] - last_logits[:, 0])  # Yes vs No
+            logits = _reranker_model(**inputs).logits.view(-1).float()
+            s = torch.sigmoid(logits)
         scores.extend(s.tolist())
     return scores
 
@@ -236,7 +233,7 @@ async def lifespan(app: FastAPI):
     # 注意：不能用后台 daemon 线程在这里 import/初始化 FlagEmbedding 等原生库——
     # 环境 OMP 多运行时在"非主线程 + 后台线程池"上下文初始化会原生段错误（0xC0000005），
     # 主线程同步加载经验证稳定。
-    logger.info("🚀 推理服务启动，主线程同步加载（bge-m3 + Qwen3-Reranker，纯 CPU 单线程，耗时较长）...")
+    logger.info("🚀 推理服务启动，主线程同步加载（bge-m3 + bge-reranker-v2-m3，纯 CPU 单线程，耗时较长）...")
     try:
         _load_embedding_model()
         logger.info("✅ bge-m3 加载完成")
@@ -245,10 +242,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"⚠️ bge-m3 加载失败: {e}  {type(e).__name__}")
     try:
         _load_reranker()
-        logger.info("✅ Qwen3-Reranker 加载完成")
+        logger.info("✅ bge-reranker-v2-m3 加载完成")
     except Exception as e:
         _rerank_load_error = str(e)
-        logger.error(f"⚠️ Qwen3-Reranker 加载失败: {e}  {type(e).__name__}")
+        logger.error(f"⚠️ bge-reranker-v2-m3 加载失败: {e}  {type(e).__name__}")
     logger.info(f"推理服务就绪，总耗时 {time.time()-_started_at:.1f}s")
     yield
     logger.info("👋 推理服务关闭中...")
@@ -256,7 +253,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Inference Server (OpenAI Compatible)",
-    description="本地 bge-m3 召回编码 + Qwen3-Reranker-0.6B 精排打分服务",
+    description="本地 bge-m3 召回编码 + bge-reranker-v2-m3 精排打分服务",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -349,7 +346,7 @@ def health():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="本地推理服务（bge-m3 编码 + Qwen3-Reranker 重排）")
+    parser = argparse.ArgumentParser(description="本地推理服务（bge-m3 编码 + bge-reranker-v2-m3 重排）")
     parser.add_argument("--host", default=settings.EMBEDDING_SERVER_HOST)
     parser.add_argument("--port", type=int, default=settings.EMBEDDING_SERVER_PORT)
     args = parser.parse_args()

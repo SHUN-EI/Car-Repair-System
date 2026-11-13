@@ -65,7 +65,7 @@ class ConsultGuideAgent:
         """委托有上限的 ReAct 检索循环。不改检索阈值。"""
         from app.agents.retrieval_agent import RetrievalAssistantAgent
         if tools is None:
-            from app.agents.retrieval_flow import make_tools
+            from app.rag.rag_service import make_tools
             tools = make_tools()
         agent = RetrievalAssistantAgent(tools=tools)
         return agent.search(
@@ -81,7 +81,7 @@ class ConsultGuideAgent:
         if not query or not query.strip():
             return "请输入故障描述，例如：注塑机 温度过高"
         try:
-            from app.agents.retrieval_flow import (
+            from app.rag.rag_service import (
                 retrieve_hybrid, extract_device_and_fault, filter_rerank_cases,
             )
             from app.agents.answer_generator import answer_generator
@@ -198,8 +198,8 @@ class ConsultGuideAgent:
 
     # ---------- 会话摘要 ----------
     def summarize(self, messages: List[dict]) -> str:
-        from app.agents.session_summarizer import session_summarizer
-        return session_summarizer.summarize(messages)
+        from app.memory.memory_service import memory_service
+        return memory_service.summarize(messages)
 
     # ---------- 工单只读工具（写操作不在本门面） ----------
     def query_work_order_progress(self, work_order_no: str) -> str:

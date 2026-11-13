@@ -5,7 +5,7 @@
 1. 主管派工后，机器人给维修员推送互动卡片（工单信息 + 当前进度按钮）
 2. 维修员点击按钮 → Stream 卡片回调（TOPIC_CARD_CALLBACK）→ 本模块处理：
    - 校验身份（回调人 = 被指派维修员）
-   - 复用 _do_transition 更新工单状态 + 写进度日志
+   - 复用领域层 do_transition 更新工单状态 + 写进度日志
    - 刷新卡片为下一步按钮
    - 给主管的钉钉发送进度通知
 3. 进度事件点（与系统按钮一致）：
@@ -347,7 +347,7 @@ def _dispatch_action(out_track_id: str, user_id: str, action: str) -> Optional[s
                     f"工单 **{wo.work_order_no}** 已完成维修并处于待归档状态。\n"
                     f"请回系统『维修报表』完善表单，完成『工单归档』与『归档完成』。"
                 )
-            from app.api.work_orders import _do_transition
+            from app.domain.work_order_transition import do_transition as _do_transition
             from app.schemas import WorkOrderTransition
             try:
                 _do_transition(wo.id, WorkOrderTransition(to_status="ARCHIVING", source="DINGTALK_CARD"), db, tech)
@@ -375,7 +375,7 @@ def _dispatch_action(out_track_id: str, user_id: str, action: str) -> Optional[s
             logger.info(f"[WoCard] 重复回调已拦截: {wo.work_order_no} 已处于 {to_status}")
             return f"工单 {wo.work_order_no} 已处于【{status_cn}】状态，无需重复操作。"
 
-        from app.api.work_orders import _do_transition
+        from app.domain.work_order_transition import do_transition as _do_transition
         from app.schemas import WorkOrderTransition
         transition_data = WorkOrderTransition(to_status=to_status, source="DINGTALK_CARD")
         try:

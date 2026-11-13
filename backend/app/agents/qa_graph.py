@@ -18,7 +18,7 @@ from typing import Optional, Any, TypedDict
 from loguru import logger
 from langgraph.graph import StateGraph, END
 from app.core.config import settings
-from app.agents.retrieval_flow import case_rank_score
+from app.rag.rag_service import case_rank_score
 
 
 class QaState(TypedDict, total=False):
@@ -105,7 +105,7 @@ def compound_check_node(state: QaState) -> dict:
 
 def fault_retrieve_node(state: QaState) -> dict:
     """双库检索（公共编排层）：知识库 vector+BM25 + 手册错误码路 → RRF 融合"""
-    from app.agents.retrieval_flow import retrieve_hybrid
+    from app.rag.rag_service import retrieve_hybrid
     q = state.get("question") or ""
     top_k = state.get("top_k") or settings.RECALL_TOP_K
     try:
@@ -121,7 +121,7 @@ def fault_retrieve_node(state: QaState) -> dict:
 
 def fault_filter_node(state: QaState) -> dict:
     """严格过滤 + 加权重排 + 错误码精确置顶（公共编排层）"""
-    from app.agents.retrieval_flow import extract_device_and_fault, filter_rerank_cases
+    from app.rag.rag_service import extract_device_and_fault, filter_rerank_cases
     q = state.get("question") or ""
     payload = dict(state.get("payload") or {})
     cases = payload.get("cases") or []

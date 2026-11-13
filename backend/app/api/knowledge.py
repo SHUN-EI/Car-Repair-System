@@ -65,11 +65,9 @@ def search_knowledge(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        from app.core.vector_store import vector_store
-        from app.core.embeddings import encode_text
-        query_vec = encode_text(query)
-        results = vector_store.search(
-            query_vector=query_vec,
+        from app.rag.rag_service import search_knowledge_vectors
+        results = search_knowledge_vectors(
+            query,
             limit=limit,
             device_type=device_type,
             fault_code=fault_code,
@@ -373,15 +371,13 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
     # 1. 向量语义检索找相似候选
     if not has_dup:
         try:
-            from app.core.embeddings import encode_text
-            from app.core.vector_store import vector_store
+            from app.rag.rag_service import search_knowledge_vectors
 
             # 构建查询文本：用内容前 MAX_VECTOR_CONTENT_LEN 字也加入查询，增强语义匹配
             content_snippet = (extracted.content or "")[:settings.MAX_VECTOR_CONTENT_LEN]
             query_text = f"{extracted.device_type or ''} {extracted.title} {extracted.fault_code or ''} {' '.join(extracted.keywords[:3])} {content_snippet}"
-            query_vec = encode_text(query_text)
-            results = vector_store.search(
-                query_vector=query_vec,
+            results = search_knowledge_vectors(
+                query_text,
                 limit=8,
                 device_type=extracted.device_type if extracted.device_type else None,
                 score_threshold=settings.DEDUP_CANDIDATE_THRESHOLD,
@@ -533,37 +529,10 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
 
 
 def _sync_to_milvus(item: KnowledgeItem, db: Session):
-    """将知识条目向量化并同步到 Milvus"""
-    from app.core.embeddings import encode_text
-    from app.core.vector_store import vector_store
+    """将知识条目向量化并同步到 Milvus（经 rag_service 收口）"""
+    from app.rag.rag_service import sync_knowledge_item
 
-    text = f"{item.title} {item.content[:settings.MAX_VECTOR_CONTENT_LEN]}"
-    vec = encode_text(text)
-
-    if item.milvus_id:
-        # 更新已有向量
-        vector_store.update(
-            point_id=item.milvus_id,
-            vector=vec,
-            title=item.title,
-            content=item.content,
-            device_type=item.device_type,
-            fault_code=item.fault_code,
-            fault_tags=item.fault_tags,
-        )
-    else:
-        # 插入新向量
-        point_id = vector_store.insert(
-            vector=vec,
-            knowledge_id=item.id,
-            title=item.title,
-            content=item.content,
-            device_type=item.device_type,
-            fault_code=item.fault_code,
-            fault_tags=item.fault_tags,
-        )
-        item.milvus_id = point_id
-
+    sync_knowledge_item(item)
     logger.info(f"[Knowledge] 向量同步成功: #{item.id} milvus_id={item.milvus_id}")
 
 

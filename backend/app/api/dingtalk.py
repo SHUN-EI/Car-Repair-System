@@ -73,7 +73,7 @@ def _claim_actor(wo: WorkOrder, user: User) -> None:
 
 
 def _walk_transitions(wo: WorkOrder, user: User, db: Session, targets: list[str]) -> list[str]:
-    from app.api.work_orders import _do_transition
+    from app.domain.work_order_transition import do_transition as _do_transition
     from app.schemas import WorkOrderTransition
     moved = []
     for target in targets:
@@ -983,7 +983,7 @@ def _process_dispatch_card_action(sender_userid: str, correlation_id: str,
         return
 
     # 复用工单流转逻辑（延迟 import 避免循环依赖）
-    from app.api.work_orders import _do_transition
+    from app.domain.work_order_transition import do_transition as _do_transition
     transition_data = WorkOrderTransition(to_status=to_status, source="DINGTALK")
     try:
         result = _do_transition(work_order.id, transition_data, db, u)

@@ -36,7 +36,7 @@
 | 前端 | Vue 3、Vite、Pinia、Element Plus、Vue Router、Axios |
 | 后端 | FastAPI、SQLAlchemy 2.0、Alembic、Pydantic v2、Loguru |
 | AI / Agent | LangChain、LangGraph、FastMCP、DeepSeek、RAGFlow/LangFuse/local 追踪 |
-| 召回 / 精排 | BAAI/bge-m3 召回（1024 维）、Qwen3-Reranker-0.6B 精排 |
+| 召回 / 精排 | BAAI/bge-m3 召回（1024 维）、BAAI/bge-reranker-v2-m3 精排 |
 | 数据存储 | PostgreSQL 16、Redis 7、Milvus 2.4、MinIO、etcd |
 | 集成 | 钉钉开放平台、阿里云短信、RAGFlow |
 | 测试 | Pytest、pytest-asyncio、pytest-cov |
@@ -60,7 +60,7 @@
 ┌───▼───┐ ┌──▼───┐ ┌──▼──┐ ┌──▼────────────┐   ┌─────────────────┐
 │ PG 16 │ │Milvus│ │Redis│ │ 推理服务 8010  │   │ DeepSeek 云端   │
 │15432  │ │19530 │ │7379 │ │ Qwen3-Embed-4B │   │ LLM 问答/抽取/  │
-│业务+  │ │向量库 │ │会话 │ │ Qwen3-Reranker │   │ Agent 推理      │
+│业务+  │ │向量库 │ │会话 │ │ BGE-Reranker   │   │ Agent 推理      │
 │BM25   │ └──┬───┘ │缓存 │ │（独立进程，双模型）│   └─────────────────┘
 └───────┘    │     └─────┘ └───────────────┘
         依赖 etcd（元数据）+ MinIO（对象存储）
@@ -85,7 +85,7 @@
 
 ### 3.3 两级模型（都托管在统一推理服务 8010）
 
-| | BAAI/bge-m3（召回） | Qwen3-Reranker-0.6B（精排） |
+| | BAAI/bge-m3（召回） | BAAI/bge-reranker-v2-m3（精排） |
 | --- | --- | --- |
 | 类型 | bi-encoder，离线预计算文档向量 | cross-encoder，query×文档联合编码 |
 | 输出 | 1024 维 dense 向量（已 L2 归一化） | 0~1 相关分 |
@@ -96,7 +96,7 @@
 
 ```text
 提问 → 意图路由（库存>聊天>故障） → 错误码正则预检 → 最多四路召回
-     → RRF 融合 → 粗筛+严格过滤 → Qwen3-Reranker 精排 → 置顶/情形重排
+     → RRF 融合 → 粗筛+严格过滤 → bge-reranker-v2-m3 精排 → 置顶/情形重排
      → LLM 生成（无案例/低分时如实回答“未检索到”） → SSE 流式返回
 ```
 
@@ -190,7 +190,7 @@ flowchart TD
     E --> F[错误码三道闸门抽取<br/>正则+白名单]
     F --> G[四路召回<br/>Milvus向量 / BM25 / 手册码 / PG结构化]
     G --> H[RRF 融合 + 粗筛]
-    H --> I[Qwen3-Reranker 精排<br/>分块打分]
+    H --> I[bge-reranker-v2-m3 精排<br/>分块打分]
     I --> J[严格过滤<br/>设备匹配+关键词命中]
     J --> K[AnswerGenerator<br/>SSE 流式生成回答<br/>无案例/低分如实说未检索到]
     K --> L[返回回答 + 引用来源]
@@ -247,7 +247,7 @@ flowchart TD
 | MinIO | 9000 / 9001 | Milvus 依赖的对象存储 |
 | Milvus | 19530 / 9091 | 知识向量、手册错误码向量 |
 | Attu | 8080 | Milvus Web 管理界面 |
-| 统一推理服务 | 8010 | bge-m3 编码 + Qwen3-Reranker 精排 |
+| 统一推理服务 | 8010 | bge-m3 编码 + bge-reranker-v2-m3 精排 |
 | 后端 API | 18080 | FastAPI，Swagger 在 `/docs` |
 | 前端开发服务器 | 4173 | Vite，代理 `/api` 和 `/dingtalk` 到 18080 |
 
@@ -300,7 +300,7 @@ Smart-Repair-System/
 
 ### 部署形态（企业生产环境）
 
-系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）跑 **BAAI/bge-m3（召回，1024 维）+ Qwen3-Reranker-0.6B（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。生产环境把 `DEBUG` 设为 false，并设置独立的 `SECRET_KEY`、`SCHEDULER_TOKEN`。
+系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）跑 **BAAI/bge-m3（召回，1024 维）+ BAAI/bge-reranker-v2-m3（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。生产环境把 `DEBUG` 设为 false，并设置独立的 `SECRET_KEY`、`SCHEDULER_TOKEN`。
 
 以下「初始化与启动」说明为**本地开发/排查**用途。
 
@@ -340,7 +340,7 @@ Smart-Repair-System/
 # 1. 启动基础设施
 docker compose -f docker-compose.dev.yml up -d
 
-# 2. 启动推理服务（bge-m3 + Qwen3-Reranker）
+# 2. 启动推理服务（bge-m3 + bge-reranker-v2-m3）
 cd backend
 python -m app.core.embedding_server --host 0.0.0.0 --port 8010
 
@@ -380,7 +380,7 @@ npm run dev
 2. 召回：知识库向量 + BM25 双路（各 top 30）；含错误码时增加手册错误码精确 + 语义两路
 3. 融合：RRF 名次融合（k=60），复合去重键防止双库撞号
 4. 过滤：向量相似度粗筛（0.15）+ 设备类型 / 故障关键词严格过滤（错误码精确命中的权威条目不被误杀）
-5. 精排：Qwen3-Reranker-0.6B 对头部 30 条候选打分（分块批调用防内存峰值）；不可用时回退规则重排
+5. 精排：BAAI/bge-reranker-v2-m3 对头部 30 条候选打分（分块批调用防内存峰值，分数 0~1）；不可用时回退规则重排。质量阀门阈值仍按原 Qwen3-Reranker 标定，尚未重标，排序与「结果是否充足」的判断可能变化
 6. 置顶与重排：手册错误码精确命中置顶，情形条件匹配加分
 7. 回答护栏：无案例或最高分低于阈值时如实回答“未检索到相关案例”，prompt 约束不匹配时不得硬凑回答
 
@@ -504,7 +504,7 @@ MCP 访问控制：配置 `MCP_API_KEY` 后要求 `Authorization: Bearer <key>`�
 | `EMBEDDING_SERVER_URL` | 推理服务地址，默认 `http://localhost:8010` |
 | `EMBEDDING_MODEL_NAME` | 召回模型，默认 `BAAI/bge-m3`（1024 维） |
 | `MILVUS_VECTOR_SIZE` | 向量维度，必须与 bge-m3 一致，默认 1024 |
-| `RERANKER_MODEL_NAME` | 精排模型，默认 Qwen3-Reranker-0.6B |
+| `RERANKER_MODEL_NAME` | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（分数 0~1；质量阀门阈值尚未按新模型重标） |
 | `RERANKER_ENABLED` | 模型精排总开关 |
 | `RECALL_TOP_K` / `FINAL_TOP_N` | 召回候选数（30）/ 最终送 LLM 条数（10） |
 | `RETRIEVAL_COARSE_THRESHOLD` | 粗筛相似度下限，默认 0.45 |

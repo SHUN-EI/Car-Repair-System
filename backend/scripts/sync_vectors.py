@@ -20,8 +20,12 @@ from loguru import logger
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus
-from app.core.vector_store import vector_store
-from app.core.embeddings import encode_text, is_server_available
+from app.rag.rag_service import (
+    is_server_available,
+    resync_knowledge_item,
+    flush_knowledge_vectors,
+    count_knowledge_vectors,
+)
 
 
 def check_inference_server():
@@ -34,7 +38,6 @@ def check_inference_server():
 
 def main():
     check_inference_server()
-    store = vector_store
     store_name = settings.MILVUS_COLLECTION
 
     db = SessionLocal()
@@ -56,18 +59,9 @@ def main():
                     skipped += 1
                     continue
 
-                vec = encode_text(text)
                 # 幂等：先删同 knowledge_id 的旧向量，再插入（可安全重跑）
-                store.delete_by_knowledge_id(item.id)
-                store.insert(
-                    vector=vec,
-                    knowledge_id=item.id,
-                    title=item.title or "",
-                    content=item.content or "",
-                    device_type=item.device_type or "",
-                    fault_code=item.fault_code or "",
-                    fault_tags=item.fault_tags or [],
-                )
+                # 文本拼装在 rag_service.resync_knowledge_item 内，与原脚本一致
+                resync_knowledge_item(item)
                 success += 1
                 if success % 50 == 0:
                     logger.info(f"  已处理 {success} 条...")
@@ -76,10 +70,10 @@ def main():
                 logger.error(f"  失败 id={item.id}: {e}")
 
         if success > 0:
-            store.flush()
+            flush_knowledge_vectors()
 
         logger.info(f"同步完成: 成功 {success}, 跳过 {skipped}, 失败 {failed}")
-        logger.info(f"Milvus 集合 {store_name} 当前向量总数: {store.count()}")
+        logger.info(f"Milvus 集合 {store_name} 当前向量总数: {count_knowledge_vectors()}")
     finally:
         db.close()
 

@@ -62,7 +62,7 @@
 
 ### 2.3 必须保留的现网约束（本方案不改策略）
 
-- 检索：BAAI/bge-m3（1024 维）+ Qwen3-Reranker-0.6B；四路混合检索（知识向量、关键词 ILIKE + `pg_trgm`、手册精确与语义）；RRF `k=60`；粗筛与质量阀；Reranker 不可用时回退规则重排。
+- 检索：BAAI/bge-m3（1024 维）+ BAAI/bge-reranker-v2-m3；四路混合检索（知识向量、关键词 ILIKE + `pg_trgm`、手册精确与语义）；RRF `k=60`；粗筛与质量阀；Reranker 不可用时回退规则重排。质量阀门阈值仍按原 Qwen3-Reranker 标定，尚未重标。
 - 对话模型：LangChain `ChatOpenAI` + `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL`，切换本机 vLLM 或后训练模型只改环境变量。
 - 编排原则（现网已采用）：**固定拓扑上图、多轮不上图**。问答主图、导入 DAG 可用 LangGraph；追踪维修 / 专家多轮保持 Redis 状态机（TTL 24h、最多 30 步），不要把运行时才确定的会话状态硬塞进图。
 - 报价与套餐：确定性规则引擎，与生成模型解耦；后训练不替代定价。

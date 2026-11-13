@@ -1,7 +1,7 @@
 # ============================================================
 # start_embedding_server.ps1
 # 启动本地统一推理服务（OpenAI 兼容，端口 8010）：
-#   召回模型 bge-m3 + 精排模型 Qwen3-Reranker-0.6B
+#   召回模型 bge-m3 + 精排模型 bge-reranker-v2-m3
 # 它是 RAGFlow 等外部系统与本系统检索链路的向量模型来源。
 # 用法：右键「使用 PowerShell 运行」或  .\start_embedding_server.ps1
 # ============================================================
@@ -17,7 +17,7 @@ $HealthUrl = 'http://localhost:8010/health'
 New-Item -ItemType Directory -Force -Path (Split-Path $LogFile) | Out-Null
 
 Write-Host ""
-Write-Host "========== 统一推理服务 (bge-m3 + Qwen3-Reranker-0.6B) ==========" -ForegroundColor Cyan
+Write-Host "========== 统一推理服务 (bge-m3 + bge-reranker-v2-m3) ==========" -ForegroundColor Cyan
 
 function Test-ServerReady {
     try {

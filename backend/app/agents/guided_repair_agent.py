@@ -15,6 +15,11 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
+from app.memory.memory_service import (
+    GUIDED_REPAIR_SESSION_PREFIX,
+    GUIDED_REPAIR_SESSION_TTL,
+    memory_service,
+)
 
 
 # ============================================================
@@ -24,7 +29,7 @@ from app.core.langfuse_tracer import tracer
 #   本地仅保留 _IRRELEVANT_REPLY 文案别名（与公共版 REPAIR_IRRELEVANT_REPLY 一致），以及
 #   老签名兼容函数 _is_repair_irrelevant（委托公共版，不调用检索）。
 # ============================================================
-from app.agents.retrieval_flow import (
+from app.rag.rag_service import (
     repair_intent_fast_check as _repair_intent_fast_check,
     repair_intent_check as _repair_intent_check,
     REPAIR_IRRELEVANT_REPLY as _IRRELEVANT_REPLY,
@@ -103,8 +108,8 @@ class GuidedRepairAgent:
   "status": "completed"
 }"""
 
-    _SESSION_TTL = 24 * 3600  # 会话有效期 24 小时（Redis TTL），覆盖跨班次/跨天排查
-    _SESSION_KEY_PREFIX = "guided_repair_session:"
+    _SESSION_TTL = GUIDED_REPAIR_SESSION_TTL  # 会话有效期 24 小时（Redis TTL），覆盖跨班次/跨天排查
+    _SESSION_KEY_PREFIX = GUIDED_REPAIR_SESSION_PREFIX
 
     MAX_STEPS = 30  # 排查步数上限：超上限自动总结结束（长故障/复合故障也能引导到底）
     # 对话历史压缩策略：chat_history 条数超过阈值时，把最旧的并入 LLM 摘要，保留最近原文
@@ -117,8 +122,7 @@ class GuidedRepairAgent:
     def _load_session(self, session_id: str) -> Optional[Dict]:
         """从 Redis 加载会话（Redis 不可用时由 cache_service 自动降级内存缓存）"""
         try:
-            from app.core.cache_service import cache_service
-            return cache_service.get(f"{self._SESSION_KEY_PREFIX}{session_id}")
+            return memory_service.get_guided_repair_session(session_id)
         except Exception as e:
             logger.warning(f"[GuidedRepair] 会话加载失败: {e}")
             return None
@@ -127,8 +131,7 @@ class GuidedRepairAgent:
         """保存会话到 Redis（TTL 24 小时）：保存前先对超长历史做摘要压缩，解决重启/多进程丢失会话问题"""
         try:
             self._maybe_compress_history(data)
-            from app.core.cache_service import cache_service
-            cache_service.set(f"{self._SESSION_KEY_PREFIX}{session_id}", data, ttl=self._SESSION_TTL)
+            memory_service.set_guided_repair_session(session_id, data)
         except Exception as e:
             logger.warning(f"[GuidedRepair] 会话保存失败: {e}")
 
@@ -177,8 +180,7 @@ class GuidedRepairAgent:
             if h.get("ai"):
                 msgs.append({"role": "assistant", "content": h["ai"]})
         try:
-            from app.agents.session_summarizer import session_summarizer
-            summary = session_summarizer.summarize(msgs)
+            summary = memory_service.summarize(msgs)
         except Exception as e:
             logger.warning(f"[GuidedRepair] 历史摘要压缩失败，保留原文: {e}")
             return
@@ -222,7 +224,7 @@ class GuidedRepairAgent:
         （宽松捞回的仅是向量分<0.6 的低相关噪声，且会绕过跨系统冲突剔除，误导排查方向）。
         """
         try:
-            from app.agents.retrieval_flow import (
+            from app.rag.rag_service import (
                 make_tools, retrieve_hybrid, filter_rerank_cases, extract_device_and_fault,
             )
             tools = make_tools()

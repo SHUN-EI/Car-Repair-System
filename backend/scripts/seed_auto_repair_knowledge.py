@@ -76,7 +76,7 @@ def seed(db) -> dict:
 
 def sync_vectors() -> None:
     from app.core.config import settings
-    from app.core.embeddings import is_server_available
+    from app.rag.rag_service import is_server_available
 
     if not is_server_available():
         logger.warning(f"推理服务不可用: {settings.EMBEDDING_SERVER_URL}")

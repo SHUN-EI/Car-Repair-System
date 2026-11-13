@@ -1152,12 +1152,12 @@ class RetrievalTools:
             结果带 _dedup_key="M:{id}" 供跨库 RRF 融合去重
         """
         try:
-            from app.core.vector_store import log_code_store
             from app.models.manual_code import ManualCodeEntry
+            from app.rag.rag_service import search_manual_vectors
             cleaned = self.query_extractor.extract(query) or query
             query_vector = self.encode(cleaned)
-            results = log_code_store.search(
-                query_vector=query_vector,
+            results = search_manual_vectors(
+                query_vector,
                 limit=top_k,
                 device_type=device_type,
                 score_threshold=score_threshold,

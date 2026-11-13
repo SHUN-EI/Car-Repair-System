@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"🤖 DeepSeek API: {'已配置' if settings.DEEPSEEK_API_KEY else '未配置'}")
     # 预热：探测推理服务（bge-m3 编码 + reranker 重排）是否就绪，不阻塞启动
     try:
-        from app.core.embeddings import is_server_available
+        from app.rag.rag_service import is_server_available
         from app.core.config import settings as _s
         if is_server_available():
             logger.info(f"🧠 推理服务就绪: {_s.EMBEDDING_SERVER_URL}（{_s.EMBEDDING_MODEL_NAME} + {_s.RERANKER_MODEL_NAME}）")

@@ -1,4 +1,4 @@
-"""重排客户端 - HTTP 调用统一推理服务的 /v1/rerank（Qwen3-Reranker-0.6B）
+"""重排客户端 - HTTP 调用统一推理服务的 /v1/rerank（BAAI/bge-reranker-v2-m3）
 
 职责：对粗筛后的候选案例做模型精排。只排序、不过滤——过滤仍由
 retrieval_flow 的向量相似度阈值 + 设备/关键词硬约束负责，避免阈值语义混乱。

@@ -95,9 +95,13 @@ def search_knowledge(query: str) -> str:
 # ============================================================
 _GUIDED_LOCK = threading.Lock()
 # staff 映射持久化到 Redis（与 guided_repair_agent 会话共用），重启/多进程不丢失
-_GUIDED_SESSION_KEY_PREFIX = "mcp/staff_guid:session:"   # staff_id -> guided session_id
-_GUIDED_LAST_KEY_PREFIX = "mcp/staff_guid:last:"          # staff_id -> 最后活动时间戳
-GUIDED_SESSION_TTL = 24 * 3600  # 24 小时无对话则开启新会话，覆盖跨班次/跨天排查，避免跨故障串话
+# key / TTL 由记忆门面持有；此处保留别名以兼容外部读取。
+from app.memory.memory_service import (  # noqa: E402
+    GUIDED_SESSION_TTL,
+    MCP_STAFF_GUIDED_LAST_PREFIX as _GUIDED_LAST_KEY_PREFIX,
+    MCP_STAFF_GUIDED_SESSION_PREFIX as _GUIDED_SESSION_KEY_PREFIX,
+    memory_service,
+)
 
 
 def guided_repair_chat(staff_id: str, message: str) -> str:
@@ -107,21 +111,20 @@ def guided_repair_chat(staff_id: str, message: str) -> str:
     if not staff_id:
         return "缺少用户标识（钉钉企业 userId），无法维护排查会话。"
     from app.agents.consult_guide_agent import consult_guide_agent
-    from app.core.cache_service import cache_service
 
     now = time.time()
     # 从 Redis 读取该用户已有会话（Redis 不可用时 cache_service 自动降级内存）
     try:
-        session_id = cache_service.get(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}")
-        last = cache_service.get(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}") or 0.0
+        session_id = memory_service.get_mcp_staff_guided_session(staff_id)
+        last = memory_service.get_mcp_staff_guided_last(staff_id) or 0.0
     except Exception as e:
         logger.warning(f"[MCP] 会话映射读取失败: {e}")
         session_id, last = None, 0.0
     with _GUIDED_LOCK:
         if session_id is None or (now - float(last)) > GUIDED_SESSION_TTL:
             session_id = str(uuid.uuid4())[:8]
-            cache_service.set(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}", session_id, ttl=GUIDED_SESSION_TTL)
-        cache_service.set(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}", now, ttl=GUIDED_SESSION_TTL)
+            memory_service.set_mcp_staff_guided_session(staff_id, session_id)
+        memory_service.set_mcp_staff_guided_last(staff_id, now)
     try:
         return consult_guide_agent.guided_repair_chat_sync(session_id, message)
     except Exception as e:
@@ -288,12 +291,11 @@ def guided_repair_track(staff_id: str, message: str) -> str:
     if not staff_id:
         return "缺少用户标识（钉钉企业 userId），无法维护排查会话。"
     from app.agents.consult_guide_agent import consult_guide_agent
-    from app.core.cache_service import cache_service
 
     now = time.time()
     try:
-        session_id = cache_service.get(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}")
-        last = cache_service.get(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}") or 0.0
+        session_id = memory_service.get_mcp_staff_guided_session(staff_id)
+        last = memory_service.get_mcp_staff_guided_last(staff_id) or 0.0
     except Exception as e:
         logger.warning(f"[MCP] 会话映射读取失败: {e}")
         session_id, last = None, 0.0
@@ -318,7 +320,7 @@ def guided_repair_track(staff_id: str, message: str) -> str:
                     except Exception as e:
                         logger.error(f"[MCP] 追踪下一步失败: {e}")
                         return "步骤生成失败，请稍后再试或回复「新问题」重新开始排查。"
-                    cache_service.set(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}", now, ttl=GUIDED_SESSION_TTL)
+                    memory_service.set_mcp_staff_guided_last(staff_id, now)
                     return _render_guided_step_text(step)
                 return ("这条消息我没能识别为排查反馈。请按格式回复：**选选项 + 执行的操作 + 执行后设备状态**\n"
                         "例如：选A 测量了电机电压 恢复正常\n"
@@ -329,8 +331,8 @@ def guided_repair_track(staff_id: str, message: str) -> str:
         step = consult_guide_agent.start_guided_repair(message, device_type="")
         new_sid = step.session_id
         if new_sid:
-            cache_service.set(f"{_GUIDED_SESSION_KEY_PREFIX}{staff_id}", new_sid, ttl=GUIDED_SESSION_TTL)
-        cache_service.set(f"{_GUIDED_LAST_KEY_PREFIX}{staff_id}", now, ttl=GUIDED_SESSION_TTL)
+            memory_service.set_mcp_staff_guided_session(staff_id, new_sid)
+        memory_service.set_mcp_staff_guided_last(staff_id, now)
     return _render_guided_step_text(step)
 
 

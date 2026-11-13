@@ -107,23 +107,9 @@ def _require_admin(current_user: User) -> None:
 
 def _sync_vector(entry: ManualCodeEntry, data: dict) -> str:
     """按当前字段编码并写入/更新 Milvus log_code 集合，返回新 point_id"""
-    from app.core.embeddings import encode_text
-    from app.core.manual_text import build_manual_embedding_text
-    from app.core.vector_store import log_code_store
+    from app.rag.rag_service import insert_manual_vector
 
-    vector = encode_text(build_manual_embedding_text(data))
-    point_id = log_code_store.insert(
-        vector=vector,
-        manual_code_id=entry.id,
-        error_code=data["error_code"],
-        manual_name=data["manual_name"],
-        device_type=data.get("device_type"),
-        title=data["title"],
-        description=data["description"],
-        chapter=data.get("chapter") or "",
-        page=data.get("page") or "",
-    )
-    return str(point_id)
+    return insert_manual_vector(entry.id, data)
 
 
 def _normalized_field_map(data: BaseModel) -> dict:
@@ -273,8 +259,8 @@ def update_manual_code(
         merged = _m_to_dict(item)
         new_point_id = _sync_vector(item, merged)
         if old_milvus_id:
-            from app.core.vector_store import log_code_store
-            log_code_store.delete(old_milvus_id)
+            from app.rag.rag_service import delete_manual_vector
+            delete_manual_vector(old_milvus_id)
         item.milvus_id = new_point_id
         db.commit()
     except IntegrityError:
@@ -296,7 +282,7 @@ def import_manual_codes_json(
 ):
     """批量 upsert：同 (manual_name, error_code) 更新，否则新建；单条失败不中断整批"""
     _require_admin(current_user)
-    from app.core.vector_store import log_code_store
+    from app.rag.rag_service import delete_manual_vector
 
     created, updated, failed = 0, 0, []
     for data in request.items:
@@ -313,7 +299,7 @@ def import_manual_codes_json(
                 merged = _m_to_dict(existing)
                 new_point_id = _sync_vector(existing, merged)
                 if old_milvus_id:
-                    log_code_store.delete(old_milvus_id)
+                    delete_manual_vector(old_milvus_id)
                 existing.milvus_id = new_point_id
                 updated += 1
             else:
@@ -353,8 +339,8 @@ def delete_manual_code(
     # 1. 删 Milvus 向量（存在 milvus_id 才删）
     if item.milvus_id:
         try:
-            from app.core.vector_store import log_code_store
-            log_code_store.delete(item.milvus_id)
+            from app.rag.rag_service import delete_manual_vector
+            delete_manual_vector(item.milvus_id)
         except Exception as e:
             logger.error(f"删除 log_code 向量失败 (milvus_id={item.milvus_id}): {e}")
             raise HTTPException(status_code=500, detail=f"删除向量失败: {str(e)}")

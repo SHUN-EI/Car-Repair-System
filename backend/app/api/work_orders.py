@@ -37,13 +37,27 @@ from app.domain.store_scope import (
     resolve_store_scope,
     row_in_scope,
 )
+from app.domain.work_order_transition import (
+    WORKLOAD_DECREASE_STATUSES,
+    WORKLOAD_INCREASE_STATUSES,
+    add_progress_log as _add_progress_log,
+    attach_transitions as _attach_transitions,
+    attach_vehicle_plate as _attach_vehicle_plate,
+    build_work_order_response as _build_work_order_response,
+    complete_linked_appointment as _complete_linked_appointment,
+    do_transition as _do_transition,
+    is_allowed_transition as _is_allowed_transition,
+    lane_of as _lane_of,
+    parse_store_header as _parse_store_header,
+    update_workload as _update_workload,
+    vehicle_plate_map as _vehicle_plate_map,
+    work_order_scope as _work_order_scope,
+)
 
 router = APIRouter()
 
-
 def _wo_to_dict(w: WorkOrder) -> dict:
     return {c.name: getattr(w, c.name) for c in w.__table__.columns}
-
 
 def _get_current_shift() -> str:
     """根据当前小时判断时段：MORNING / AFTERNOON / NIGHT"""
@@ -54,7 +68,6 @@ def _get_current_shift() -> str:
         return "AFTERNOON"
     else:
         return "NIGHT"
-
 
 @router.get("/", response_model=PaginatedResponse[WorkOrderResponse], summary="获取工单列表")
 def list_work_orders(
@@ -111,7 +124,6 @@ def list_work_orders(
         result_items.append(d)
     return {"total": total, "items": result_items, "page": page, "page_size": page_size}
 
-
 # ========== 进度看板 ==========
 
 # display_status 中文映射
@@ -131,7 +143,6 @@ _DISPLAY_STATUS_MAP = {
     "CLOSED": "已结案",
     "CANCELLED": "已取消",
 }
-
 
 def _build_board_item(
     w: WorkOrder,
@@ -174,7 +185,6 @@ def _build_board_item(
         "progress_timeline": progress_timeline,
         "is_overtime": is_overtime,
     }
-
 
 @router.get("/progress-board", summary="进度看板（4列）")
 def get_progress_board(
@@ -258,12 +268,10 @@ def get_progress_board(
         "completed": completed_list,
     }
 
-
 @router.get("/status-machine", summary="工单状态机（状态与允许转移）")
 def get_work_order_status_machine(current_user: User = Depends(get_current_user)):
     """返回全部状态、中文名，以及每个状态允许的下一步。工业车道与汽修车道共用这一张表。"""
     return status_machine_payload()
-
 
 @router.get("/{work_order_id}", response_model=WorkOrderResponse, summary="获取工单详情")
 def get_work_order(
@@ -292,7 +300,6 @@ def get_work_order(
     _attach_vehicle_plate(resp, db)
     return resp
 
-
 def _next_work_order_no(db: Session) -> str:
     today_str = date.today().strftime("%Y%m%d")
     prefix = f"WO-{today_str}-"
@@ -307,7 +314,6 @@ def _next_work_order_no(db: Session) -> str:
             seq = 1
     return f"{prefix}{seq:03d}"
 
-
 def _scope_owner_work_orders(query, db: Session, current_user: User):
     ids = customer_ids_for_user(db, current_user)
     if not ids:
@@ -318,22 +324,6 @@ def _scope_owner_work_orders(query, db: Session, current_user: User):
     if vehicle_ids:
         clauses.append(WorkOrder.vehicle_id.in_(vehicle_ids))
     return query.filter(or_(*clauses))
-
-
-def _parse_store_header(store_id: Optional[int], x_store_id: Optional[str]) -> Optional[int]:
-    if store_id:
-        return store_id
-    if x_store_id and str(x_store_id).strip().isdigit():
-        return int(str(x_store_id).strip())
-    return None
-
-
-def _work_order_scope(current_user: User, store_id: Optional[int], x_store_id: Optional[str]):
-    try:
-        return resolve_store_scope(current_user, _parse_store_header(store_id, x_store_id))
-    except StoreScopeError as exc:
-        raise HTTPException(status_code=403, detail=exc.message)
-
 
 def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> bool:
     if not is_owner(current_user):
@@ -346,16 +336,6 @@ def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> b
     from app.models.vehicle import Vehicle
     vehicle = db.query(Vehicle).filter(Vehicle.id == work_order.vehicle_id).first()
     return bool(vehicle and vehicle.owner_id in ids)
-
-
-def _lane_of(work_order: WorkOrder) -> bool:
-    return is_auto_repair_lane(
-        status=work_order.status,
-        vehicle_id=work_order.vehicle_id,
-        appointment_id=work_order.appointment_id,
-        store_id=work_order.store_id,
-    )
-
 
 def _validate_auto_links(db: Session, store_id=None, bay_id=None, vehicle_id=None, customer_id=None, appointment_id=None):
     from app.models.appointment import Appointment
@@ -378,7 +358,6 @@ def _validate_auto_links(db: Session, store_id=None, bay_id=None, vehicle_id=Non
         if store_id is not None and bay.store_id != store_id:
             raise HTTPException(status_code=400, detail="工位不属于该门店")
 
-
 def _bind_technician(db: Session, work_order: WorkOrder, technician_id: int) -> User:
     technician = db.query(User).filter(User.id == technician_id).first()
     if not technician or not technician.is_active:
@@ -388,14 +367,6 @@ def _bind_technician(db: Session, work_order: WorkOrder, technician_id: int) -> 
     work_order.technician_id = technician.id
     work_order.assignee_id = technician.id
     return technician
-
-
-def _complete_linked_appointment(db: Session, appointment_id: int) -> None:
-    from app.models.appointment import Appointment
-    row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
-    if row and row.status == "CONFIRMED":
-        row.status = "COMPLETED"
-
 
 @router.post("/", response_model=WorkOrderResponse, summary="创建草稿工单")
 def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -458,7 +429,6 @@ def create_work_order(data: WorkOrderCreate, db: Session = Depends(get_db), curr
     db.refresh(work_order)
     logger.info(f"[WorkOrder] 创建: {work_order.work_order_no} status={work_order.status}")
     return _build_work_order_response(work_order, db)
-
 
 @router.post("/from-appointment", response_model=WorkOrderResponse, summary="预约接车开单")
 def create_work_order_from_appointment(
@@ -532,7 +502,6 @@ def create_work_order_from_appointment(
     logger.info(f"[WorkOrder] 预约接车: {work_order.work_order_no} appointment={appointment.id}")
     return _build_work_order_response(work_order, db)
 
-
 @router.put("/{work_order_id}", response_model=WorkOrderResponse, summary="更新工单（逐步填写）")
 def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """维修过程中逐步保存表单内容。创建者、被指派的维修员或管理员可编辑。"""
@@ -575,7 +544,6 @@ def update_work_order(work_order_id: int, data: WorkOrderUpdate, db: Session = D
     db.commit()
     db.refresh(work_order)
     return _build_work_order_response(work_order, db)
-
 
 @router.post("/{work_order_id}/analyze", response_model=TicketAnalysisResponse, summary="AI 分析工单")
 def analyze_work_order(
@@ -642,7 +610,6 @@ def analyze_work_order(
         raw_reasoning=analysis.raw_reasoning,
         suggested_actions=analysis.suggested_actions,
     )
-
 
 @router.post("/{work_order_id}/complete", summary="提交完成工单（AI 分析+去重+收录知识）")
 def complete_work_order(
@@ -743,7 +710,6 @@ def complete_work_order(
         "inventory_deducted": deduction_details,
     }
 
-
 @router.delete("/{work_order_id}", summary="删除工单")
 def delete_work_order(work_order_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
@@ -755,7 +721,6 @@ def delete_work_order(work_order_id: int, db: Session = Depends(get_db), current
     db.delete(work_order)
     db.commit()
     return {"message": "工单已删除"}
-
 
 # ========== 内部函数 ==========
 
@@ -771,7 +736,6 @@ def _join_fault_codes(*parts) -> str:
                 seen.add(c)
                 out.append(c)
     return ", ".join(out)
-
 
 def _auto_publish_knowledge(wo: WorkOrder, db: Session) -> bool:
     """
@@ -850,7 +814,6 @@ def _auto_publish_knowledge(wo: WorkOrder, db: Session) -> bool:
     logger.info(f"[WorkOrder] 从工单 {wo.work_order_no} 自动收录知识 #{knowledge.id}: {knowledge.title[:40]}...")
     return True
 
-
 def _deduct_spare_parts(wo: WorkOrder, db: Session) -> List[dict]:
     """
     工单完成时，扣减 used_parts 中备件的库存数量
@@ -905,7 +868,6 @@ def _deduct_spare_parts(wo: WorkOrder, db: Session) -> List[dict]:
 
     return details
 
-
 def _ensure_fault_code_mappings(wo: WorkOrder, db: Session):
     """工单完成时，收录故障码到映射表（一一对应，不可修改）"""
     from app.api.fault_codes import ensure_fault_code_mapping
@@ -934,88 +896,9 @@ def _ensure_fault_code_mappings(wo: WorkOrder, db: Session):
         except Exception as e:
             logger.warning(f"[WorkOrder] 故障码收录失败 {code}: {e}")
 
-
 # ========== Phase1 工单流转与派工 ==========
 # 转移白名单在 app.domain.work_order_status.VALID_TRANSITIONS。
 # 工业车道原有边全部保留；汽修车道只是在同一张表上追加边。
-
-WORKLOAD_INCREASE_STATUSES = {WorkOrderStatus.ASSIGNED.value}
-WORKLOAD_DECREASE_STATUSES = {
-    WorkOrderStatus.COMPLETED.value,
-    WorkOrderStatus.REJECTED.value,
-    WorkOrderStatus.CANCELLED.value,
-    WorkOrderStatus.CLOSED.value,
-}
-
-
-def _is_allowed_transition(from_status: str, to_status: str) -> bool:
-    return to_status in _allowed_transitions(from_status)
-
-
-def _attach_transitions(payload, status) -> None:
-    """把当前状态和允许的下一步写进列表字典或响应模型。"""
-    status_val = _status_value(status)
-    targets = _allowed_transitions(status_val)
-    if isinstance(payload, dict):
-        if status_val is not None:
-            payload["status"] = status_val
-        payload["allowed_transitions"] = targets
-    else:
-        payload.allowed_transitions = targets
-
-
-def _vehicle_plate_map(db: Session, vehicle_ids) -> Dict[int, str]:
-    if not vehicle_ids:
-        return {}
-    from app.models.vehicle import Vehicle
-    rows = db.query(Vehicle).filter(Vehicle.id.in_(vehicle_ids)).all()
-    return {row.id: row.plate for row in rows}
-
-
-def _attach_vehicle_plate(resp, db: Session) -> None:
-    if not getattr(resp, "vehicle_id", None):
-        return
-    plates = _vehicle_plate_map(db, {resp.vehicle_id})
-    resp.vehicle_plate = plates.get(resp.vehicle_id)
-
-
-def _add_progress_log(
-    db: Session,
-    work_order_id: int,
-    from_status: Optional[str],
-    to_status: str,
-    operator_id: Optional[int],
-    operator_name: Optional[str],
-    source: str,
-    remark: Optional[str] = None,
-    location: Optional[str] = None,
-    attachments: Any = None,
-) -> WorkOrderProgressLog:
-    log = WorkOrderProgressLog(
-        work_order_id=work_order_id,
-        from_status=from_status,
-        to_status=to_status,
-        operator_id=operator_id,
-        operator_name=operator_name,
-        source=source,
-        remark=remark,
-        location=location,
-        attachments=attachments,
-    )
-    db.add(log)
-    db.flush()
-    return log
-
-
-def _update_workload(db: Session, technician_id: Optional[int], delta: int):
-    if not technician_id or delta == 0:
-        return
-    tech = db.query(User).filter(User.id == technician_id).first()
-    if tech:
-        new_count = max(0, (tech.current_workload_count or 0) + delta)
-        tech.current_workload_count = new_count
-        db.flush()
-
 
 @router.post("/{work_order_id}/transition", response_model=WorkOrderResponse, summary="工单状态流转")
 def transition_work_order(
@@ -1033,188 +916,6 @@ def transition_work_order(
         import traceback
         logger.error(f"[Transition] 工单 #{work_order_id} 流转异常: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"工单流转内部错误: {e}")
-
-
-def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, current_user: User):
-    try:
-        to_status_val = data.to_status.upper()
-        to_status_enum = WorkOrderStatus(to_status_val)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"无效的目标状态: {data.to_status}")
-
-    work_order = (
-        db.query(WorkOrder)
-        .filter(WorkOrder.id == work_order_id)
-        .first()
-    )
-    if not work_order:
-        raise HTTPException(status_code=404, detail="工单不存在")
-    if not row_in_scope(_work_order_scope(current_user, None, None), work_order.store_id):
-        raise HTTPException(status_code=404, detail="工单不存在")
-
-    from_status_val = work_order.status.value if work_order.status else None
-
-    if from_status_val == to_status_val:
-        return _build_work_order_response(work_order, db)
-
-    if not _is_allowed_transition(from_status_val, to_status_val):
-        raise HTTPException(
-            status_code=400,
-            detail=f"非法状态流转: {from_status_val} → {to_status_val}，允许的目标状态: {VALID_TRANSITIONS.get(from_status_val, [])}"
-        )
-
-    is_admin = current_user.role == UserRole.ADMIN.value
-    is_supervisor = current_user.role == UserRole.SUPERVISOR.value
-    is_technician = current_user.role == UserRole.TECHNICIAN.value
-    is_assigned_tech = work_order.technician_id == current_user.id
-
-    if to_status_val == WorkOrderStatus.ACCEPTED.value:
-        if not (is_assigned_tech or is_admin):
-            raise HTTPException(status_code=403, detail="仅被指派的维修员或管理员可接单")
-
-    elif to_status_val in (WorkOrderStatus.ARRIVED.value, WorkOrderStatus.INSPECTING.value, WorkOrderStatus.IN_PROGRESS.value):
-        if not (is_assigned_tech or is_admin):
-            raise HTTPException(status_code=403, detail="仅维修员或管理员可推进到此状态")
-
-    elif to_status_val == WorkOrderStatus.ARCHIVING.value:
-        # 完成维修 → 待归档：仅被指派维修员或管理员可操作
-        if not (is_assigned_tech or is_admin):
-            raise HTTPException(status_code=403, detail="仅维修员或管理员可将工单标记为待归档")
-
-    elif to_status_val == WorkOrderStatus.ARCHIVED.value:
-        raise HTTPException(status_code=400, detail="归档完成请使用工单归档接口，需 AI 校验完成度达标")
-
-    elif to_status_val == WorkOrderStatus.COMPLETED.value:
-        pass
-
-    elif to_status_val == WorkOrderStatus.REJECTED.value:
-        if not (is_assigned_tech or is_admin or is_supervisor):
-            raise HTTPException(status_code=403, detail="仅维修员、主管或管理员可退回")
-
-    elif to_status_val == WorkOrderStatus.ASSIGNED.value:
-        if not (is_supervisor or is_admin):
-            raise HTTPException(status_code=403, detail="仅主管或管理员可派工/改派")
-
-    elif to_status_val in (
-        WorkOrderStatus.INTAKE.value,
-        WorkOrderStatus.DIAGNOSING.value,
-        WorkOrderStatus.QUOTING.value,
-        WorkOrderStatus.QC.value,
-    ):
-        is_creator = work_order.created_by == current_user.id
-        if not (is_assigned_tech or is_admin or is_supervisor or is_creator):
-            raise HTTPException(status_code=403, detail="仅维修员、主管或管理员可推进接车/诊断/报价/质检")
-
-    elif to_status_val == WorkOrderStatus.APPROVED.value:
-        if not (is_supervisor or is_admin):
-            raise HTTPException(status_code=403, detail="仅主管或管理员可确认报价")
-
-    elif to_status_val == WorkOrderStatus.CLOSED.value:
-        if not (is_supervisor or is_admin):
-            raise HTTPException(status_code=403, detail="仅主管或管理员可结案")
-
-    elif to_status_val == WorkOrderStatus.CANCELLED.value:
-        is_creator = work_order.created_by == current_user.id
-        if not (is_assigned_tech or is_admin or is_supervisor or is_creator):
-            raise HTTPException(status_code=403, detail="仅维修员、主管或管理员可取消工单")
-
-    old_technician_id = work_order.technician_id
-    from_status_enum = work_order.status
-
-    if to_status_val == WorkOrderStatus.CLOSED.value and work_order.appointment_id:
-        _complete_linked_appointment(db, work_order.appointment_id)
-
-    if to_status_val == WorkOrderStatus.COMPLETED.value:
-        try:
-            complete_result = complete_work_order_internal(work_order_id, db)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(f"[Transition] 调用complete逻辑失败，继续手动标记完成: {e}")
-            work_order.status = to_status_enum
-            db.flush()
-    else:
-        work_order.status = to_status_enum
-        db.flush()
-
-    _add_progress_log(
-        db=db,
-        work_order_id=work_order.id,
-        from_status=from_status_enum,
-        to_status=to_status_enum,
-        operator_id=current_user.id,
-        operator_name=current_user.real_name,
-        source=data.source or "WEB",
-        remark=data.remark,
-        location=data.location,
-        attachments=data.attachments,
-    )
-
-    if from_status_val in WORKLOAD_INCREASE_STATUSES:
-        _update_workload(db, old_technician_id, -1)
-    if to_status_val in WORKLOAD_INCREASE_STATUSES:
-        _update_workload(db, work_order.technician_id, +1)
-    if to_status_val in WORKLOAD_DECREASE_STATUSES and from_status_val not in WORKLOAD_DECREASE_STATUSES:
-        _update_workload(db, old_technician_id, -1)
-
-    db.commit()
-    db.refresh(work_order)
-
-    # 状态变更后，异步刷新维修员钉钉上的派工进度卡片（Web 端操作实时反映到钉钉，不阻塞接口响应）
-    # 钉钉卡片回调走 DINGTALK_CARD 来源，卡片已由 dingtalk_wo_card._dispatch_action 异步刷新，此处跳过避免重复。
-    if data.source != "DINGTALK_CARD":
-        try:
-            from app.core.dingtalk_wo_card import _notify_supervisor_async, _refresh_card_async
-            from app.models.user import User as _User
-            _tech = db.query(_User).filter(_User.id == work_order.technician_id).first()
-            if _tech and _tech.dingtalk_userid:
-                _refresh_card_async(work_order.id, work_order.work_order_no)
-            # 汽修车道复用主管进度通知。没有绑定钉钉时函数内部会跳过。
-            if _lane_of(work_order):
-                actor = current_user.real_name or current_user.username or ""
-                _notify_supervisor_async(
-                    work_order.id,
-                    STATUS_LABELS.get(to_status_val, to_status_val),
-                    actor,
-                )
-        except Exception as e:
-            logger.warning(f"[Transition] 钉钉进度卡片刷新失败（不影响工单状态）: {e}")
-
-    if work_order.customer_id or work_order.vehicle_id:
-        try:
-            from app.domain.owner_notify import notify_owner
-            from app.models.vehicle import Vehicle
-            plate = ""
-            if work_order.vehicle_id:
-                vehicle = db.query(Vehicle).filter(Vehicle.id == work_order.vehicle_id).first()
-                plate = vehicle.plate if vehicle else ""
-            notify_owner(
-                db,
-                customer_id=work_order.customer_id,
-                vehicle_id=work_order.vehicle_id,
-                work_order_id=work_order.id,
-                work_order_no=work_order.work_order_no,
-                status_label=STATUS_LABELS.get(to_status_val, to_status_val),
-                plate=plate,
-            )
-        except Exception as e:
-            logger.warning(f"[Transition] 车主通知失败（不影响工单状态）: {e}")
-
-    if to_status_val == WorkOrderStatus.CLOSED.value:
-        try:
-            from app.domain.follow_up import schedule_after_delivery
-            schedule_after_delivery(db, work_order, created_by=current_user.id)
-            db.commit()
-        except Exception as e:
-            logger.warning(f"[Transition] 回访提醒排期失败（不影响工单状态）: {e}")
-            try:
-                db.rollback()
-            except Exception:
-                pass
-
-    logger.info(f"[WorkOrder] 状态流转 #{work_order.id}: {from_status_val} → {to_status_val} by {current_user.real_name}")
-    return _build_work_order_response(work_order, db)
-
 
 def complete_work_order_internal(work_order_id: int, db: Session):
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
@@ -1287,7 +988,6 @@ def complete_work_order_internal(work_order_id: int, db: Session):
     logger.info(f"[WorkOrder] 工单 {work_order.work_order_no} 已完成(流转接口)")
     return work_order
 
-
 # ========== 工单归档：关键字段齐全性校验 + 归档完成 ==========
 
 ARCHIVE_REQUIRED_FIELDS = [
@@ -1298,7 +998,6 @@ ARCHIVE_REQUIRED_FIELDS = [
     ("repair_result", "维修结果"),
     ("work_hours", "维修工时"),
 ]
-
 
 def _archive_field_check(work_order: WorkOrder) -> dict:
     """校验工单归档关键字段是否齐全。返回 {passed, missing_fields, completeness, total_fields}"""
@@ -1315,7 +1014,6 @@ def _archive_field_check(work_order: WorkOrder) -> dict:
         "completeness": round(filled / total, 2),
         "total_fields": total,
     }
-
 
 @router.post("/{work_order_id}/archive-check", summary="工单归档校验（关键字段齐全性）")
 def archive_check(
@@ -1341,7 +1039,6 @@ def archive_check(
         f"completeness={result['completeness']}, missing={result['missing_fields']} by {current_user.real_name}"
     )
     return result
-
 
 @router.post("/{work_order_id}/archive-complete", summary="工单归档完成（校验达标后归档）")
 def archive_complete(
@@ -1404,7 +1101,6 @@ def archive_complete(
         "completeness": result["completeness"],
     }
 
-
 @router.get("/{work_order_id}/progress", summary="获取工单进度日志")
 def get_work_order_progress(
     work_order_id: int,
@@ -1450,7 +1146,6 @@ def get_work_order_progress(
         "allowed_transitions": allowed_next,
         "progress_logs": log_responses,
     }
-
 
 @router.post("/from-dispatch", response_model=WorkOrderResponse, summary="从派工创建工单(主管)")
 def create_work_order_from_dispatch(
@@ -1590,32 +1285,3 @@ def create_work_order_from_dispatch(
     logger.info(f"[WorkOrder] 主管派工创建 {work_order_no} → 技术员 #{data.technician_id}({technician.real_name})")
     return _build_work_order_response(work_order, db)
 
-
-def _build_work_order_response(work_order: WorkOrder, db: Session) -> WorkOrderResponse:
-    resp = WorkOrderResponse.model_validate(work_order)
-    if work_order.created_by:
-        creator = db.query(User).filter(User.id == work_order.created_by).first()
-        resp.created_by_employee_id = creator.employee_id if creator else None
-    if work_order.technician_id:
-        tech = db.query(User).filter(User.id == work_order.technician_id).first()
-        resp.technician_name = tech.real_name if tech else None
-    _attach_transitions(resp, work_order.status)
-    _attach_vehicle_plate(resp, db)
-    if work_order.progress_logs:
-        resp.progress_logs = [
-            WorkOrderProgressLogResponse(
-                id=l.id,
-                work_order_id=l.work_order_id,
-                from_status=l.from_status.value if l.from_status else None,
-                to_status=l.to_status.value if l.to_status else None,
-                operator_id=l.operator_id,
-                operator_name=l.operator_name,
-                source=l.source,
-                remark=l.remark,
-                location=l.location,
-                attachments=l.attachments,
-                created_at=l.created_at,
-            )
-            for l in work_order.progress_logs
-        ]
-    return resp

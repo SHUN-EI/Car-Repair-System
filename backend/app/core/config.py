@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"             # 召回模型（1024 维）
     EMBEDDING_MAX_LENGTH: int = 512
     EMBEDDING_LOG_FILE: str = "logs/embedding_server.log"
-    RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B" # 精排模型
+    RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"  # 精排模型（0~1 分；质量阀门阈值仍按原 Qwen 标定，尚未重标）
     RERANKER_ENABLED: bool = True                          # 模型重排总开关（纯 CPU 延迟敏感时可关）
     RERANKER_CANDIDATES: int = 30                          # 送入重排模型的候选条数
 

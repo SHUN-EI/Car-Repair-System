@@ -31,6 +31,11 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
+from app.memory.memory_service import (
+    EXPERT_REPAIR_SESSION_PREFIX,
+    EXPERT_REPAIR_SESSION_TTL,
+    memory_service,
+)
 
 
 @dataclass
@@ -56,8 +61,8 @@ class ExpertStepResult:
 class ExpertRepairAgent:
     """专家模式会话 + 引导生成"""
 
-    _SESSION_TTL = 24 * 3600  # 会话有效期 24 小时
-    _SESSION_KEY_PREFIX = "expert_repair_session:"
+    _SESSION_TTL = EXPERT_REPAIR_SESSION_TTL  # 会话有效期 24 小时
+    _SESSION_KEY_PREFIX = EXPERT_REPAIR_SESSION_PREFIX
 
     MAX_STEPS = 30  # 引导轮数上限（对齐追踪维修）
     _HISTORY_COMPRESS_THRESHOLD = 25
@@ -144,8 +149,7 @@ class ExpertRepairAgent:
 
     def _load_session(self, session_id: str) -> Optional[Dict]:
         try:
-            from app.core.cache_service import cache_service
-            return cache_service.get(f"{self._SESSION_KEY_PREFIX}{session_id}")
+            return memory_service.get_expert_repair_session(session_id)
         except Exception as e:
             logger.warning(f"[ExpertRepair] 会话加载失败: {e}")
             return None
@@ -153,8 +157,7 @@ class ExpertRepairAgent:
     def _save_session(self, session_id: str, data: Dict):
         try:
             self._maybe_compress_history(data)
-            from app.core.cache_service import cache_service
-            cache_service.set(f"{self._SESSION_KEY_PREFIX}{session_id}", data, ttl=self._SESSION_TTL)
+            memory_service.set_expert_repair_session(session_id, data)
         except Exception as e:
             logger.warning(f"[ExpertRepair] 会话保存失败: {e}")
 
@@ -194,8 +197,7 @@ class ExpertRepairAgent:
             if h.get("ai"):
                 msgs.append({"role": "assistant", "content": h["ai"]})
         try:
-            from app.agents.session_summarizer import session_summarizer
-            summary = session_summarizer.summarize(msgs)
+            summary = memory_service.summarize(msgs)
         except Exception as e:
             logger.warning(f"[ExpertRepair] 历史摘要压缩失败，保留原文: {e}")
             return
@@ -373,7 +375,7 @@ class ExpertRepairAgent:
         结果不满足公共阀门（≥3 条且高分≥2 或最高分≥0.7）时触发 ReAct 救援改写检索，保证引导素材充分。
         """
         try:
-            from app.agents.retrieval_flow import (
+            from app.rag.rag_service import (
                 make_tools, retrieve_hybrid, filter_rerank_cases, extract_device_and_fault,
                 evaluate_retrieval_quality,
             )

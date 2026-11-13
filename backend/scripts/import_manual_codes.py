@@ -37,9 +37,14 @@ from loguru import logger
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.manual_code import ManualCodeEntry
-from app.core.vector_store import log_code_store, LogCodeVectorStore
-from app.core.embeddings import encode_text, is_server_available
-from app.core.manual_text import normalize_error_code, build_manual_embedding_text
+from app.core.manual_text import normalize_error_code
+from app.rag.rag_service import (
+    is_server_available,
+    insert_manual_vector,
+    delete_manual_vector,
+    drop_and_recreate_manual_collection,
+    flush_manual_vectors,
+)
 
 
 def check_inference_server():
@@ -2154,7 +2159,7 @@ def _normalize_item(item: dict) -> dict:
     return out
 
 
-def _write_entry(db, store, item: dict, existing: Optional[ManualCodeEntry] = None) -> str:
+def _write_entry(db, item: dict, existing: Optional[ManualCodeEntry] = None) -> str:
     """写入 PG（新建或更新）+ 重编码写入 Milvus，返回 ('created'|'updated')"""
     if existing is not None:
         # upsert：全字段更新 + Milvus 删旧插新
@@ -2175,20 +2180,9 @@ def _write_entry(db, store, item: dict, existing: Optional[ManualCodeEntry] = No
     db.flush()  # 获得 entry.id
 
     # 向量化：结构化锚点（error_code + title + message_text + description + 前3情形信号）
-    vector = encode_text(build_manual_embedding_text(item))
-    point_id = store.insert(
-        vector=vector,
-        manual_code_id=entry.id,
-        error_code=item["error_code"],
-        manual_name=item["manual_name"],
-        device_type=item.get("device_type"),
-        title=item["title"],
-        description=item["description"],
-        chapter=item.get("chapter") or "",
-        page=item.get("page") or "",
-    )
+    point_id = insert_manual_vector(entry.id, item)
     if old_milvus_id:
-        store.delete(old_milvus_id)
+        delete_manual_vector(old_milvus_id)
     entry.milvus_id = point_id
     db.flush()
     return "updated" if existing is not None else "created"
@@ -2207,7 +2201,6 @@ def import_manual_codes(
         resync: 只按 PG 重灌全部向量（PG 不动，修复 Milvus 不一致，如 PUT 中途失败）
     """
     check_inference_server()
-    store = log_code_store
     store_name = settings.MILVUS_LOG_CODE_COLLECTION
 
     # 数据源：--json-file 优先，否则种子数据
@@ -2233,9 +2226,8 @@ def import_manual_codes(
             cleared = db.query(ManualCodeEntry).delete()
             db.commit()
             logger.info(f"force-rebuild: 已清空 manual_code_entries 表（{cleared} 条）")
-            store.drop_collection()
-            # drop 后原 Collection 对象已失效，重建实例以便后续自动建集合
-            store = LogCodeVectorStore(collection_name=store_name)
+            # drop 后重建集合，并刷新 rag_service / vector_store 单例
+            drop_and_recreate_manual_collection()
 
         if resync:
             # 只修 Milvus：按 PG 全部条目重编码删旧插新
@@ -2246,20 +2238,9 @@ def import_manual_codes(
                     item = {c.name: getattr(row, c.name) for c in row.__table__.columns}
                     item = _normalize_item(item)
                     old_milvus_id = row.milvus_id
-                    vector = encode_text(build_manual_embedding_text(item))
-                    point_id = store.insert(
-                        vector=vector,
-                        manual_code_id=row.id,
-                        error_code=item["error_code"],
-                        manual_name=item["manual_name"],
-                        device_type=item.get("device_type"),
-                        title=item["title"],
-                        description=item["description"],
-                        chapter=item.get("chapter") or "",
-                        page=item.get("page") or "",
-                    )
+                    point_id = insert_manual_vector(row.id, item)
                     if old_milvus_id:
-                        store.delete(old_milvus_id)
+                        delete_manual_vector(old_milvus_id)
                     row.milvus_id = point_id
                     db.flush()
                     vector_count += 1
@@ -2270,7 +2251,7 @@ def import_manual_codes(
                     db.rollback()
             db.commit()
             if vector_count:
-                store.flush()
+                flush_manual_vectors()
             logger.info(f"resync 完成: 重灌 {vector_count} 条, 失败 {len(errors)} 条")
             if errors:
                 logger.warning(f"失败清单:\n" + "\n".join(errors[:10]))
@@ -2284,7 +2265,7 @@ def import_manual_codes(
                     ManualCodeEntry.manual_name == item["manual_name"],
                     ManualCodeEntry.error_code == item["error_code"],
                 ).first()
-                action = _write_entry(db, store, item, existing)
+                action = _write_entry(db, item, existing)
                 if action == "created":
                     created_count += 1
                 else:
@@ -2305,7 +2286,7 @@ def import_manual_codes(
 
         # 批量向量插入完成后统一刷写
         if vector_count > 0:
-            store.flush()
+            flush_manual_vectors()
             logger.info(f"{store_name} 向量数据已刷写落盘")
 
         logger.info(f"导入完成: 新建 {created_count} 条, 更新 {updated_count} 条, 失败 {len(errors)} 条")

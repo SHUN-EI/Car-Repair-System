@@ -410,7 +410,7 @@ class RetrievalAssistantAgent:
         if len(results) == 0:
             return {"sufficient": False, "reason": "无结果"}
 
-        from app.agents.retrieval_flow import evaluate_retrieval_quality
+        from app.rag.rag_service import evaluate_retrieval_quality
         q = evaluate_retrieval_quality(results)
         if q["sufficient"]:
             return q

@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
-from app.agents.retrieval_flow import case_rank_score
+from app.rag.rag_service import case_rank_score
 
 
 @dataclass

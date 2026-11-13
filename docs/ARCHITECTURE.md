@@ -33,7 +33,7 @@ Smart-Repair-System（仓库名 `Car-Repair-System`，`settings.APP_NAME` 为 `S
 | **维修业务域** | `domain/` + `api/`：工单双车道状态机、门店隔离、预约、报价规则引擎、采购入库、回访；支付只落占位单，不接清算渠道 |
 | **渠道接入** | FastAPI `/api/v1/*`、Vue 3 管理端与 `/m` 车主/技师 H5、钉钉 Stream/HTTP 机器人、内部 `/mcp` 与默认关闭的 `/mcp/public` |
 
-四条进程边界：本机用 `docker-compose.dev.yml` 跑 PostgreSQL、Redis、Milvus（及 etcd、MinIO、Attu）；统一推理服务 `python -m app.core.embedding_server` 占用 `:8010`，托管 bge-m3 与 Qwen3-Reranker；`uvicorn` 跑 FastAPI（HTTP、LangGraph、MCP 挂载、可选前端静态资源）；Vite 开发服务器默认 `:4173`，经代理打到后端 `:18080`。钉钉 Stream 与 OA 轮询挂在 FastAPI 进程内，不另起 worker。细则见 [§2.3](#23-进程边界) 与 [§7.4](#74-部署形态)。
+四条进程边界：本机用 `docker-compose.dev.yml` 跑 PostgreSQL、Redis、Milvus（及 etcd、MinIO、Attu）；统一推理服务 `python -m app.core.embedding_server` 占用 `:8010`，托管 bge-m3 与 bge-reranker-v2-m3；`uvicorn` 跑 FastAPI（HTTP、LangGraph、MCP 挂载、可选前端静态资源）；Vite 开发服务器默认 `:4173`，经代理打到后端 `:18080`。钉钉 Stream 与 OA 轮询挂在 FastAPI 进程内，不另起 worker。细则见 [§2.3](#23-进程边界) 与 [§7.4](#74-部署形态)。
 
 三条写约束：工单状态迁移只认 `domain/work_order_status.py` 的 `VALID_TRANSITIONS`（报表 PUT 把已填草稿直接标成 `IN_PROGRESS` 是代码写明的既有捷径，不走该表）；报价金额只来自目录价与数量的确定性计算，LLM 不定价；咨询/引导门面不暴露工单写方法，写入与状态流转只走工单 Agent。见 [§2.2](#22-依赖关系与硬约束)。
 
@@ -51,7 +51,7 @@ flowchart TB
     subgraph host [Host processes]
         Vite["Vite dev / 构建产物"]
         Uvicorn["Uvicorn FastAPI :18080"]
-        Emb["embedding_server :8010<br/>bge-m3 + Qwen3-Reranker"]
+        Emb["embedding_server :8010<br/>bge-m3 + bge-reranker-v2-m3"]
     end
 
     subgraph fastapi [FastAPI layers]
@@ -188,7 +188,7 @@ sequenceDiagram
 | langchain / langchain-openai / langchain-community | 1.3.13 / 1.2.2 / 0.4.2 | DeepSeek 兼容 Chat、工具 |
 | fastmcp | 3.4.5 | `/mcp`、`/mcp/public`，Streamable HTTP |
 | pymilvus | 2.4.15 | 向量库（配套 `setuptools==80.9.0`，因 81+ 去掉 `pkg_resources`） |
-| torch / transformers / FlagEmbedding | 2.6.0 / >=4.40.0 / >=1.2.10 | 推理服务加载 bge-m3 与 Qwen3-Reranker |
+| torch / transformers / FlagEmbedding | 2.6.0 / >=4.40.0 / >=1.2.10 | 推理服务加载 bge-m3 与 bge-reranker-v2-m3 |
 | python-jose / passlib / bcrypt | 3.3.0 / 1.7.4 / 4.0.1 | JWT HS256、密码哈希；bcrypt 钉在 4.0.1 |
 | httpx / aiohttp / requests | 0.28.1 / 3.13.5 / 2.33.1 | DeepSeek、钉钉、追踪上报 |
 | dingtalk-stream | 0.24.3 | 长连接收机器人/OA 事件 |
@@ -317,7 +317,7 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 | 职责 | 实现 | 失败时 |
 |------|------|--------|
 | 召回编码 | 本机推理服务 `BAAI/bge-m3`，1024 维，L2 归一化，`POST /v1/embeddings` | `encode_*` 抛 `RuntimeError`；混合检索降级 BM25-only |
-| 精排 | 同一服务 `Qwen/Qwen3-Reranker-0.6B`，`POST /v1/rerank` | 返回 `None`，`retrieval_flow` 回退 `weighted_rerank` |
+| 精排 | 同一服务 `BAAI/bge-reranker-v2-m3`，`POST /v1/rerank`（分数 0~1） | 返回 `None`，`retrieval_flow` 回退 `weighted_rerank` |
 | 生成 / 抽取 / 意图分类 / ReAct 决策 | 远程 DeepSeek，`langchain_openai.ChatOpenAI` 走 `DEEPSEEK_BASE_URL` | 各调用点打日志或返回降级文案，不改检索阈值 |
 
 意图路由规则、错误码正则、关键词清洗、套餐排序、报价算术都是确定性逻辑，不调用 LLM。配置注释写明：粗筛阈值按 bge-m3 实测分布标定（无关约 0.35、英文日志 ≥0.495），本文不把这些观测写成线上指标。
@@ -332,7 +332,7 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 
 检索 ReAct 决策里 `ChatOpenAI` 使用 `temperature=0.1`（`retrieval_agent.py`）。其它生成点的温度以各自模块为准，不在此统一杜撰。
 
-#### 3.4.3 本地模型（bge-m3 / Qwen3-Reranker）
+#### 3.4.3 本地模型（bge-m3 / bge-reranker-v2-m3）
 
 由独立进程托管，主链路只做 HTTP 客户端（`core/embeddings.py`、`core/reranker.py`）。
 
@@ -342,7 +342,7 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | 召回 |
 | `EMBEDDING_MAX_LENGTH` | 512 | 编码截断 |
 | `MILVUS_VECTOR_SIZE` | 1024 | 维度；健康检查读不到 `dim` 时回退此值 |
-| `RERANKER_MODEL_NAME` | `Qwen/Qwen3-Reranker-0.6B` | 精排 |
+| `RERANKER_MODEL_NAME` | `BAAI/bge-reranker-v2-m3` | 精排（0~1 分；质量阀门阈值仍按原 Qwen 标定，尚未重标） |
 | `RERANKER_ENABLED` | `True` | 总开关；CPU 延迟敏感时可关 |
 | `RERANKER_CANDIDATES` | 30 | 送入精排的候选条数 |
 
@@ -400,7 +400,7 @@ flowchart TD
     MV --> RRF
     RRF --> COARSE["粗筛：非 rrf_only 且 score≥0.45<br/>RETRIEVAL_COARSE_THRESHOLD"]
     COARSE --> STRICT["设备 + 故障关键词严格过滤"]
-    STRICT -->|非空| RR["精排：Qwen3-Reranker 或 weighted_rerank"]
+    STRICT -->|非空| RR["精排：bge-reranker-v2-m3 或 weighted_rerank"]
     STRICT -->|空| RESCUE["语义兜底：向量分≥0.60 且排除跨系统同码冲突"]
     RR --> PIN["错误码精确命中置顶 + 手册情形重排"]
     RESCUE --> PIN
@@ -995,7 +995,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 8. **双车道共用一张状态表。** 工业边不能删，汽修只加转移和专有状态。用车辆/预约/门店或专有状态区分车道，而不是拆表。这是领域模块顶部注释给出的约束，不是「更好的领域模型」广告。
 9. **门店范围与车主范围分开实现。** 店内角色锁店；车主走客户档案。代码写明了这种切分。落实是否覆盖每一个列表接口，见附录。
 10. **生产密钥门禁与 MCP 默认收紧。** `assert_production_secrets`、公开 MCP 与写工具默认关闭，是配置和鉴权代码里的明确策略。
-11. **精排模型为何选 Qwen3-Reranker-0.6B、召回为何选 bge-m3：** 这是现网默认实现。配置注释说明了粗筛阈值按 bge-m3 分布标定；未提供与其它模型的对比实验，本文不补选型故事。
+11. **精排模型为何选 bge-reranker-v2-m3、召回为何选 bge-m3：** 这是现网默认实现。粗筛阈值按 bge-m3 分布标定；质量阀门阈值仍按原 Qwen3-Reranker 的 0~1 分标定，换模型后尚未重标，排序与「结果是否充足」的判断可能变化。未提供与其它模型的对比实验，本文不补选型故事。
 12. **为何用 Milvus 而不是只在 PostgreSQL 做向量：** 代码按「关系正本 + 语义副本」拆分，未写与 pgvector 的对比结论。
 
 ---

@@ -1,4 +1,4 @@
-"""临时脚本：下载 bge-m3 + Qwen3-Reranker-0.6B 到本地路径（重试 + 忽略无关文件）
+"""临时脚本：下载 bge-m3 + bge-reranker-v2-m3 到本地路径（重试 + 忽略无关文件）
 
 用 snapshot_download 补全缺失文件（已下载的会被跳过）。bge-m3 仓库里的
 .DS_Store（macOS 元数据，403）与 onnx 目录（FlagEmbedding 不需要）忽略。
@@ -16,9 +16,9 @@ TASKS = [
         "ignore": [".DS_Store", "**/.DS_Store", "onnx/**", "**/onnx/**"],
     },
     {
-        "repo": "Qwen/Qwen3-Reranker-0.6B",
-        "local_dir": r"D:\models\Qwen\Qwen3-Reranker-0___6B",
-        "ignore": [".DS_Store", "**/.DS_Store"],
+        "repo": "BAAI/bge-reranker-v2-m3",
+        "local_dir": r"D:\models\BAAI\BAAI__bge-reranker-v2-m3",
+        "ignore": [".DS_Store", "**/.DS_Store", "onnx/**", "**/onnx/**"],
     },
 ]
 

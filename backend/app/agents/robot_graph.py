@@ -190,12 +190,12 @@ def duty_node(state: RobotState) -> dict:
 def repair_node(state: RobotState) -> dict:
     """维修追踪引导入口：三层维修意图阀门校验后再进入 guided_repair_track
     ① regex 错误码 → ② 关键词 → ③ 检索打分：全空返回统一护栏文案（不误导用户继续）"""
-    from app.agents.retrieval_flow import (
+    from app.rag.rag_service import (
         make_tools, repair_intent_check, REPAIR_IRRELEVANT_REPLY,
     )
     text = state.get("text") or ""
     # ①② 快判定：无关或短闲聊直接护栏，不跑检索
-    from app.agents.retrieval_flow import repair_intent_fast_check
+    from app.rag.rag_service import repair_intent_fast_check
     fast = repair_intent_fast_check(text)
     if fast["decision"] == "irrelevant":
         return {"reply": REPAIR_IRRELEVANT_REPLY + "\n\n" + (
