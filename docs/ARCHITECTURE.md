@@ -1,6 +1,6 @@
 # Smart-Repair-System 系统总体架构文档
 
-> 本文以仓库**当前代码**为唯一事实来源（截至 2026-11-13）。方案类 docs（如 `docs/双Agent精简技术方案.md`、`docs/汽修-Agent-平台改造方案.md`、后训练方案）只解释取舍；与代码冲突时以仓库实现为准。`README.md` 是入口页；阈值和已知偏差以本文为准。本机 HEAD：`586c07c`（`586c07cdce21fd88450de7e14e231f3b7f737e73`，`feat: 将第一类 Agent 精简为咨询/引导与工单两个门面`，2026-11-12 19:14:30 +0800）。
+> 本文以仓库**当前代码**为唯一事实来源（截至 2026-11-13）。方案类 docs（如 `docs/双Agent精简技术方案.md`、`docs/汽修-Agent-平台改造方案.md`、后训练方案）只解释取舍；与代码冲突时以仓库实现为准。分层与依赖方向的契约见 `docs/HARNESS.md`，本文写现网结构与流程，不重复抄写契约全文。`README.md` 是入口页；阈值和已知偏差以本文为准。本机 HEAD：`91c36d7`（`91c36d787cf1e11405465d80c6b4d8c69ab5b6df`，`冲突修改`，2026-11-13 18:07:56 +0800）。
 
 ---
 
@@ -29,8 +29,8 @@ Smart-Repair-System（仓库名 `Car-Repair-System`，`settings.APP_NAME` 为 `S
 | 能力 | 实现入口 |
 |------|----------|
 | **双门面 Agent** | `ConsultGuideAgent`（问答、追踪维修、专家模式、库存只读）与 `WorkOrderAgent`（理解、导入、生命周期写入口、报价/套餐、知识沉淀）。渠道经 `AgentRouter` 分发，路由本身不是第三 Agent，见 [§5](#5-agent-设计) |
-| **公共检索漏斗** | `retrieval_flow.py`：知识库向量 + BM25，手册错误码精确 + 语义，RRF 融合后粗筛、严格过滤、精排，见 [§4.1](#41-检索漏斗) |
-| **维修业务域** | `domain/` + `api/`：工单双车道状态机、门店隔离、预约、报价规则引擎、采购入库、回访；支付只落占位单，不接清算渠道 |
+| **公共检索漏斗** | 公开入口 `app.rag.rag_service`，实现 `app/rag/retrieval_flow.py`（`app/agents/retrieval_flow.py` 是兼容 shim）：知识库向量 + BM25，手册错误码精确 + 语义，RRF 融合后粗筛、严格过滤、精排，见 [§4.1](#41-检索漏斗) |
+| **维修业务域** | `domain/` + `api/`：工单双车道状态机、状态迁移 `work_order_transition.do_transition`、门店隔离、预约、报价规则引擎、采购入库、回访；支付只落占位单，不接清算渠道 |
 | **渠道接入** | FastAPI `/api/v1/*`、Vue 3 管理端与 `/m` 车主/技师 H5、钉钉 Stream/HTTP 机器人、内部 `/mcp` 与默认关闭的 `/mcp/public` |
 
 四条进程边界：本机用 `docker-compose.dev.yml` 跑 PostgreSQL、Redis、Milvus（及 etcd、MinIO、Attu）；统一推理服务 `python -m app.core.embedding_server` 占用 `:8010`，托管 bge-m3 与 bge-reranker-v2-m3；`uvicorn` 跑 FastAPI（HTTP、LangGraph、MCP 挂载、可选前端静态资源）；Vite 开发服务器默认 `:4173`，经代理打到后端 `:18080`。钉钉 Stream 与 OA 轮询挂在 FastAPI 进程内，不另起 worker。细则见 [§2.3](#23-进程边界) 与 [§7.4](#74-部署形态)。
@@ -56,11 +56,12 @@ flowchart TB
 
     subgraph fastapi [FastAPI layers]
         API["api/ 路由"]
-        Domain["domain/ 规则与状态机"]
+        Domain["domain/ 规则、状态机、流转"]
+        Mem["memory/ memory_service"]
+        RAG["rag/ rag_service + search_app"]
         Router["AgentRouter"]
         Consult["ConsultGuideAgent"]
         WOA["WorkOrderAgent"]
-        Flow["retrieval_flow.py"]
         Graphs["qa_graph / robot_graph / importer"]
         MCP["mcp/ FastMCP"]
     end
@@ -90,20 +91,22 @@ flowchart TB
     McpClient --> MCP
     Uvicorn --> API
     API --> Domain
+    API --> RAG
     API --> Router
     Router --> Consult
     Router --> WOA
     Consult --> Graphs
-    Consult --> Flow
+    Consult --> RAG
+    Consult --> Mem
     WOA --> Graphs
-    API --> Flow
     MCP --> Consult
     MCP --> WOA
-    Flow --> Emb
-    Flow --> Milvus
-    Flow --> PG
+    MCP --> Mem
+    RAG --> Emb
+    RAG --> Milvus
+    RAG --> PG
     Domain --> PG
-    Consult --> Redis
+    Mem --> Redis
     Consult --> DeepSeek
     WOA --> PG
     WOA --> DeepSeek
@@ -116,6 +119,8 @@ flowchart TB
 
 上图方框是**本机多进程**，不是单个容器里的 App。基础设施在 Compose 里；后端、推理服务和前端开发服务器在宿主机上由 `start_all.ps1` 拉起。仓库根目录的 `docker-compose.yml` 是可选的 RAGFlow 编排，不是本系统的主数据面，见 [§7.4](#74-部署形态) 与附录。
 
+HTTP 检索与知识/手册向量读写经 `rag_service` / `search_app`，路由不再直接调 Milvus。追踪维修与专家模式的 Redis 会话经 `memory_service`。漏斗内部仍调用 `RetrievalTools`，见 [§2.2](#22-依赖关系与硬约束) 与附录。
+
 浏览器开发时访问 Vite `:4173`。`frontend/vite.config.js` 把 `/api` 和 `/dingtalk` 代理到 `http://127.0.0.1:18080`。后端默认 `BACKEND_PORT=18080`。`DEBUG=true` 时 CORS 放行任意来源；非调试必须配置 `CORS_ORIGINS`。若已执行 `npm run build` 且存在前端 `dist`，FastAPI 会挂载静态资源并用 SPA 回退返回 `index.html`。
 
 ### 1.3 一次智能问答（SSE）
@@ -124,32 +129,34 @@ flowchart TB
 sequenceDiagram
     participant UI as AiAssistant.vue
     participant API as POST /api/v1/search/answer/stream
+    participant S as search_app
     participant Facade as ConsultGuideAgent
     participant G as QaGraph
-    participant R as retrieval_flow
+    participant R as rag_service / retrieval_flow
     participant LLM as DeepSeek
 
     UI->>API: JWT + question
     API->>API: get_current_user
-    API-->>UI: SSE thinking
-    API->>Facade: invoke_qa(...)
+    API->>S: iter_analyze_answer_sse(...)
+    S-->>UI: SSE thinking
+    S->>Facade: invoke_qa(...)
     Facade->>G: QA_GRAPH.invoke
     Note over G: route_qa_intent<br/>库存 / 闲聊 / 故障<br/>不经过 AgentRouter
     alt 故障问答
         G->>R: retrieve_hybrid + filter_rerank_cases
         R-->>G: cases
-        API-->>UI: suggest_expert 可选
-        API-->>UI: event references
-        API->>LLM: 流式生成
+        S-->>UI: suggest_expert 可选
+        S-->>UI: event references
+        S->>LLM: 流式生成
         LLM-->>UI: type answer 分片
     else 库存或闲聊
-        G-->>API: payload 直接回复
-        API-->>UI: type answer
+        G-->>S: payload 直接回复
+        S-->>UI: type answer
     end
-    API-->>UI: type done
+    S-->>UI: type done
 ```
 
-该入口要求登录。SSE 事件与 `qa_graph.py` / `search.py` 一致：先发 `{"type":"thinking"}`；复合故障预检为真时再发 `{"type":"suggest_expert"}`；参考案例走 `event: references`（最多 8 条）；回答是 `{"type":"answer","content":...}`；结束是 `{"type":"done","confidence":...,"sources_count":...}`。
+`app/api/search.py` 只做鉴权、校验和 SSE 组装，编排在 `app/rag/search_app.py`。该入口要求登录。SSE 事件与 `qa_graph.py` / `search_app.py` 一致：先发 `{"type":"thinking"}`；复合故障预检为真时再发 `{"type":"suggest_expert"}`；参考案例走 `event: references`（最多 8 条）；回答是 `{"type":"answer","content":...}`；结束是 `{"type":"done","confidence":...,"sources_count":...}`。
 
 问答主图仍用自己的 `route_qa_intent`（库存 > 闲聊 > 故障），**不会**在对话里把「查工单进度」自动转到工单只读工具。钉钉分类已经走 `AgentRouter`，但执行节点仍直接调 `app.mcp.tools`。这两处是现网缺口，见 [§5.1](#51-双门面与-agentrouter) 与 [§9](#9-附录已知偏差与技术债)。
 
@@ -208,15 +215,17 @@ sequenceDiagram
 | 包 / 目录 | 职责 |
 |-----------|------|
 | `frontend/` | Vue 3 页面、路由、axios 封装；不含独立状态库 |
-| `backend/app/api/` | HTTP 路由：鉴权、参数、SSE 组装、把写操作交给领域服务或工单门面 |
-| `backend/app/agents/` | 两个第一类 Agent 门面、`AgentRouter`、问答/钉钉/导入图、检索编排与内部能力 |
-| `backend/app/domain/` | 工单状态机、门店范围、报价规则、套餐排序、库存流水、预约、车主档案映射 |
+| `backend/app/api/` | HTTP 路由：鉴权、参数校验、SSE/JSON 组装；检索编排在 `rag/search_app`，工单流转在 `domain/work_order_transition` |
+| `backend/app/agents/` | 两个第一类 Agent 门面、`AgentRouter`、问答/钉钉/导入图与内部能力；`retrieval_flow.py` 只是兼容 shim |
+| `backend/app/rag/` | 检索公开入口 `rag_service`、漏斗实现 `retrieval_flow`、搜索编排 `search_app` |
+| `backend/app/memory/` | Agent 记忆门面 `memory_service`：短期 Redis 会话与摘要入口；不托管工单/库存等业务表 |
+| `backend/app/domain/` | 工单状态机、状态迁移、门店范围、报价规则、套餐排序、库存流水、预约、车主档案映射 |
 | `backend/app/core/` | 配置、数据库、缓存、安全、向量库、推理客户端、钉钉、短信、追踪、限流 |
 | `backend/app/mcp/` | FastMCP 工具与鉴权；实现多复用 `mcp/tools.py` |
 | `backend/app/models/` | SQLAlchemy 模型，表结构的正本在模型 + Alembic |
 | `backend/alembic/` | 迁移 |
 | `backend/scripts/` | 分类种子、手册导入、向量同步、阈值校准、模型下载 |
-| `backend/tests/` | 领域、检索、鉴权、双门面路由、分阶段单测 |
+| `backend/tests/` | 领域、检索、鉴权、双门面路由、分层与记忆门面、分阶段单测 |
 | `docs/` | 方案、启用说明与本文；与代码冲突时以代码为准 |
 | `docker-compose.dev.yml` | 本机数据面 |
 | `docker-compose.yml` | 可选 RAGFlow 编排，不是主链路依赖 |
@@ -227,14 +236,18 @@ sequenceDiagram
 flowchart LR
     API["api/"] --> Domain["domain/"]
     API --> Agents["agents/ 门面"]
+    API --> RAG["rag/ rag_service、search_app"]
     API --> Core["core/"]
-    Agents --> Flow["retrieval_flow"]
+    Agents --> RAG
+    Agents --> Memory["memory/ memory_service"]
     Agents --> Domain
     Agents --> Core
+    Memory --> Core
+    RAG --> Core
     MCP["mcp/"] --> Agents
+    MCP --> Memory
     MCP --> Tools["mcp/tools.py"]
-    Flow --> Tools2["agents/tools.py"]
-    Flow --> Core
+    RAG --> Tools2["agents/tools.py RetrievalTools"]
     Domain --> Models["models/"]
     Models --> PG["PostgreSQL"]
 ```
@@ -244,10 +257,13 @@ flowchart LR
 1. **第一类 Agent 只有两个**。`ConsultGuideAgent.name == "consult"`，`WorkOrderAgent.name == "work_order"`。HTTP、Vue、钉钉、FastMCP 是渠道。`AgentRouter` 只做分发，不检索、不改工单。
 2. **咨询可调工单只读，不可写**。`ConsultGuideAgent.WORK_ORDER_WRITE_METHODS` 列出的创建、导入、改状态、审批、完工、扣料、应用报价/套餐，咨询门面不得实现；`can_write_work_order()` 恒为 `False`。`query_work_order_progress` 转调 `WorkOrderAgent.query_work_order`。
 3. **固定拓扑上图，多轮会话下图**。问答分流、钉钉渠道适配、导入 DAG 用 LangGraph。追踪维修与专家模式用 Redis 状态机（TTL 24 小时、最多 30 步），不要搬上 LangGraph。
-4. **检索只允许一套漏斗**。问答图、专家模式、钉钉/MCP 知识检索、历史检索端点都走 `retrieval_flow.py`，避免策略漂移。
+4. **检索只允许一套漏斗**。公开入口是 `app.rag.rag_service`，实现在 `app/rag/retrieval_flow.py`；`app/agents/retrieval_flow.py` 再导出同名符号，保持旧导入。问答图、专家模式、钉钉/MCP 知识检索、历史检索端点都走这套漏斗，避免策略漂移。
 5. **LLM 不定价**。`quote_service.create_draft` / `quote_lines.build_quote_lines` / `service_recommend.rank_offers` 是规则引擎；没有目录价就记 0，留给店员改。
-6. **状态迁移认表**。除工单报表 PUT 的既有捷径外，允许的转移写在 `VALID_TRANSITIONS`。
+6. **状态迁移认表**。除工单报表 PUT 的既有捷径外，允许的转移写在 `VALID_TRANSITIONS`。HTTP `/transition` 与钉钉卡片都走 `domain.work_order_transition.do_transition`；`core/dingtalk_wo_card.py` 不再 import `app.api`。
 7. **生产拒绝占位密钥**。`assert_production_secrets()`：`DEBUG=false` 时拒绝默认或短于 24 字符的 `SECRET_KEY`，以及空的或已公开的 `SCHEDULER_TOKEN`（含 `sched_token_2026`）。
+8. **Agent 会话 Redis 走记忆门面**。`memory_service` 持有逻辑 key 与 TTL，调用方不要自行拼接 `guided_repair_session:` 等前缀。现网没有独立长期记忆事实表，摘要写回短期会话的 `history_summary`。用户/配件等业务缓存仍直接用 `cache_service`。
+
+现网仍存在的跨层存量（不是已经清掉）：转到 `COMPLETED` 时，`do_transition` 仍懒加载 `app.api.work_orders.complete_work_order_internal`（知识发布、备件扣减等完成链路仍在 API）；`app/rag/retrieval_flow.py` 仍依赖 `app.agents.tools.RetrievalTools`；`api/dispatch.py` 仍从 `api/work_orders.py` 的再导出 shim 取进度日志和工作量函数（API 内部兼容，不是 core 反向依赖）。
 
 ### 2.3 进程边界
 
@@ -268,8 +284,10 @@ FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务
 | `ConsultGuideAgent` | 把问答、引导、专家、库存只读收成一个对外门面，不碰工单写路径 |
 | `WorkOrderAgent` | 把理解、导入草稿、生命周期写入口、报价套餐、知识沉淀收成一个对外门面 |
 | `AgentRouter` | 每个请求只选一个主责任方；显式 HTTP 路径不再按文本二次分类 |
-| `retrieval_flow` | 双库召回与过滤精排只有一份实现 |
+| `rag_service` / `retrieval_flow` / `search_app` | 双库召回与过滤精排只有一份实现；HTTP 搜索路由不再内嵌检索步骤 |
+| `memory_service` | Agent 会话与摘要的 Redis 读写只在一处拼 key、设 TTL |
 | `domain.work_order_status` | 工业车道与汽修车道共用枚举，不能拆掉旧边 |
+| `domain.work_order_transition` | 工单状态、进度日志和工作量变更只有一份持久化实现，供 API 与钉钉卡片复用 |
 | `domain.store_scope` | 店内角色锁在本店；管理员可看全部或按 `X-Store-Id` 收窄；车主不走这套，走 `owner_access` |
 | `domain.quote_*` | 报价草案与状态机，价格来自目录 |
 | `work_order_importer` | PDF 只写导入草稿，人工确认后才进生产工单表 |
@@ -294,13 +312,17 @@ FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务
 
 默认配置：`REDIS_HOST=localhost`，`REDIS_PORT=6379`，`REDIS_DB=0`。`.env.example` 把端口写成 `7379`，`docker-compose.dev.yml` 默认映射仍是 `${REDIS_PORT:-6379}:6379`。以实际 `.env` 为准。
 
-`CacheService`（`core/cache_service.py`）前缀是 `maint:`，默认 TTL 300 秒；Redis 连不上时退回进程内字典。会话与缓存都走这套封装，因此完整 key 是前缀加上业务 key。
+`CacheService`（`core/cache_service.py`）前缀是 `maint:`，默认 TTL 300 秒；Redis 连不上时退回进程内字典。完整 Redis key 是此前缀加上业务逻辑 key。
+
+Agent/对话记忆的读写统一走 `app.memory.memory_service`（底层仍用 `CacheService`）。库存、用户等业务缓存仍由各 API 直接调用 `cache_service`，不进入记忆模块。`/agent` 返回的 scratchpad、进程内限流、`sys_config` 短缓存也不是记忆门面的职责。
 
 | Key 模式（含前缀） | TTL | 用途 |
 |--------------------|-----|------|
-| `maint:guided_repair_session:{session_id}` | 86400 秒（24 小时） | 追踪维修会话 |
-| `maint:expert_repair_session:{session_id}` | 86400 秒 | 专家模式会话 |
-| `maint:{其它业务 key}` | 默认 300 秒，或调用方传入 | `CacheService.set` / `memoize` 的通用缓存 |
+| `maint:guided_repair_session:{session_id}` | 86400 秒（24 小时） | 追踪维修会话，最多 30 步 |
+| `maint:expert_repair_session:{session_id}` | 86400 秒 | 专家模式会话，最多 30 步 |
+| `maint:mcp/staff_guid:session:{staff_id}` | 86400 秒 | MCP/钉钉员工到追踪维修 `session_id` 的映射 |
+| `maint:mcp/staff_guid:last:{staff_id}` | 86400 秒 | 该员工最后活动时间；空闲超过 24 小时开新会话 |
+| `maint:{其它业务 key}` | 默认 300 秒，或调用方传入 | 业务缓存，如 `user:{id}`、`spare_part:{id}`、`stock_alerts:*`，不经记忆门面 |
 
 追踪维修与专家模式的步数上限都是 30，超限后总结结束，不靠 Redis 的 key 数量限制。见 [§5.4](#54-多轮会话下图-redis-状态机)。
 
@@ -346,6 +368,8 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 | `RERANKER_ENABLED` | `True` | 总开关；CPU 延迟敏感时可关 |
 | `RERANKER_CANDIDATES` | 30 | 送入精排的候选条数 |
 
+精排主路径是 `FlagReranker(..., normalize=True)`，输出 0~1；加载失败则回退 `AutoModelForSequenceClassification` + sigmoid，尺度相同。旧版 Qwen3-Reranker 的 CausalLM Yes/No 打分路径已删除，避免误打 BGE 分数。`/v1/rerank` 入参出参未改。质量阀门与「结果是否充足」仍用 0.45 / 0.6 / 0.7 等按原 Qwen3-Reranker 标定的阈值，换模型后尚未重标，排序和充足判断可能变化。
+
 Embedding 客户端超时 30 秒，失败重试 2 次。Reranker 超时 60 秒，文档截断 500 字，按 8 条分块，避免一次 30 条长文本把服务端注意力矩阵打满（模块注释写明 CPU 上曾出现 3.3~4.8GB 分配失败）。连续失败 3 次进入 60 秒冷却，期间直接返回 `None`。健康探测超时 2 秒。日志类输入跳过模型精排，按向量分排序，原因写在 `retrieval_flow._rerank_or_fallback`：跨语言精排收益低，且 CPU 上单块可能超过 60 秒。
 
 README 架构示意图里曾出现 `Qwen3-Embed-4B`，与现网默认模型不符，以 `EMBEDDING_MODEL_NAME` 为准。
@@ -385,7 +409,9 @@ JWT：`ALGORITHM=HS256`，`ACCESS_TOKEN_EXPIRE_MINUTES=30`。生产密钥策略�
 
 ### 4.1 检索漏斗
 
-公共实现是 `backend/app/agents/retrieval_flow.py`，工具在 `backend/app/agents/tools.py`。入口包括：问答图故障子图、`/answer/expert`、钉钉/MCP `search_knowledge`，以及历史端点 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`。
+公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（BM25、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。
+
+HTTP 的 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`、`/answer/stream`、`/answer/expert*` 由 `app/api/search.py` 鉴权后交给 `app/rag/search_app.py` 编排；其中 `/answer/stream` 仍走 `consult_guide_agent.invoke_qa` → `qa_graph`，不经过 `AgentRouter`。其它入口还包括问答图故障子图、钉钉/MCP `search_knowledge`。
 
 ```mermaid
 flowchart TD
@@ -482,7 +508,8 @@ stateDiagram-v2
 补充事实：
 
 - 非终态大多可以转到 `CANCELLED`。`APPROVED` 在工业侧原先几乎没有入边，现网派工不会进入；汽修侧把它重新作为「报价已确认」。
-- `COMPLETED` 增加出边 `CLOSED`。钉钉「完成」仍停在 `COMPLETED`，不会自动结案。
+- `COMPLETED` 增加出边 `CLOSED`。钉钉卡片不会自动结案到 `CLOSED`。工业车道按钮「完成维修」把工单转到 `ARCHIVING`（待归档），引导回系统完善表单后再归档。汽修车道施工中的「完成维修」会被改写成「提交质检」（`QC`）；「质检通过」才到 `COMPLETED`。结案仍留给主管在系统里操作。
+- 状态迁移的写路径是 `domain/work_order_transition.do_transition`（含权限判断、进度日志、工作量、响应组装）。`api/work_orders.py` 的 HTTP `/transition` 与 `core/dingtalk_wo_card.py` 都调用它；API 模块把原私有名再导出，供 `dispatch.py` 等继续 import。转到 `COMPLETED` 时，该领域函数仍懒加载 `complete_work_order_internal`（知识收录、备件扣减等仍在 API），这是现网存量的 domain → API 依赖。
 - `IN_PROGRESS` 在工业侧仍可去 `ARCHIVING` / `REJECTED`，并多一条到 `QC`。
 - 判定汽修车道：有 `vehicle_id` / `appointment_id` / `store_id`，或已经位于 `INTAKE` / `DIAGNOSING` / `QUOTING` / `QC`。否则 `IN_PROGRESS` / `COMPLETED` 仍走工业派工和归档。
 - 预约不是工单状态。预约核销后落到 `INTAKE`。
@@ -654,12 +681,15 @@ flowchart TD
 
 原则来自代码与 `docs/双Agent精简技术方案.md`：图解决「多个步骤按什么拓扑流转」；拓扑在运行时才确定的多轮对话，继续用 Redis，不上图。
 
+会话 Redis 读写由 `app.memory.memory_service` 统一持有逻辑 key 与 TTL，Agent 与 `mcp/tools.py` 不再自行拼接前缀。完整 Redis key 仍是 `maint:` 加逻辑 key，见 [§3.2](#32-redis-用途一览)。
+
 | 实现类 | Redis key（经 CacheService 后） | TTL | 步数上限 | 入口 |
 |--------|--------------------------------|-----|----------|------|
 | `guided_repair_agent`（`GuidedRepairAgent`） | `maint:guided_repair_session:{id}` | 24 小时 | 30 | `/api/v1/search/guided-repair/start`、`/{session_id}/step`、`/chat`；门面方法 `start_guided_repair` 等 |
 | `expert_repair_agent`（`ExpertRepairAgent`） | `maint:expert_repair_session:{id}` | 24 小时 | 30 | `/answer/expert`、`/answer/expert/step` |
+| `mcp/tools.py` 员工映射 | `maint:mcp/staff_guid:session:{staff_id}`、`maint:mcp/staff_guid:last:{staff_id}` | 24 小时 | — | `guided_repair_chat` / `guided_repair_track`；空闲超过 24 小时开新会话 |
 
-超长历史由 `session_summarizer` 压缩。专家模式首轮可先走 `fault_decomposer` 拆成子查询再并行分析，之后的回合是 `next_step`。这些类是咨询门面内部能力，对外仍叫咨询/引导 Agent。
+超长历史由 `memory_service.summarize` 委托 `SessionSummarizer` 压缩，结果写回会话 payload 的 `history_summary`。现网 PostgreSQL 没有独立的「长期记忆事实表」，也没有把工单/库存/报价写入记忆模块。工作记忆（如 `/agent` 响应里的 scratchpad）只存在于当次请求，不落 Redis。专家模式首轮可先走 `fault_decomposer` 拆成子查询再并行分析，之后的回合是 `next_step`。这些类是咨询门面内部能力，对外仍叫咨询/引导 Agent。
 
 ### 5.5 咨询/引导门面能力
 
@@ -673,7 +703,7 @@ flowchart TD
 | `query_inventory_readonly` | `answer_generator.handle_inventory_query` |
 | `start_guided_repair` / `guided_repair_*` | `guided_repair_agent` |
 | `decompose_fault` / `expert_*` | `fault_decomposer`、`expert_repair_agent` |
-| `summarize` | `session_summarizer` |
+| `summarize` | `memory_service.summarize`（内部仍是 `SessionSummarizer`） |
 | `query_work_order_progress` | `WorkOrderAgent.query_work_order` |
 
 不暴露任何 `WORK_ORDER_WRITE_METHODS`。
@@ -827,8 +857,8 @@ erDiagram
 
 没有独立的「本地 → Redis → DB」分层框架。实际是：
 
-1. Redis（`maint:` 前缀）或进程内存回退，TTL 见 [§3.2](#32-redis-用途一览)。
-2. PostgreSQL 正本。
+1. Redis（`maint:` 前缀）或进程内存回退，TTL 见 [§3.2](#32-redis-用途一览)。Agent 会话经 `memory_service` 读写；业务缓存（如 `user:{id}`、`spare_part:{id}`、`stock_alerts:*`）仍直接走 `cache_service`。
+2. PostgreSQL 正本。现网没有独立长期记忆事实表。
 3. Milvus 是知识/手册的语义副本，发布或同步脚本写入，不是缓存层。
 
 向量内容截断长度见 [§4.1](#41-检索漏斗)，避免超长文本进入编码。
@@ -891,10 +921,12 @@ Car-Repair-System/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 入口、路由挂载、MCP、健康检查、SPA 回退
 │   │   ├── schemas.py
-│   │   ├── agents/                 # 双门面、Router、图、检索、内部能力
-│   │   ├── api/                    # HTTP 路由
+│   │   ├── agents/                 # 双门面、Router、图、内部能力；retrieval_flow 为 shim
+│   │   ├── api/                    # HTTP 路由（鉴权/校验/组装）
+│   │   ├── rag/                    # rag_service、retrieval_flow、search_app
+│   │   ├── memory/                 # memory_service 记忆门面
 │   │   ├── core/                   # 配置、DB、缓存、向量、推理、钉钉、短信
-│   │   ├── domain/                 # 状态机、范围、报价、库存、预约
+│   │   ├── domain/                 # 状态机、流转、范围、报价、库存、预约
 │   │   ├── mcp/                    # FastMCP 内部/公开入口与工具
 │   │   └── models/                 # SQLAlchemy
 │   ├── alembic/versions/
@@ -911,7 +943,7 @@ Car-Repair-System/
 │   ├── src/main.js                 # Vue + Element Plus，无 Pinia
 │   ├── vite.config.js              # :4173，代理 /api、/dingtalk
 │   └── package.json
-├── docs/                           # 本文与方案/启用说明
+├── docs/                           # 本文、HARNESS 契约与方案/启用说明
 ├── 项目说明/                       # 操作指南与讲解稿，不是现网合同
 ├── docker-compose.dev.yml          # 本机数据面
 ├── docker-compose.yml              # 可选 RAGFlow
@@ -925,9 +957,11 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 
 ### 7.2 分层约定
 
-- **api**：鉴权（`get_current_user`）、范围（`store_scope` / `owner_access`）、HTTP 形状、SSE 帧。不把检索阈值或报价公式写进路由。
-- **domain**：状态允许转移、范围计算、报价与套餐规则、库存流水。不依赖 FastAPI。
-- **agents**：门面编排、图拓扑、检索漏斗、LLM 调用。写工单时把门面 `persist` 回给 API/domain。
+- **api**：鉴权（`get_current_user`）、范围（`store_scope` / `owner_access`）、HTTP 形状、SSE 帧。不把检索漏斗、精排阈值或工单状态机写进路由。
+- **rag**：向量编码/读写、混合检索与精排；`search_app` 承担搜索 HTTP 的编排。外部不要直接调 `vector_store` / `embeddings` / `reranker`。
+- **memory**：Agent 短期会话与摘要入口；不承接业务表写入。
+- **domain**：状态允许转移、状态迁移持久化、范围计算、报价与套餐规则、库存流水。`work_order_status` 不依赖 FastAPI；`work_order_transition` 为保持与下沉前相同的错误形状，仍抛 `fastapi.HTTPException`。
+- **agents**：门面编排、图拓扑、LLM 调用。检索漏斗的实现已迁到 `rag/`，本包保留 shim。写工单时把门面 `persist` 回给 API/domain。
 - **core**：基础设施客户端。`Settings` 用绝对路径加载 `backend/.env`，避免 uvicorn 工作目录导致读不到配置。
 - **models**：表与枚举。迁移与模型不一致时先对迁移和当前模型，再对口头文档。
 - **mcp**：渠道适配，尽量转调门面或与门面共用的 tools；现网仍有直调，见附录。
@@ -987,7 +1021,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 
 1. **两个第一类 Agent，而不是再做一个协调 Agent。** 意图分析与路由是 `AgentRouter` 的调度职责，响应协调（SSE、卡片、钉钉回复）在渠道层。这个边界写在门面模块说明、`agents/__init__.py` 和 `docs/双Agent精简技术方案.md`。
 2. **固定拓扑上图，多轮会话下图。** 问答分流、钉钉适配、导入流水线有事先确定的边，适合 LangGraph。追踪维修和专家模式是跨请求、步数不确定的对话，状态放 Redis。硬上图要自接 checkpoint，与现有会话重复，方案文档与 README 3.6 节写了这条原则。
-3. **检索漏斗只实现一次。** `retrieval_flow.py` 开篇列出所有复用入口，避免各图各写一套阈值。RRF 去重键、粗筛与语义兜底、严格过滤为空不塞噪声，都在函数注释里写了针对过的具体失败模式。
+3. **检索漏斗只实现一次。** 公开入口是 `app.rag.rag_service`，实现仍在 `retrieval_flow`，开篇列出所有复用入口，避免各图各写一套阈值。RRF 去重键、粗筛与语义兜底、严格过滤为空不塞噪声，都在函数注释里写了针对过的具体失败模式。
 4. **推理进程与业务进程分离。** 编码/精排走 `:8010`，uvicorn 不加载 torch 模型。推理失败时 BM25 与规则重排顶上，启动不被阻塞。
 5. **本地召回 + 远程生成。** 向量与精排在本机；DeepSeek 只承担生成、抽取、分类、ReAct 决策。规则能做的（错误码、库存意图、套餐排序、报价算术）不交给 LLM。
 6. **报价与套餐是规则引擎。** 价格来自目录，匹配不上就记 0 留给店员。工单 Agent 明确「LLM 不得改价格」。
@@ -997,12 +1031,13 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 10. **生产密钥门禁与 MCP 默认收紧。** `assert_production_secrets`、公开 MCP 与写工具默认关闭，是配置和鉴权代码里的明确策略。
 11. **精排模型为何选 bge-reranker-v2-m3、召回为何选 bge-m3：** 这是现网默认实现。粗筛阈值按 bge-m3 分布标定；质量阀门阈值仍按原 Qwen3-Reranker 的 0~1 分标定，换模型后尚未重标，排序与「结果是否充足」的判断可能变化。未提供与其它模型的对比实验，本文不补选型故事。
 12. **为何用 Milvus 而不是只在 PostgreSQL 做向量：** 代码按「关系正本 + 语义副本」拆分，未写与 pgvector 的对比结论。
+13. **检索、记忆、工单流转分别收口到门面。** 代码与 `docs/HARNESS.md` 约定：向量只经 `rag_service`，Agent 会话 Redis 只经 `memory_service`，工单状态迁移经 `do_transition`。尚未拆掉的跨层存量见附录。
 
 ---
 
 ## 9. 附录：已知偏差与技术债
 
-以下均对照 HEAD `586c07c` 的代码。方案里打算做但还没写进实现的，不充当现网能力。已过时的清单项（例如早期「用户 CRUD 无鉴权」一类，若当前 API 已挂 `get_current_user`）不再当作仍然存在。
+以下均对照 HEAD `91c36d7` 的代码。方案里打算做但还没写进实现的，不充当现网能力。已过时的清单项（例如早期「用户 CRUD 无鉴权」一类，若当前 API 已挂 `get_current_user`）不再当作仍然存在。
 
 ### 9.1 路由与门面尚未完全收口
 
@@ -1036,6 +1071,10 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 ### 9.4 领域与检索上的已知妥协
 
 - 工业 / 汽修双域共用一张工单状态枚举，转移表因此更宽。报表 PUT 可把已填草稿直接标成 `IN_PROGRESS`，绕过状态机。
+- 领域层转到 `COMPLETED` 时仍懒加载 `app.api.work_orders.complete_work_order_internal`（domain → API）。完成链路（知识去重发布、备件扣减等）尚未下沉。
+- `app/rag/retrieval_flow.py` 仍依赖 `app.agents.tools.RetrievalTools`（RAG → Agent）。
+- `dispatch.py` 从 `work_orders` 再导出 shim 取 `_add_progress_log` / `_update_workload`，属于 API 内部兼容。
+- 质量阀门阈值 0.45 / 0.6 / 0.7 仍按原 Qwen3-Reranker 标定，尚未按 `bge-reranker-v2-m3` 重标，排序与「结果是否充足」的判断可能变化。
 - 导入 DAG 在抽取质量一般时仍 `save_draft`，只附警告，没有质量失败边，也没有按文件并行的图内实现（并行若存在，应在 API 批量层，不在这张单文件图里）。
 - 缓存与限流在 Redis 不可用或多副本时行为会漂：缓存退回进程内存，限流各算各的。
 - JWT 只有 30 分钟 access token，代码里未见 refresh token。
