@@ -1288,14 +1288,10 @@ class RetrievalTools:
             strategy: 改写策略 (expand_synonyms | technical_terms | generalize)
         """
         try:
-            from langchain_openai import ChatOpenAI
+            from app.core.chat_llm import make_chat_llm
             from langchain_core.messages import HumanMessage, SystemMessage
-            from app.core.config import settings
 
-            llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            llm = make_chat_llm(
                 temperature=0.3,
                 streaming=False,
                 timeout=30,            # 查询改写超时 30s，超时降级为原查询

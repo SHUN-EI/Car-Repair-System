@@ -79,15 +79,11 @@ _llm_classifier = None
 
 
 def _get_llm_classifier():
-    """懒加载 DeepSeek 意图分类器（与 guided_repair_agent 同一套配置）"""
+    """懒加载意图分类器（与 guided_repair_agent 同一套对话模型配置）"""
     global _llm_classifier
     if _llm_classifier is None:
-        from langchain_openai import ChatOpenAI
-        from app.core.config import settings
-        _llm_classifier = ChatOpenAI(
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-            model=settings.DEEPSEEK_MODEL,
+        from app.core.chat_llm import make_chat_llm
+        _llm_classifier = make_chat_llm(
             temperature=0,
             timeout=15,
         )

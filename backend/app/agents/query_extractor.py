@@ -7,7 +7,7 @@
      - 从用户提问中抽取命中白名单的词 + 英文/数字/故障码
      - 命中 >=1 个 → 直接返回
   2. LLM 兜底（白名单 0 命中时）：
-     - 调 DeepSeek 提取技术关键词
+     - 调对话模型提取技术关键词
      - 结果缓存（相同提问不重复调用）
 """
 import re
@@ -55,12 +55,8 @@ class QueryKeywordExtractor:
     def llm(self):
         """懒加载 LLM"""
         if self._llm is None:
-            from langchain_openai import ChatOpenAI
-            from app.core.config import settings
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            from app.core.chat_llm import make_chat_llm
+            self._llm = make_chat_llm(
                 temperature=0.1,
                 streaming=False,
                 timeout=15,            # 关键词提取兜底调用，超时直接返回原始查询
@@ -142,7 +138,7 @@ class QueryKeywordExtractor:
         return found
 
     def _extract_by_llm(self, query: str) -> str:
-        """LLM 兜底：调 DeepSeek 提取技术关键词"""
+        """LLM 兜底：调对话模型提取技术关键词"""
         # 检查缓存
         cached = self._llm_cache.get(query)
         if cached and (time.time() - cached[1]) < self._llm_cache_ttl:

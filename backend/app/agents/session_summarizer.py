@@ -1,6 +1,7 @@
 """会话摘要 Agent - 用于压缩长对话历史"""
 from typing import List, Optional
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import settings
 
@@ -39,10 +40,7 @@ class SessionSummarizer:
     @property
     def llm(self) -> ChatOpenAI:
         if not self._llm:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.3,
                 max_tokens=1024,
             )

@@ -131,13 +131,10 @@ class ExpertRepairAgent:
 
     @property
     def llm(self):
-        """懒加载 DeepSeek（决策/引导 temperature 0.3，稳定且稍有发散空间）"""
+        """懒加载对话模型（决策/引导 temperature 0.3，稳定且稍有发散空间）"""
         if self._llm is None:
-            from langchain_openai import ChatOpenAI
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            from app.core.chat_llm import make_chat_llm
+            self._llm = make_chat_llm(
                 temperature=0.3,
                 streaming=False,
                 timeout=60,
@@ -250,7 +247,7 @@ class ExpertRepairAgent:
                     SystemMessage(content=self.FIRST_ROUND_PROMPT),
                     HumanMessage(content=user_prompt),
                 ])
-                trace_obj.generation("expert_first_round_llm", model=settings.DEEPSEEK_MODEL,
+                trace_obj.generation("expert_first_round_llm", model=settings.chat_llm_model,
                                      prompt=user_prompt, response=resp.content)
                 data = self._parse_json(resp.content)
                 if not data or "options" not in data:
@@ -332,7 +329,7 @@ class ExpertRepairAgent:
                     SystemMessage(content=self.NEXT_STEP_PROMPT),
                     HumanMessage(content=user_prompt),
                 ])
-                trace_obj.generation("expert_next_step_llm", model=settings.DEEPSEEK_MODEL,
+                trace_obj.generation("expert_next_step_llm", model=settings.chat_llm_model,
                                      prompt=user_prompt, response=resp.content)
                 data = self._parse_json(resp.content) or {}
         except Exception as e:

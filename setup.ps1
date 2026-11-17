@@ -114,7 +114,8 @@ if (Test-Path $envFile) {
 } else {
     Copy-Item (Join-Path $BackendDir ".env.example") $envFile
     Warn "已从 .env.example 生成 .env，请编辑 backend\.env 填写："
-    Warn "  - DEEPSEEK_API_KEY（AI 检索必填）"
+    Warn "  - CHAT_LLM_MODE（cloud 云端千问 / local 本机 Qwen2.5-7B-Instruct）"
+    Warn "  - CHAT_CLOUD_API_KEY（cloud 模式必填，阿里云百炼 API Key）"
     Warn "  - DINGTALK_*（钉钉集成，非必须可先不填）"
     Warn "  注意：默认模型为 Qwen3-Embedding-0.6B，首次使用会从国内镜像自动下载（约 1GB）"
 }

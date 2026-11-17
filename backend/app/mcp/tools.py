@@ -158,12 +158,8 @@ def _get_parser_llm():
     """懒加载反馈解析 LLM（非流式、低温度、短超时，失败不阻塞）"""
     global _parser_llm
     if _parser_llm is None:
-        from langchain_openai import ChatOpenAI
-        from app.core.config import settings
-        _parser_llm = ChatOpenAI(
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-            model=settings.DEEPSEEK_MODEL,
+        from app.core.chat_llm import make_chat_llm
+        _parser_llm = make_chat_llm(
             temperature=0,
             timeout=15,
             max_retries=1,

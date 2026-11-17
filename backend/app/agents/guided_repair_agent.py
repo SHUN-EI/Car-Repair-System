@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
@@ -191,10 +192,7 @@ class GuidedRepairAgent:
     @property
     def llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.5,
                 streaming=True,
                 timeout=60,            # 单轮引导生成超时 60s，超时给用户可感知的失败提示

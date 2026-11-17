@@ -188,7 +188,7 @@ def parse_manual_text(
     request: ManualParseRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """粘贴设备手册「错误码表」原文 → DeepSeek 提取结构化条目，回填表单人工确认后保存"""
+    """粘贴设备手册「错误码表」原文 → 对话模型提取结构化条目，回填表单人工确认后保存"""
     try:
         from app.agents.manual_structurizer import structurize_manual_text
         return structurize_manual_text(

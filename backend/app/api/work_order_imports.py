@@ -2,7 +2,7 @@
 
 流程：
 1. 上传 PDF 文件 → 保存到 uploads/pdf_import → 建批次 → 逐份跑 LangGraph 导入流水线
-   （解析→DeepSeek 结构化抽取→校验→保存为待确认记录 WorkOrderImportItem）
+   （解析→对话模型结构化抽取→校验→保存为待确认记录 WorkOrderImportItem）
 2. 后台人工核对/修改/确认
 3. 确认后才写入 work_orders 并收录知识库（去重到知识库在人工确认之后）
 """

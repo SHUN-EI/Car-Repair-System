@@ -1,4 +1,4 @@
-"""手册原文结构化器 - 粘贴设备手册「错误码表」原文 → DeepSeek 提取结构化条目
+"""手册原文结构化器 - 粘贴设备手册「错误码表」原文 → 对话模型提取结构化条目
 
 用途：手册录入的 LLM 辅助环节。粘贴原文段落，返回结构化 entries
 （error_code/title/message_text/description/severity/effect/related_codes/conditions），
@@ -8,6 +8,7 @@ import json
 from typing import List, Optional
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from loguru import logger
 
 from app.core.config import settings
@@ -47,10 +48,7 @@ def structurize_manual_text(
     if not text or not text.strip():
         raise ValueError("原文为空")
 
-    llm = ChatOpenAI(
-        api_key=settings.DEEPSEEK_API_KEY,
-        base_url=settings.DEEPSEEK_BASE_URL,
-        model=settings.DEEPSEEK_MODEL,
+    llm = make_chat_llm(
         temperature=0.1,
         streaming=False,
         timeout=60,

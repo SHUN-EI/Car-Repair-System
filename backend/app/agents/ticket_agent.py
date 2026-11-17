@@ -15,6 +15,7 @@ from loguru import logger
 import time
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
@@ -69,10 +70,7 @@ class TicketUnderstandingAgent:
     @property
     def llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.1,
                 streaming=False,
             )
@@ -226,7 +224,7 @@ class TicketUnderstandingAgent:
 
                 with trace_obj.generation(
                     "ticket_llm_call",
-                    model=settings.DEEPSEEK_MODEL,
+                    model=settings.chat_llm_model,
                     prompt=user_message,
                     response=response.content,
                     metadata={"elapsed_s": round(elapsed, 2)},

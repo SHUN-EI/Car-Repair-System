@@ -42,7 +42,22 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
 
-    # DeepSeek API 配置
+    # 对话模型切换：cloud 走阿里云百炼（通义千问）OpenAI 兼容接口；
+    # local 走本机 vLLM 的 Qwen2.5-7B-Instruct。调用点统一走 chat_llm_mode / make_chat_llm。
+    CHAT_LLM_MODE: str = "cloud"  # cloud | local；兼容值 deepseek 仍可读旧的 DEEPSEEK_* 配置
+
+    CHAT_CLOUD_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    CHAT_CLOUD_MODEL: str = "qwen-plus"
+    CHAT_CLOUD_API_KEY: str = ""
+    DASHSCOPE_API_KEY: str = ""  # 官方常用名；CHAT_CLOUD_API_KEY 为空时回退用它
+
+    # 本地 vLLM 不要占用 embedding 服务的 8010，也不要和 7B 抢同一张 24GB 卡
+    CHAT_LOCAL_BASE_URL: str = "http://127.0.0.1:8001/v1"
+    CHAT_LOCAL_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    CHAT_LOCAL_API_KEY: str = "dummy"
+    CHAT_LOCAL_TIMEOUT_FLOOR: int = 30  # local 模式下，低于此时长的调用会被抬到此值
+
+    # 兼容旧环境变量；仅当 CHAT_LLM_MODE=deepseek 时生效
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-chat"
@@ -155,6 +170,55 @@ class Settings(BaseSettings):
     @property
     def milvus_connection(self) -> str:
         return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
+
+
+    @staticmethod
+    def _normalize_chat_llm_mode(raw: str) -> str:
+        mode = (raw or "cloud").strip().lower()
+        if not mode:
+            return "cloud"
+        if mode not in {"cloud", "local", "deepseek"}:
+            raise ValueError(
+                f"CHAT_LLM_MODE 只支持 cloud / local（兼容 deepseek），当前为: {raw!r}"
+            )
+        return mode
+
+    @property
+    def chat_llm_mode(self) -> str:
+        return self._normalize_chat_llm_mode(self.CHAT_LLM_MODE)
+
+    @property
+    def chat_llm_base_url(self) -> str:
+        mode = self.chat_llm_mode
+        if mode == "local":
+            return (self.CHAT_LOCAL_BASE_URL or "").strip()
+        if mode == "deepseek":
+            return (self.DEEPSEEK_BASE_URL or "").strip()
+        return (self.CHAT_CLOUD_BASE_URL or "").strip()
+
+    @property
+    def chat_llm_model(self) -> str:
+        mode = self.chat_llm_mode
+        if mode == "local":
+            return (self.CHAT_LOCAL_MODEL or "").strip()
+        if mode == "deepseek":
+            return (self.DEEPSEEK_MODEL or "").strip()
+        return (self.CHAT_CLOUD_MODEL or "").strip()
+
+    @property
+    def chat_llm_api_key(self) -> str:
+        mode = self.chat_llm_mode
+        if mode == "local":
+            return (self.CHAT_LOCAL_API_KEY or "dummy").strip()
+        if mode == "deepseek":
+            return (self.DEEPSEEK_API_KEY or "").strip()
+        return (self.CHAT_CLOUD_API_KEY or self.DASHSCOPE_API_KEY or "").strip()
+
+    @property
+    def chat_llm_configured(self) -> bool:
+        if self.chat_llm_mode == "local":
+            return bool(self.chat_llm_base_url and self.chat_llm_model)
+        return bool(self.chat_llm_api_key)
 
 
 settings = Settings()

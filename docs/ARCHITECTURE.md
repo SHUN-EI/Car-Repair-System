@@ -70,7 +70,7 @@ flowchart TB
         PG["PostgreSQL 16 maintenance_db"]
         Redis["Redis 7"]
         Milvus["Milvus 2.4.15<br/>knowledge / log_code"]
-        DeepSeek["DeepSeek Chat"]
+        ChatLLM["Chat LLM<br/>cloud: 百炼 qwen-plus / local: Qwen2.5-7B"]
         SMS["阿里云短信 可选"]
         Trace["RAGFlow / Langfuse / local"]
     end
@@ -107,9 +107,9 @@ flowchart TB
     RAG --> PG
     Domain --> PG
     Mem --> Redis
-    Consult --> DeepSeek
+    Consult --> ChatLLM
     WOA --> PG
-    WOA --> DeepSeek
+    WOA --> ChatLLM
     API --> Redis
     API --> SMS
     API --> Trace
@@ -133,7 +133,7 @@ sequenceDiagram
     participant Facade as ConsultGuideAgent
     participant G as QaGraph
     participant R as rag_service / retrieval_flow
-    participant LLM as DeepSeek
+    participant LLM as Chat LLM
 
     UI->>API: JWT + question
     API->>API: get_current_user
@@ -192,12 +192,12 @@ sequenceDiagram
 | psycopg2-binary / asyncpg | 2.9.9 / 0.29.0 | PostgreSQL 驱动 |
 | redis | 5.0.1 | 会话与缓存 |
 | LangGraph | 1.2.6 | `qa_graph`、`robot_graph`、导入 DAG |
-| langchain / langchain-openai / langchain-community | 1.3.13 / 1.2.2 / 0.4.2 | DeepSeek 兼容 Chat、工具 |
+| langchain / langchain-openai / langchain-community | 1.3.13 / 1.2.2 / 0.4.2 | 千问 OpenAI 兼容 Chat、工具 |
 | fastmcp | 3.4.5 | `/mcp`、`/mcp/public`，Streamable HTTP |
 | pymilvus | 2.4.15 | 向量库（配套 `setuptools==80.9.0`，因 81+ 去掉 `pkg_resources`） |
 | torch / transformers / FlagEmbedding | 2.6.0 / >=4.40.0 / >=1.2.10 | 推理服务加载 bge-m3 与 bge-reranker-v2-m3 |
 | python-jose / passlib / bcrypt | 3.3.0 / 1.7.4 / 4.0.1 | JWT HS256、密码哈希；bcrypt 钉在 4.0.1 |
-| httpx / aiohttp / requests | 0.28.1 / 3.13.5 / 2.33.1 | DeepSeek、钉钉、追踪上报 |
+| httpx / aiohttp / requests | 0.28.1 / 3.13.5 / 2.33.1 | 对话 LLM、钉钉、追踪上报 |
 | dingtalk-stream | 0.24.3 | 长连接收机器人/OA 事件 |
 | APScheduler | 3.11.3 | OA 审批状态轮询 |
 | 阿里云短信 SDK | dysmsapi20170525 >=3.1.0 | `SMS_ENABLED=true` 时发送 |
@@ -340,19 +340,26 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 |------|------|--------|
 | 召回编码 | 本机推理服务 `BAAI/bge-m3`，1024 维，L2 归一化，`POST /v1/embeddings` | `encode_*` 抛 `RuntimeError`；混合检索降级 BM25-only |
 | 精排 | 同一服务 `BAAI/bge-reranker-v2-m3`，`POST /v1/rerank`（分数 0~1） | 返回 `None`，`retrieval_flow` 回退 `weighted_rerank` |
-| 生成 / 抽取 / 意图分类 / ReAct 决策 | 远程 DeepSeek，`langchain_openai.ChatOpenAI` 走 `DEEPSEEK_BASE_URL` | 各调用点打日志或返回降级文案，不改检索阈值 |
+| 生成 / 抽取 / 意图分类 / ReAct 决策 | `CHAT_LLM_MODE` 切换：cloud 走阿里云百炼 `qwen-plus`，local 走本机 vLLM `Qwen2.5-7B-Instruct`；统一 `make_chat_llm()` / `ChatOpenAI` | 各调用点打日志或返回降级文案，不改检索阈值 |
 
 意图路由规则、错误码正则、关键词清洗、套餐排序、报价算术都是确定性逻辑，不调用 LLM。配置注释写明：粗筛阈值按 bge-m3 实测分布标定（无关约 0.35、英文日志 ≥0.495），本文不把这些观测写成线上指标。
 
-#### 3.4.2 远程模型（DeepSeek）
+#### 3.4.2 对话模型切换（`CHAT_LLM_MODE`）
+
+所有生成调用经 `app.core.chat_llm.make_chat_llm`，按 `CHAT_LLM_MODE` 选择云端或本地，不再直接读 `DEEPSEEK_*`。
 
 | 配置键 | 代码默认 | `.env.example` | 说明 |
 |--------|----------|----------------|------|
-| `DEEPSEEK_API_KEY` | 空 | 占位 `sk-your-deepseek-api-key` | 未配置时启动日志提示「未配置」 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 同左 | OpenAI 兼容 |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | `deepseek-v4-flash` | 以运行时环境变量为准 |
+| `CHAT_LLM_MODE` | `cloud` | `cloud` | `cloud` / `local`；兼容值 `deepseek` 才走旧的 `DEEPSEEK_*` |
+| `CHAT_CLOUD_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 同左 | 阿里云百炼 OpenAI 兼容口 |
+| `CHAT_CLOUD_MODEL` | `qwen-plus` | 同左 | 可改为 `qwen-turbo` / `qwen-max` 等 |
+| `CHAT_CLOUD_API_KEY` | 空 | 占位 `sk-your-dashscope-api-key` | cloud 模式必填；也可用 `DASHSCOPE_API_KEY` |
+| `CHAT_LOCAL_BASE_URL` | `http://127.0.0.1:8001/v1` | 同左 | 本机 vLLM，不要占用 embedding 的 `8010` |
+| `CHAT_LOCAL_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | 同左 | 须与 vLLM `--served-model-name` 一致 |
+| `CHAT_LOCAL_API_KEY` | `dummy` | `dummy` | 本地 vLLM 默认不校验 |
+| `CHAT_LOCAL_TIMEOUT_FLOOR` | `30` | 无 | local 模式下低于此时长的调用会被抬到此值 |
 
-检索 ReAct 决策里 `ChatOpenAI` 使用 `temperature=0.1`（`retrieval_agent.py`）。其它生成点的温度以各自模块为准，不在此统一杜撰。
+cloud 未配密钥、或 local 未配地址/模型时，启动日志提示「未配置」。检索 ReAct 决策里温度为 `0.1`（`retrieval_agent.py`）。其它生成点的温度以各自模块为准，不在此统一杜撰。
 
 #### 3.4.3 本地模型（bge-m3 / bge-reranker-v2-m3）
 
@@ -1023,7 +1030,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 2. **固定拓扑上图，多轮会话下图。** 问答分流、钉钉适配、导入流水线有事先确定的边，适合 LangGraph。追踪维修和专家模式是跨请求、步数不确定的对话，状态放 Redis。硬上图要自接 checkpoint，与现有会话重复，方案文档与 README 3.6 节写了这条原则。
 3. **检索漏斗只实现一次。** 公开入口是 `app.rag.rag_service`，实现仍在 `retrieval_flow`，开篇列出所有复用入口，避免各图各写一套阈值。RRF 去重键、粗筛与语义兜底、严格过滤为空不塞噪声，都在函数注释里写了针对过的具体失败模式。
 4. **推理进程与业务进程分离。** 编码/精排走 `:8010`，uvicorn 不加载 torch 模型。推理失败时 BM25 与规则重排顶上，启动不被阻塞。
-5. **本地召回 + 远程生成。** 向量与精排在本机；DeepSeek 只承担生成、抽取、分类、ReAct 决策。规则能做的（错误码、库存意图、套餐排序、报价算术）不交给 LLM。
+5. **本地召回 + 生成可切换。** 向量与精排在本机 `8010`；对话生成由 `CHAT_LLM_MODE` 在云端百炼千问和本机 vLLM 之间切换。规则能做的（错误码、库存意图、套餐排序、报价算术）不交给 LLM。
 6. **报价与套餐是规则引擎。** 价格来自目录，匹配不上就记 0 留给店员。工单 Agent 明确「LLM 不得改价格」。
 7. **导入确认在图外。** DAG 只落到草稿表，避免 LLM 抽取直接写生产工单。
 8. **双车道共用一张状态表。** 工业边不能删，汽修只加转移和专有状态。用车辆/预约/门店或专有状态区分车道，而不是拆表。这是领域模块顶部注释给出的约束，不是「更好的领域模型」广告。
@@ -1064,7 +1071,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - README 写「21 个路由模块」、目录树漏 `domain/`、把 Redis 端口画成 7379。代码里路由多于 21 个；7379 只出现在 `.env.example`，compose 与 `config.py` 默认是 6379。
 - `init-db.sql` 自己声明不要用来建库，工单枚举过时。
 - `docker-compose.yml` 是 RAGFlow 模板，依赖可能不在本仓库的 `docker-compose-base.yml`。不要把它当成一键拉起本系统数据面的文件。
-- `.env.example` 的 `DEEPSEEK_MODEL=deepseek-v4-flash` 与 `config.py` 默认 `deepseek-chat` 不一致，以运行环境为准。
+- 旧的 `DEEPSEEK_*` 仅在 `CHAT_LLM_MODE=deepseek` 时生效；默认 cloud 走百炼 `qwen-plus`，local 走本机 `Qwen2.5-7B-Instruct`。
 - `DINGTALK_REDIRECT_URI` 在 `config.py` 默认仍写 `:8000`，后端端口默认已是 `18080`。
 - `WorkOrderImport*` 模型未列入 `models/__init__.py` 的 `__all__`，不影响 Alembic，但容易让「读 models 包就等于全表」的假设落空。
 
@@ -1087,7 +1094,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - 没有 LLM 直接定价。
 - 没有支付渠道、webhook 履约或除 STUB 以外的清算。
 - 没有本仓库内可核对的 k3s / 生产 Ingress 清单。
-- 开源模型后训练方案与执行手册是独立 docs，不表示现网已经换成后训练权重；现网 Chat 仍走 DeepSeek 配置项。
+- 开源模型后训练方案与执行手册是独立 docs，不表示现网已经换成后训练权重；现网 Chat 走 `CHAT_LLM_MODE`（默认云端 `qwen-plus`，本地可切 vLLM）。
 
 ---
 

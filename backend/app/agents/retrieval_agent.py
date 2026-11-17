@@ -13,6 +13,7 @@ from enum import Enum
 from loguru import logger
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from app.core.config import settings
 from app.agents.tools import RetrievalTools, rrf_merge, ToolResult
@@ -74,15 +75,12 @@ class RetrievalAssistantAgent:
 
     @property
     def llm(self) -> ChatOpenAI:
-        """懒加载 DeepSeek LLM（决策模块专用，temperature=0.1 保证决策稳定）"""
+        """懒加载对话模型（决策模块专用，temperature=0.1 保证决策稳定）"""
         if self._llm is None:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.1,       # 低温度：决策尽量稳定，少发散
                 streaming=False,       # 决策不需要流式，一次性返回 JSON
-                timeout=30,            # 单次决策调用超时 30s，防止 DeepSeek 网络卡死阻塞整个检索
+                timeout=30,            # 单次决策调用超时 30s，防止对话接口卡死阻塞整个检索
                 max_retries=1,         # 最多重试 1 次，重试失败走 _fallback_decision 降级
             )
         return self._llm

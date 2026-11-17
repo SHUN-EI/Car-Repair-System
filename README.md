@@ -35,7 +35,7 @@
 | --- | --- |
 | 前端 | Vue 3、Vite、Pinia、Element Plus、Vue Router、Axios |
 | 后端 | FastAPI、SQLAlchemy 2.0、Alembic、Pydantic v2、Loguru |
-| AI / Agent | LangChain、LangGraph、FastMCP、DeepSeek、RAGFlow/LangFuse/local 追踪 |
+| AI / Agent | LangChain、LangGraph、FastMCP、通义千问（云端百炼 / 本地 Qwen2.5-7B）、RAGFlow/LangFuse/local 追踪 |
 | 召回 / 精排 | BAAI/bge-m3 召回（1024 维）、BAAI/bge-reranker-v2-m3 精排 |
 | 数据存储 | PostgreSQL 16、Redis 7、Milvus 2.4、MinIO、etcd |
 | 集成 | 钉钉开放平台、阿里云短信、RAGFlow |
@@ -58,7 +58,7 @@
 └───┬────────┬────────┬────────┬────────────┘
     │        │        │        │ HTTP
 ┌───▼───┐ ┌──▼───┐ ┌──▼──┐ ┌──▼────────────┐   ┌─────────────────┐
-│ PG 16 │ │Milvus│ │Redis│ │ 推理服务 8010  │   │ DeepSeek 云端   │
+│ PG 16 │ │Milvus│ │Redis│ │ 推理服务 8010  │   │ 千问云 / 本地vLLM│
 │15432  │ │19530 │ │7379 │ │ Qwen3-Embed-4B │   │ LLM 问答/抽取/  │
 │业务+  │ │向量库 │ │会话 │ │ BGE-Reranker   │   │ Agent 推理      │
 │BM25   │ └──┬───┘ │缓存 │ │（独立进程，双模型）│   └─────────────────┘
@@ -105,7 +105,7 @@
 - **推理服务独立进程**：模型推理与业务解耦，可独立升级/扩缩容；主链路启动不加载模型，推理服务挂掉时检索自动降级而非整体不可用
 - **LLM 只花在语义边界**：意图路由、错误码提取、关键词清洗均为确定性规则（零成本、零延迟）；LLM 只用于回答生成、可答性裁决等无法用规则表达的环节
 - **全链路降级**：推理服务不可用 → BM25-only；Reranker 不可用 → 规则重排；严格过滤为空 → 回答层如实说未检索到；任何单点故障都不导致“无回答”
-- **本地模型 + 云端 LLM 混合**：检索相关模型全部本地私有化部署于 GPU 推理服务（数据不出内网），仅生成环节调 DeepSeek 云端
+- **检索本地 + 生成可切换**：检索模型仍走本机 `8010` 推理服务；对话生成由 `CHAT_LLM_MODE` 在云端百炼（`qwen-plus`）和本机 vLLM（`Qwen2.5-7B-Instruct`，默认 `:8001`）之间切换
 
 ### 3.6 LangGraph 图编排
 
@@ -309,7 +309,7 @@ Smart-Repair-System/
 - Docker Desktop
 - Python 3.10+
 - Node.js 18+
-- `backend/.env` 配置 `DEEPSEEK_API_KEY`
+- `backend/.env` 配置 `CHAT_LLM_MODE`；cloud 模式还需 `CHAT_CLOUD_API_KEY`
 
 ### 一键初始化
 
@@ -500,7 +500,10 @@ MCP 访问控制：配置 `MCP_API_KEY` 后要求 `Authorization: Bearer <key>`�
 
 | 配置项 | 说明 |
 | --- | --- |
-| `DEEPSEEK_API_KEY` | AI 问答、知识抽取、Agent 的必填密钥 |
+| `CHAT_LLM_MODE` | 对话模型切换，`cloud`（默认，阿里云百炼千问）或 `local`（本机 vLLM） |
+| `CHAT_CLOUD_API_KEY` | cloud 模式必填的百炼 API Key，也可用 `DASHSCOPE_API_KEY` |
+| `CHAT_CLOUD_MODEL` | cloud 默认 `qwen-plus` |
+| `CHAT_LOCAL_BASE_URL` / `CHAT_LOCAL_MODEL` | local 默认 `http://127.0.0.1:8001/v1` 与 `Qwen/Qwen2.5-7B-Instruct` |
 | `EMBEDDING_SERVER_URL` | 推理服务地址，默认 `http://localhost:8010` |
 | `EMBEDDING_MODEL_NAME` | 召回模型，默认 `BAAI/bge-m3`（1024 维） |
 | `MILVUS_VECTOR_SIZE` | 向量维度，必须与 bge-m3 一致，默认 1024 |

@@ -10,6 +10,7 @@ from typing import List, Optional
 from loguru import logger
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
@@ -36,13 +37,10 @@ class FaultDecomposer:
     @property
     def llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.1,
                 streaming=False,
-                timeout=15,            # 拆解是轻量调用，15s 足够；超时直接回退为单故障直通
+                timeout=15,            # 拆解是轻量调用；本地模式会按超时下限抬升，超时直接回退为单故障直通
                 max_retries=1,
             )
         return self._llm

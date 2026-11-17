@@ -2,7 +2,7 @@
 
 对每份 PDF 运行：
     parse（pdfplumber 提取文本，扫描件 RapidOCR 回退）
-        → extract（DeepSeek 按系统工单 JSON Schema 结构化抽取）
+        → extract（对话模型按系统工单 JSON Schema 结构化抽取）
         → validate（工单号唯一性 / 设备匹配 / 维修员与上报人匹配）
         → save_draft（写入 WorkOrderImportItem，待人工确认）
 
@@ -17,6 +17,7 @@ from typing import Optional, Dict, List, TypedDict
 
 from loguru import logger
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 
@@ -90,7 +91,7 @@ def parse_node(state: ImportState) -> dict:
 
 
 # ============================================================
-# DeepSeek 结构化抽取
+# 对话模型结构化抽取
 # ============================================================
 _llm: Optional[ChatOpenAI] = None
 
@@ -98,10 +99,7 @@ _llm: Optional[ChatOpenAI] = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-            model=settings.DEEPSEEK_MODEL,
+        _llm = make_chat_llm(
             temperature=0.1,
             streaming=False,
         )
@@ -142,7 +140,7 @@ _EXTRACT_SYSTEM_PROMPT = """你是工厂设备维修历史工单的整理专家�
 
 
 def _extract_work_order(text: str) -> Dict:
-    """调用 DeepSeek 抽取工单字段，失败重试 1 次"""
+    """调用对话模型抽取工单字段，失败重试 1 次"""
     for attempt in (1, 2):
         try:
             resp = _get_llm().invoke([

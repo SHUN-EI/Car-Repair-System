@@ -82,7 +82,11 @@ async def lifespan(app: FastAPI):
     assert_production_secrets()
     logger.info(f"📊 数据库: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'N/A'}")
     logger.info(f"🔴 Redis: {settings.REDIS_URL}")
-    logger.info(f"🤖 DeepSeek API: {'已配置' if settings.DEEPSEEK_API_KEY else '未配置'}")
+    key_state = "已配置" if settings.chat_llm_configured else "未配置"
+    logger.info(
+        f"🤖 对话模型[{settings.chat_llm_mode}]: {settings.chat_llm_model} "
+        f"@ {settings.chat_llm_base_url}（{key_state}）"
+    )
     # 预热：探测推理服务（bge-m3 编码 + reranker 重排）是否就绪，不阻塞启动
     try:
         from app.rag.rag_service import is_server_available

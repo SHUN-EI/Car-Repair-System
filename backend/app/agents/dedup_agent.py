@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from loguru import logger
 
 from langchain_openai import ChatOpenAI
+from app.core.chat_llm import make_chat_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
@@ -63,10 +64,7 @@ class DedupAgent:
     @property
     def llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL,
-                model=settings.DEEPSEEK_MODEL,
+            self._llm = make_chat_llm(
                 temperature=0.1,
                 streaming=False,
                 timeout=30,            # 去重判定超时 30s，超时走保守策略（不判重复）
