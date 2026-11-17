@@ -1,3 +1,5 @@
+"""派工接口：主管或管理员查看维修员负荷，并确认把工单派给指定维修员。"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
@@ -29,6 +31,7 @@ class DispatchConfirmRequest(BaseModel):
 
 
 class DispatchConfirmResponse(BaseModel):
+    """确认派工的返回：是否成功、工单号、被派维修员姓名，失败时带错误说明。"""
     success: bool
     work_order_id: Optional[int] = None
     work_order_no: Optional[str] = None
@@ -48,6 +51,7 @@ def list_technicians(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """列出在职维修员及其当前负荷和近 7 天已完成工单数，按负荷从低到高排序，便于派工选人。仅主管或管理员可调用。"""
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管或管理员可查看维修员列表")
 
@@ -134,6 +138,7 @@ def confirm_dispatch(
 
     # 当前时段请假校验（与 duty_schedules.SHIFT_HOURS 保持一致：早班 8-16、中班 16-24、晚班 0-8）
     def _current_shift(hour):
+        """按当前小时判断班次：8 点到 16 点为早班，16 点到 24 点为晚班，其余为夜班。"""
         if 8 <= hour < 16: return "MORNING"
         if 16 <= hour < 24: return "AFTERNOON"
         return "NIGHT"

@@ -31,13 +31,17 @@ from app.core.config import settings  # noqa: E402
 
 
 class _User:
+    """门店范围测试用的简易用户对象。"""
     def __init__(self, role, store_id=None):
+        """构造带角色和可选门店 ID 的测试用户。"""
         self.role = role
         self.store_id = store_id
 
 
 class TestStoreScope:
+    """多门店数据范围。"""
     def test_admin_sees_all_unless_a_store_is_requested(self):
+        """管理员默认看全部门店，指定门店后才锁定。"""
         admin = _User("ADMIN")
         assert resolve_store_scope(admin).mode == "all"
         picked = resolve_store_scope(admin, 2)
@@ -46,6 +50,7 @@ class TestStoreScope:
         assert not row_in_scope(picked, 3)
 
     def test_store_role_is_locked_to_the_bound_store(self):
+        """已绑定门店的店内角色只能看本店。"""
         tech = _User("TECHNICIAN", store_id=5)
         scope = resolve_store_scope(tech, requested_store_id=9)
         assert scope.store_id == 5
@@ -61,6 +66,7 @@ class TestStoreScope:
             raise AssertionError("店内角色不能写到别的门店")
 
     def test_unbound_store_role_only_sees_legacy_rows(self):
+        """未绑定门店的店内角色只能看到未挂门店的旧数据。"""
         tech = _User("SUPERVISOR", store_id=None)
         scope = resolve_store_scope(tech)
         assert scope.mode == "legacy"
@@ -75,7 +81,9 @@ class TestStoreScope:
 
 
 class TestFollowUp:
+    """回访和评价提醒。"""
     def test_messages_are_revisit_or_rating_not_a_score(self):
+        """提醒类型是回访或评价，而不是打分本身。"""
         revisit = follow_up_message("REVISIT", "WO-1", "沪A12345")
         rating = follow_up_message("RATING", "WO-1", "")
         assert "回访" in revisit and "沪A12345" in revisit
@@ -86,6 +94,7 @@ class TestFollowUp:
         assert DEFAULT_DELAY_DAYS["REVISIT"] == 7
 
     def test_mock_channel_counts_as_delivered_and_skip_does_not(self):
+        """mock 渠道算已送达，跳过发送则不算。"""
         assert reminder_delivered({"sms": "mock", "dingtalk": "skipped", "inbox": "skipped"})
         assert reminder_delivered({"sms": "sent", "dingtalk": "skipped", "inbox": "skipped"})
         assert not reminder_delivered({"sms": "skipped", "dingtalk": "skipped", "inbox": "skipped", "reason": "无客户"})
@@ -93,7 +102,9 @@ class TestFollowUp:
 
 
 class TestPurchase:
+    """采购入库和单号。"""
     def test_receive_status_and_quantity(self):
+        """入库后状态和已收数量应正确更新。"""
         assert po_status_after_receive([(10, 0), (5, 0)]) == "ORDERED"
         assert po_status_after_receive([(10, 4), (5, 0)]) == "PARTIAL"
         assert po_status_after_receive([(10, 10), (5, 5)]) == "RECEIVED"
@@ -107,12 +118,15 @@ class TestPurchase:
             raise AssertionError("不能超收")
 
     def test_po_number_increments_same_day(self):
+        """同一天的采购单号应按序号递增。"""
         assert next_po_no(["PO-20261103-002", "QT-1"], "20261103") == "PO-20261103-003"
         assert next_po_no([], "20261103") == "PO-20261103-001"
 
 
 class TestMcpAccess:
+    """MCP 公开和内部访问控制。"""
     def test_public_set_is_read_only(self):
+        """公开工具集合只能是只读工具。"""
         assert "draft_quote" not in PUBLIC_READ_TOOLS
         assert "guided_repair_chat" not in PUBLIC_READ_TOOLS
         assert is_public_read_tool("query_work_order")
@@ -122,6 +136,7 @@ class TestMcpAccess:
         assert "draft_quote" in write_tools_enabled(True)
 
     def test_public_entry_requires_key_or_login_token(self):
+        """公开入口需要密钥或登录令牌。"""
         denied = decide_mcp_access(path="/mcp/public", authorization="", api_key="secret", client_host="10.0.0.8")
         assert denied[0] == 401
         assert decide_mcp_access(
@@ -144,11 +159,13 @@ class TestMcpAccess:
         assert scoped[0] == 401
 
     def test_internal_mcp_stays_local_when_no_key(self):
+        """未配置密钥时内部 MCP 应保持本机使用。"""
         assert decide_mcp_access(path="/mcp", client_host="127.0.0.1", api_key="") is None
         blocked = decide_mcp_access(path="/mcp", client_host="10.0.0.8", api_key="")
         assert blocked[0] == 403
 
     def test_routes_and_source_keep_write_tools_off_by_default(self):
+        """写工具和公开 MCP 默认关闭。"""
         follow_paths = {route.path for route in follow_router.routes}
         assert "/dispatch" in follow_paths
         assert "/{reminder_id}/cancel" in follow_paths

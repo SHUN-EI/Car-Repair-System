@@ -25,6 +25,7 @@ class RAGFlowClient:
     """RAGFlow REST API 封装，用于追踪数据持久化"""
 
     def __init__(self, host: str, api_key: str, traces_dataset: str):
+        """初始化 RAGFlow HTTP 客户端：保存主机、密钥和 traces 数据集名，并准备带鉴权头的会话。数据集 ID 在首次上传时再解析。"""
         self.host = host.rstrip("/")
         self.api_key = api_key
         self.traces_dataset = traces_dataset
@@ -37,14 +38,17 @@ class RAGFlowClient:
         })
 
     def _get(self, path: str, **kwargs) -> requests.Response:
+        """向 RAGFlow 发 GET 请求，path 会拼在 host 后面。"""
         url = f"{self.host}{path}"
         return self._session.get(url, **kwargs)
 
     def _post(self, path: str, **kwargs) -> requests.Response:
+        """向 RAGFlow 发 POST 请求，path 会拼在 host 后面。"""
         url = f"{self.host}{path}"
         return self._session.post(url, **kwargs)
 
     def _delete(self, path: str, **kwargs) -> requests.Response:
+        """向 RAGFlow 发 DELETE 请求，path 会拼在 host 后面。"""
         url = f"{self.host}{path}"
         return self._session.delete(url, **kwargs)
 
@@ -144,6 +148,7 @@ class Tracer:
     """统一追踪器，支持多后端（延迟连接 + 自动重试）"""
 
     def __init__(self):
+        """按 TRACING_BACKEND 初始化追踪后端。选 ragflow 时若密钥已配置会先 ping，不通则推迟到首次使用再试；选 langfuse 时按公钥创建客户端，SDK 缺失或失败则退回本地日志。本地日志和 RAGFlow 缓冲始终可用。"""
         self._backend: str = settings.TRACING_BACKEND
         self._ragflow: Optional[RAGFlowClient] = None
         self._ragflow_verified: bool = False
@@ -206,15 +211,20 @@ class Tracer:
 
     @property
     def enabled(self) -> bool:
+        """是否已接通远程追踪后端（RAGFlow 已验证，或 Langfuse 客户端已创建）。仅为本地日志时返回 False。"""
         return (self._ragflow is not None and self._ragflow_verified) or self._langfuse_client is not None
 
     def trace(self, name: str, metadata: Optional[Dict] = None):
+        """打开一条命名追踪的上下文管理器，可附带元数据，用于包裹一次检索或生成流程。"""
         return _TraceContext(self, name, metadata or {})
 
     def observe(self, name: str, as_type: str = "span", **kwargs):
+        """返回装饰器工厂，用来给函数打点：记录耗时、成功或失败到本地日志，失败仍会把原异常抛出。"""
         def decorator(func: Callable) -> Callable:
+            """接收被观察的函数，返回带计时和日志记录的包装函数。"""
             @wraps(func)
             def wrapper(*args, **kw):
+                """执行原函数并写入一条本地观察日志；异常时补充 error 字段后再重新抛出。"""
                 start = time.time()
                 try:
                     result = func(*args, **kw)
@@ -241,6 +251,7 @@ class Tracer:
 
     def score(self, name: str, value: float, trace_id: Optional[str] = None,
               comment: str = ""):
+        """给某次追踪打分。若缓冲区里已有对应 trace_id 的 RAGFlow 记录，把分数挂到该记录上；否则写入本地日志。"""
         if self._ragflow and trace_id:
             for rec in self._ragflow_buffer:
                 if rec.get("trace_id") == trace_id:
@@ -274,6 +285,7 @@ class Tracer:
             logger.error(f"[Tracer] RAGFlow 缓冲异常: {e}")
 
     def _flush_ragflow_buffer(self):
+        """把缓冲区里的追踪记录逐条上传到 RAGFlow。上传失败只记日志，不回滚业务。"""
         if not self._ensure_ragflow() or not self._ragflow_buffer:
             return
         records = self._ragflow_buffer
@@ -290,17 +302,22 @@ class Tracer:
                 logger.error(f"[Tracer] RAGFlow flush 失败: {e}")
 
     def get_logs(self, last_n: int = 50) -> List[Dict]:
+        """返回最近 last_n 条本地追踪日志，供调试查看。"""
         return self._local_logs[-last_n:]
 
     def get_ragflow_traces(self) -> List[Dict[str, Any]]:
+        """返回当前尚未上传或正在缓冲的 RAGFlow 追踪副本。"""
         return list(self._ragflow_buffer)
 
     def flush(self):
+        """立即尝试把 RAGFlow 缓冲区刷出去。"""
         self._flush_ragflow_buffer()
 
 
 class _TraceContext:
+    """一条追踪的上下文：进入时记开始事件，退出时汇总耗时、事件和分数并入队上传。异常不会被吞掉。"""
     def __init__(self, tracer: Tracer, name: str, metadata: Dict):
+        """创建新的追踪上下文，分配 trace_id，并准备事件和分数列表。"""
         self._tracer = tracer
         self._name = name
         self._metadata = metadata
@@ -310,6 +327,7 @@ class _TraceContext:
         self._scores: List[Dict[str, Any]] = []
 
     def __enter__(self):
+        """记录追踪开始事件到自身事件列表和本地日志，然后返回上下文本身。"""
         self._events.append({
             "type": "trace_enter",
             "name": self._name,
@@ -324,6 +342,7 @@ class _TraceContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """记录追踪结束、耗时和错误状态，把完整记录交给 tracer 入队。返回 False，不吞掉业务异常。"""
         duration_ms = round((time.time() - self._start) * 1000, 1)
         self._events.append({
             "type": "trace_exit",
@@ -355,13 +374,16 @@ class _TraceContext:
 
     @property
     def trace_id(self) -> str:
+        """返回本条追踪的唯一 ID，便于后续打分或关联生成事件。"""
         return self._trace_id
 
     def generation(self, name: str, model: str, prompt: str, response: str,
                    metadata: Optional[Dict] = None):
+        """打开一个嵌套的模型生成上下文，用于记录模型名、提示和回复长度。"""
         return _GenerationContext(self, name, model, prompt, response, metadata or {})
 
     def score(self, name: str, value: float, comment: str = ""):
+        """把一条分数记到当前追踪上，退出时随整条记录一起上传。"""
         self._scores.append({
             "name": name,
             "value": value,
@@ -371,8 +393,10 @@ class _TraceContext:
 
 
 class _GenerationContext:
+    """追踪内部一次模型生成的上下文，记录模型、提示和回复，并在进入/退出时写事件。"""
     def __init__(self, trace_ctx: _TraceContext, name: str, model: str,
                  prompt: str, response: str, metadata: Dict):
+        """保存所属追踪、生成名称、模型名以及提示和回复文本，并记下开始时间。"""
         self._trace_ctx = trace_ctx
         self._name = name
         self._model = model
@@ -382,6 +406,7 @@ class _GenerationContext:
         self._start = time.time()
 
     def __enter__(self):
+        """向所属追踪和本地日志写入 generation_enter 事件。"""
         self._trace_ctx._events.append({
             "type": "generation_enter",
             "name": self._name,
@@ -398,6 +423,7 @@ class _GenerationContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """计算耗时，记录提示和回复长度后写入 generation_exit 事件。不吞掉异常。"""
         duration_ms = round((time.time() - self._start) * 1000, 1)
         self._trace_ctx._events.append({
             "type": "generation_exit",

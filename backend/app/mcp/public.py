@@ -13,6 +13,7 @@ public_mcp = FastMCP("Car-Repair-Public")
 
 
 async def _call(fn, timeout: float, *args, **kwargs):
+    """在线程里执行同步 MCP 工具，并加上超时。超时不抛给协议层，而是返回请稍后再试的提示。"""
     try:
         return await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout=timeout)
     except asyncio.TimeoutError:
@@ -64,10 +65,12 @@ async def get_workorder_stats() -> str:
 
 
 def public_http_app():
+    """构造对外公开的 MCP HTTP 应用：无状态 Streamable HTTP，JSON 响应，挂在根路径。"""
     return public_mcp.http_app(path="/", transport="streamable-http", stateless_http=True, json_response=True)
 
 
 def public_tool_names() -> tuple:
+    """返回公开只读工具名元组，并校验这些工具都已实现；有缺失时直接抛出，避免把空壳接口暴露出去。"""
     names = tuple(PUBLIC_READ_TOOLS)
     missing = [name for name in names if name not in {
         "query_work_order",

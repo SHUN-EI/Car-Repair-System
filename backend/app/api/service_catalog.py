@@ -21,10 +21,12 @@ skus_router = APIRouter()
 
 
 def _role(user: User) -> str:
+    """取出用户角色字符串，兼容枚举和普通字符串两种存法。"""
     return user.role.value if hasattr(user.role, "value") else str(user.role or "")
 
 
 def _ensure_writer(user: User):
+    """校验当前用户可以改保养目录。主管只能查看，车主不能维护目录。"""
     if _role(user) == "SUPERVISOR":
         raise HTTPException(status_code=403, detail="主管仅可查看，如需修改请联系管理员")
     if _role(user) == "OWNER":
@@ -32,6 +34,7 @@ def _ensure_writer(user: User):
 
 
 def _keywords(value):
+    """整理症状关键词列表：去空、去重，并截断过长词；空列表视为未填写。"""
     if value is None:
         return None
     cleaned = []
@@ -43,11 +46,13 @@ def _keywords(value):
 
 
 def _check_mileage(start, end):
+    """校验里程下限不能大于上限，否则返回 400。"""
     if start is not None and end is not None and start > end:
         raise HTTPException(status_code=400, detail="里程下限不能大于上限")
 
 
 def _commit(db: Session, conflict: str):
+    """提交数据库变更。遇到唯一约束等完整性冲突时回滚，并用指定文案返回 400。"""
     try:
         db.commit()
     except IntegrityError:
@@ -56,6 +61,7 @@ def _commit(db: Session, conflict: str):
 
 
 def _page(query, page: int, page_size: int):
+    """对查询做分页，返回总数和当前页记录。"""
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     return total, items
@@ -70,6 +76,7 @@ def list_packages(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出保养套餐，可按品牌、编码或名称关键词过滤。需登录。"""
     query = db.query(ServicePackage)
     if brand:
         query = query.filter(ServicePackage.brand == brand)
@@ -86,6 +93,7 @@ def recommend_packages(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按车辆、车牌、品牌车系、里程和症状推荐套餐与项目，价格来自目录规则，不走模型定价。"""
     return recommend_service_packages(
         db,
         vehicle_id=data.vehicle_id,
@@ -99,6 +107,7 @@ def recommend_packages(
 
 @packages_router.get("/{package_id}", response_model=ServicePackageResponse, summary="保养套餐详情")
 def get_package(package_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取保养套餐，不存在返回 404。"""
     row = db.query(ServicePackage).filter(ServicePackage.id == package_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="保养套餐不存在")
@@ -107,6 +116,7 @@ def get_package(package_id: int, db: Session = Depends(get_db), current_user: Us
 
 @packages_router.post("/", response_model=ServicePackageResponse, summary="新增保养套餐")
 def create_package(data: ServicePackageCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """新建保养套餐。编码必须唯一，里程区间和症状关键词会先做校验和整理。"""
     _ensure_writer(current_user)
     _check_mileage(data.mileage_from, data.mileage_to)
     code = data.code.strip()
@@ -129,6 +139,7 @@ def update_package(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新保养套餐，只写入请求里给出的字段，并再次校验里程区间。"""
     _ensure_writer(current_user)
     row = db.query(ServicePackage).filter(ServicePackage.id == package_id).first()
     if not row:
@@ -146,6 +157,7 @@ def update_package(
 
 @packages_router.delete("/{package_id}", summary="删除保养套餐")
 def delete_package(package_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除保养套餐。不存在返回 404；删除冲突时返回 400。"""
     _ensure_writer(current_user)
     row = db.query(ServicePackage).filter(ServicePackage.id == package_id).first()
     if not row:
@@ -164,6 +176,7 @@ def list_skus(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出服务项目，可按所属套餐、编码或名称过滤。"""
     query = db.query(ServiceSku)
     if package_id:
         query = query.filter(ServiceSku.package_id == package_id)
@@ -176,6 +189,7 @@ def list_skus(
 
 @skus_router.get("/{sku_id}", response_model=ServiceSkuResponse, summary="服务项目详情")
 def get_sku(sku_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取服务项目，不存在返回 404。"""
     row = db.query(ServiceSku).filter(ServiceSku.id == sku_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="服务项目不存在")
@@ -184,6 +198,7 @@ def get_sku(sku_id: int, db: Session = Depends(get_db), current_user: User = Dep
 
 @skus_router.post("/", response_model=ServiceSkuResponse, summary="新增服务项目")
 def create_sku(data: ServiceSkuCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """新建服务项目。编码必须唯一；若指定了所属套餐，该套餐必须存在。"""
     _ensure_writer(current_user)
     _check_mileage(data.mileage_from, data.mileage_to)
     if data.package_id and not db.query(ServicePackage.id).filter(ServicePackage.id == data.package_id).first():
@@ -208,6 +223,7 @@ def update_sku(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新服务项目，校验所属套餐和里程区间后保存。"""
     _ensure_writer(current_user)
     row = db.query(ServiceSku).filter(ServiceSku.id == sku_id).first()
     if not row:
@@ -228,6 +244,7 @@ def update_sku(
 
 @skus_router.delete("/{sku_id}", summary="删除服务项目")
 def delete_sku(sku_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除服务项目。不存在返回 404；删除冲突时返回 400。"""
     _ensure_writer(current_user)
     row = db.query(ServiceSku).filter(ServiceSku.id == sku_id).first()
     if not row:

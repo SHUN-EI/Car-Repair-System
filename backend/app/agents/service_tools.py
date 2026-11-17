@@ -11,6 +11,7 @@ from app.models.vehicle import Vehicle
 
 
 def _vehicle_spec(db: Session, vehicle_id: Optional[int], plate: Optional[str], brand: Optional[str], series: Optional[str]):
+    """根据车辆 ID 或车牌查找车辆，并与请求里的品牌、车系合并成推荐用规格。找不到车辆时返回错误说明；没有 ID/车牌时仍可用传入的品牌车系继续推荐。"""
     vehicle = None
     if vehicle_id:
         vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
@@ -39,6 +40,7 @@ def _vehicle_spec(db: Session, vehicle_id: Optional[int], plate: Optional[str], 
 
 
 def _package_dict(row: ServicePackage) -> dict:
+    """把套餐模型转成推荐排序所需的字典，列表价空值按 0。"""
     return {
         "id": row.id,
         "code": row.code,
@@ -55,6 +57,7 @@ def _package_dict(row: ServicePackage) -> dict:
 
 
 def _sku_dict(row: ServiceSku) -> dict:
+    """把服务工时模型转成推荐排序所需的字典，工时和单价空值按 0。"""
     return {
         "id": row.id,
         "code": row.code,
@@ -82,6 +85,7 @@ def recommend_service_packages(
     mileage: Optional[int] = None,
     symptoms: Optional[str] = None,
 ) -> dict:
+    """按车辆规格、里程和症状，用规则引擎给套餐和工时项目打分排序。已出现在命中套餐里的工时不会再作为独立项目重复推荐。找不到车辆时返回说明，不抛异常。价格全部来自目录，不走大模型。"""
     spec, error = _vehicle_spec(db, vehicle_id, plate, brand, series)
     if error:
         return {"vehicle": None, "packages": [], "skus": [], "note": error}
@@ -122,6 +126,7 @@ def recommend_service_packages(
 
 
 def format_recommendation(result: dict) -> str:
+    """把推荐结果格式化成可读中文，包含车型、里程、套餐价和其中的工时项目；没有任何命中时返回原因说明。"""
     if result.get("note") and not result.get("packages") and not result.get("skus"):
         return result["note"]
     vehicle = result.get("vehicle") or {}

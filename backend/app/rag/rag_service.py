@@ -73,11 +73,13 @@ def get_vector_dimension() -> int:
 
 
 def _knowledge_store():
+    """返回知识条目使用的 Milvus 集合客户端。延迟导入以免循环依赖，外部应通过 rag_service 的检索函数使用，不要直接操作集合。"""
     from app.core import vector_store as vs
     return vs.vector_store
 
 
 def _log_code_store():
+    """返回手册错误码使用的 Milvus 集合客户端，同样延迟导入。"""
     from app.core import vector_store as vs
     return vs.log_code_store
 

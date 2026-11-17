@@ -320,6 +320,9 @@ const TIMELINE_STEPS = [
 ]
 
 
+/**
+ * 格式化进度板上的时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('MM-DD HH:mm') : '-'
 
 // 计算工单时间轴每一步的状态：已完成 / 当前 / 未完成
@@ -378,6 +381,9 @@ const fetchBoardData = async () => {
 
 // 自动刷新：每 15 秒一次
 let timer = null
+/**
+ * 打开或关闭进度板自动刷新。
+ */
 const toggleAutoRefresh = (v) => {
   if (v) {
     if (!timer) timer = setInterval(fetchBoardData, 15000)

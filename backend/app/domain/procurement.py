@@ -33,6 +33,10 @@ def receive_qty(ordered: int, already: int, requested: Optional[int]) -> int:
 
 
 def next_po_no(existing_numbers: Iterable[str], day: str) -> str:
+    """在已有采购单号中生成当天的下一个单号，格式为 PO-YYYYMMDD-XXX（三位序号）。
+
+    只统计相同日期前缀的号码，无法解析的后缀会被跳过；当天还没有单号时从 001 起。
+    """
     prefix = f"PO-{day}-"
     seq = 0
     for number in existing_numbers:

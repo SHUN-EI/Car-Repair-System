@@ -50,11 +50,17 @@ const tabs = ref([
 ])
 const list = ref([])
 
+/**
+ * 把工单状态转成中文标签。
+ */
 const statusLabel = (s) => ({
   ASSIGNED: '待接单', IN_PROGRESS: '维修中', COMPLETED: '已完成',
   INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中', QC: '质检', CLOSED: '已结案', CANCELLED: '已取消', APPROVED: '报价已确认',
 }[s] || s)
 
+/**
+ * 加载技师待办队列，并按当前页签过滤。
+ */
 const fetchData = async () => {
   try {
     const res = await request.get('/dingtalk/tech/queue', {

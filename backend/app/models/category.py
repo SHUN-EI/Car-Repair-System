@@ -1,3 +1,5 @@
+"""通用分类树，可用于设备类型、故障类型等层级分类。"""
+
 from sqlalchemy import Column, String, Integer, ForeignKey
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
@@ -17,4 +19,5 @@ class Category(BaseModel):
     parent = relationship("Category", remote_side="Category.id", backref="children")
 
     def __repr__(self):
+        """调试时输出分类主键、名称和编码。"""
         return f"<Category(code='{self.code}', name='{self.name}')>"

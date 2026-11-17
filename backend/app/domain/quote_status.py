@@ -28,4 +28,5 @@ QUOTE_TRANSITIONS: Dict[str, List[str]] = {
 
 
 def can_transition(src: str, dest: str) -> bool:
+    """判断报价是否允许从 src 转到 dest。合法迁移写在 QUOTE_TRANSITIONS 里，未知源状态视为不允许。"""
     return dest in QUOTE_TRANSITIONS.get(src or "", [])

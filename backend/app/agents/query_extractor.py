@@ -43,6 +43,7 @@ class QueryKeywordExtractor:
     }
 
     def __init__(self, db_session_factory):
+        """初始化检索关键词提取器。白名单每 5 分钟刷新一次，LLM 抽取结果缓存 10 分钟，数据库会话工厂用于加载白名单。"""
         self._db_factory = db_session_factory
         self._whitelist: Optional[Set[str]] = None
         self._whitelist_loaded_at: float = 0

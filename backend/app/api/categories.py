@@ -1,3 +1,5 @@
+"""分类字典接口：按类型列出树形分类，管理员可新增、修改和删除分类。"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -12,6 +14,7 @@ router = APIRouter()
 
 
 def _require_admin(user: User) -> None:
+    """校验当前用户是管理员，否则返回 403。仅管理员可以改分类。"""
     if role_name(user) != "ADMIN":
         raise HTTPException(status_code=403, detail="仅管理员可维护分类")
 
@@ -43,6 +46,7 @@ def list_categories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """列出分类，可按分类类型过滤，结果以树形结构和总数返回。需登录。"""
     query = db.query(Category)
     if category_type:
         query = query.filter(Category.category_type == category_type)
@@ -53,6 +57,7 @@ def list_categories(
 
 @router.get("/{category_id}", response_model=CategoryResponse, summary="获取分类详情")
 def get_category(category_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取单个分类，不存在返回 404。"""
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="分类不存在")
@@ -61,6 +66,7 @@ def get_category(category_id: int, db: Session = Depends(get_db), current_user: 
 
 @router.post("/", response_model=CategoryResponse, summary="创建分类")
 def create_category(data: CategoryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """管理员创建分类。编码不能与已有分类重复，否则返回 400。"""
     _require_admin(current_user)
     existing = db.query(Category).filter(Category.code == data.code).first()
     if existing:
@@ -79,6 +85,7 @@ def update_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """管理员按 ID 更新分类，只写入请求里明确给出的字段。分类不存在返回 404。"""
     _require_admin(current_user)
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:
@@ -92,6 +99,7 @@ def update_category(
 
 @router.delete("/{category_id}", summary="删除分类")
 def delete_category(category_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """管理员删除分类。子分类的父级会被清空，而不是一并删除。"""
     _require_admin(current_user)
     cat = db.query(Category).filter(Category.id == category_id).first()
     if not cat:

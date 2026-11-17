@@ -94,6 +94,9 @@ const form = ref({
   name: '', code: '', category_type: 'DEVICE_TYPE', parent_id: null, sort_order: 0, description: ''
 })
 
+/**
+ * 按新增、添加子分类或编辑，返回对话框标题。
+ */
 const dialogTitle = computed(() => {
   if (editingId.value) return '编辑分类'
   if (form.value.parent_id) return '添加子分类'
@@ -111,6 +114,9 @@ const flattenTree = (nodes, result = []) => {
   return result
 }
 
+/**
+ * 按分类类型拉取完整分类树。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -122,6 +128,9 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 清空新增/编辑表单，分类类型沿用当前筛选。
+ */
 const resetForm = () => {
   editingId.value = null
   form.value = {
@@ -129,10 +138,22 @@ const resetForm = () => {
   }
 }
 
+/**
+ * 打开新增顶级分类对话框。
+ */
 const handleAdd = () => { resetForm(); dialogVisible.value = true }
+/**
+ * 打开新增子分类对话框，并带上父级和类型。
+ */
 const handleAddChild = (row) => { resetForm(); form.value.parent_id = row.id; form.value.category_type = row.category_type; dialogVisible.value = true }
+/**
+ * 把当前行填进表单，打开编辑对话框。
+ */
 const handleEdit = (row) => { editingId.value = row.id; Object.assign(form.value, row); dialogVisible.value = true }
 
+/**
+ * 新增或更新分类后刷新列表。
+ */
 const handleSave = async () => {
   saving.value = true
   try {
@@ -148,6 +169,9 @@ const handleSave = async () => {
   } finally { saving.value = false }
 }
 
+/**
+ * 确认后删除分类并刷新列表。
+ */
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm('确定删除该分类？子分类也将被删除。', '删除确认', { type: 'warning' })
@@ -157,10 +181,16 @@ const handleDelete = async (row) => {
   } catch { /* cancelled */ }
 }
 
+/**
+ * 展开整棵分类树。
+ */
 const expandAll = () => {
   // Element Plus table tree expand all is managed via default-expand-all
   fetchData()
 }
+/**
+ * 收起整棵分类树。
+ */
 const collapseAll = () => {
   // For simplicity, refetch without expand
   fetchData()

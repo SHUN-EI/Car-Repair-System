@@ -35,6 +35,7 @@ class ManualCondition(BaseModel):
 
 
 class ManualCodeCreate(BaseModel):
+    """新建手册错误码条目的请求体：手册名、错误码、标题和含义必填，还可带严重级别、影响、关联码和章节页码。"""
     manual_name: str = Field(..., min_length=1, max_length=200, description="手册名称")
     device_type: Optional[str] = Field(None, max_length=100)
     error_code: str = Field(..., min_length=1, max_length=100, description="错误码，如 SV0436")
@@ -51,6 +52,7 @@ class ManualCodeCreate(BaseModel):
     @field_validator("severity")
     @classmethod
     def _check_severity(cls, v: Optional[str]) -> Optional[str]:
+        """把严重级别规范成大写，只允许 EX、OH 或 INFO，空值视为未填写。"""
         if v is None or v == "":
             return None
         v = v.strip().upper()
@@ -60,6 +62,7 @@ class ManualCodeCreate(BaseModel):
 
 
 class ManualCodeUpdate(BaseModel):
+    """更新手册错误码条目的请求体，字段均可选；严重级别规则与创建时相同。"""
     manual_name: Optional[str] = Field(None, min_length=1, max_length=200)
     device_type: Optional[str] = Field(None, max_length=100)
     error_code: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -76,6 +79,7 @@ class ManualCodeUpdate(BaseModel):
     @field_validator("severity")
     @classmethod
     def _check_severity(cls, v: Optional[str]) -> Optional[str]:
+        """更新时校验严重级别，只允许 EX、OH 或 INFO，空值视为未填写。"""
         if v is None or v == "":
             return None
         v = v.strip().upper()
@@ -85,22 +89,26 @@ class ManualCodeUpdate(BaseModel):
 
 
 class ManualParseRequest(BaseModel):
+    """把手册原文段落交给结构化解析的请求，可附带手册名和设备类型。"""
     manual_text: str = Field(..., min_length=1, max_length=8000, description="手册原文段落")
     manual_name: str = ""
     device_type: str = ""
 
 
 class ManualImportJsonRequest(BaseModel):
+    """批量导入手册条目的请求，一次 1 到 500 条。"""
     items: List[ManualCodeCreate] = Field(..., min_length=1, max_length=500)
 
 
 # ==================== 工具函数 ====================
 
 def _m_to_dict(m: ManualCodeEntry) -> dict:
+    """把手册条目按表字段转成普通字典。"""
     return {c.name: getattr(m, c.name) for c in m.__table__.columns}
 
 
 def _require_admin(current_user: User) -> None:
+    """校验当前用户是管理员，否则不能维护手册条目。"""
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="仅管理员可维护手册条目")
 
@@ -131,6 +139,7 @@ def _apply_fields(entry: ManualCodeEntry, data: dict) -> None:
 
 
 def _check_conflict(db: Session, manual_name: str, error_code: str, exclude_id: Optional[int] = None) -> None:
+    """检查同一手册下错误码是否已存在（编码会先规范化）。冲突时返回 409。更新时可排除自身 ID。"""
     from app.core.manual_text import normalize_error_code
     q = db.query(ManualCodeEntry).filter(
         ManualCodeEntry.manual_name == manual_name.strip(),
@@ -175,6 +184,7 @@ def get_manual_code(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按 ID 获取手册条目，不存在返回 404。需登录。"""
     item = db.query(ManualCodeEntry).filter(ManualCodeEntry.id == manual_code_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="手册条目不存在")
@@ -211,6 +221,7 @@ def create_manual_code(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """管理员新建手册条目。先做唯一性检查，写入数据库后再同步向量；失败会回滚，避免只写库不写向量或反过来。"""
     _require_admin(current_user)
     fields = _normalized_field_map(data)
     _check_conflict(db, fields["manual_name"], fields["error_code"])
@@ -241,6 +252,7 @@ def update_manual_code(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """管理员更新手册条目。改完后按最新字段重新编码向量：先插入新点，再删除旧点。手册名与错误码组合仍须唯一。"""
     _require_admin(current_user)
     item = db.query(ManualCodeEntry).filter(ManualCodeEntry.id == manual_code_id).first()
     if not item:

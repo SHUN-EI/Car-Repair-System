@@ -22,6 +22,7 @@ from app.rag.rag_service import case_rank_score
 
 
 class QaState(TypedDict, total=False):
+    """问答主图的状态：原始问题、可选设备/故障码、路由类型（闲聊/库存/故障），以及各子图的载荷和是否建议切换专家模式。"""
     question: str
     device_type: Optional[str]
     fault_code: Optional[str]
@@ -50,6 +51,7 @@ def route_qa_intent(state: QaState) -> str:
 # 子图 1：聊天（问候/功能介绍/闲聊，无检索）
 # ============================================================
 def chat_node(state: QaState) -> dict:
+    """闲聊分支：不走检索，直接用回答生成器给出非技术回复。"""
     from app.agents.answer_generator import answer_generator
     q = state.get("question") or ""
     return {"kind": "chat", "payload": answer_generator._answer_non_technical(q)}
@@ -66,6 +68,7 @@ CHAT_SUBGRAPH = _chat_graph.compile()
 # 子图 2：库存查询
 # ============================================================
 def inventory_node(state: QaState) -> dict:
+    """库存只读分支：打开临时数据库会话查询库存，结束后关闭。失败时记下错误，不把异常抛出图外。"""
     from app.agents.answer_generator import answer_generator
     from app.core.database import SessionLocal
     q = state.get("question") or ""
@@ -157,6 +160,7 @@ FAULT_SUBGRAPH = _fault_graph.compile()
 # 主图构建
 # ============================================================
 def build_qa_graph():
+    """编译问答 LangGraph：入口是占位路由节点，按意图条件边分到闲聊、库存或故障子图，然后结束。拓扑固定，多轮会话不在这张图里保存。"""
     graph = StateGraph(QaState)
     graph.add_node("router", lambda s: {})  # 占位节点，实际分发由条件边完成
     graph.add_node("chat", CHAT_SUBGRAPH)

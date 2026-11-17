@@ -6,7 +6,10 @@ const request = axios.create({
   timeout: 30000
 })
 
-// 请求拦截器：自动携带 JWT token + 规范化 URL
+/**
+ * 请求拦截器：自动带上登录令牌和当前门店，
+ * 并把单段路径补上尾斜杠，避免 FastAPI 307 重定向时丢掉 Authorization。
+ */
 request.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('auth_token')
@@ -33,6 +36,9 @@ request.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
+/**
+ * 响应拦截器：成功时直接返回 data；失败时提示错误，401 则清掉登录态并跳转登录页。
+ */
 request.interceptors.response.use(
   (response) => response.data,
   (error) => {

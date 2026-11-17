@@ -82,6 +82,7 @@ class RobotMessageCallbackHandler(CallbackHandler):
     """
 
     async def process(self, message: CallbackMessage):
+        """处理钉钉 Stream 推过来的机器人消息：把 payload 交给 robot_handler，成功或失败都向 SDK 回 ACK，避免钉钉反复重投。"""
         try:
             import time as _t
             payload = message.data or {}
@@ -104,6 +105,7 @@ class CardButtonCallbackHandler(CallbackHandler):
     """
 
     async def process(self, message: CallbackMessage):
+        """处理工单互动卡片上的按钮回调。交给工单卡片模块执行动作后，若有回复文案，再以机器单聊发回操作者。异常只记日志，仍回 ACK。"""
         try:
             payload = message.data or {}
             logger.info(f"[DingStream-SDK] 收到卡片回调 payload={str(payload)[:500]}")
@@ -129,6 +131,7 @@ class DingTalkStreamRunner:
     _instance = None
 
     def __init__(self, handler: Optional[Callable[[Dict[str, Any]], Any]] = None):
+        """准备钉钉 Stream 客户端的运行器：保存事件处理函数，并预留后台线程、事件循环和官方客户端引用，供启动和关闭使用。"""
         self.handler = handler or default_event_handler
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -140,6 +143,10 @@ class DingTalkStreamRunner:
     # 启动/停止（FastAPI startup / shutdown 调用）
     # ------------------------------------------------------------
     def start(self):
+        """在独立线程里启动官方钉钉 Stream 客户端。
+
+        若未开启 Stream 模式、处于 mock，或缺少 AppKey/Secret，直接跳过。已有线程在跑时不重复启动。缺少 dingtalk-stream 包时打出安装说明并返回，避免进程崩溃。
+        """
         if not OA_CFG.STREAM_MODE:
             logger.info("[DingStream] ⚙️ DINGTALK_STREAM_MODE=false → 跳过Stream客户端启动（如需启用请改.env=true）")
             return
@@ -179,6 +186,7 @@ class DingTalkStreamRunner:
         logger.info("[DingStream] ✅ Stream 客户端后台线程已启动（基于官方 dingtalk-stream SDK）")
 
     def stop(self):
+        """发出停止信号，并在事件循环里关闭官方客户端。关闭超时或异常只记警告，不阻断应用退出。"""
         self._stop_event.set()
         try:
             if self._loop and self._client_task:
@@ -188,6 +196,7 @@ class DingTalkStreamRunner:
             logger.warning(f"[DingStream] stop 异常（忽略即可）: {e}")
 
     async def _shutdown_task(self):
+        """在 Stream 所用的事件循环里关闭官方客户端并取消监听任务，忽略已取消的协程。"""
         if self._client_ref is not None:
             try:
                 await self._client_ref.shutdown()
@@ -237,6 +246,7 @@ class DingTalkStreamRunner:
             """继承 SDK 的 EventHandler，在 process() 里把 EventMessage 转 dict 交给业务 handler"""
 
             async def process(self, event: EventMessage):
+                """把钉钉长连接推过来的事件交给业务回调处理。"""
                 payload = {}
                 try:
                     if hasattr(event, "data") and isinstance(event.data, dict):

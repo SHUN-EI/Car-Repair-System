@@ -4,6 +4,7 @@ from app.models.base import BaseModel
 
 
 class RootCauseCategory(BaseModel):
+    """根本原因的级联分类。parent_id 为空表示大类，供工单根因字段选用。"""
     __tablename__ = "root_cause_categories"
 
     parent_id = Column(Integer, nullable=True, comment="父级ID，NULL=大类")

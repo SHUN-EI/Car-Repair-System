@@ -140,10 +140,12 @@ class AnswerGenerator:
 - 严格基于案例内容，不添加案例中没有的信息"""
 
     def __init__(self):
+        """初始化回答生成器，对话模型在首次真正生成时再创建。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造流式对话模型，温度 0.5，超时 90 秒，最多重试 2 次。超时应返回失败提示，而不是一直挂起。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.5,
@@ -234,6 +236,7 @@ class AnswerGenerator:
         # 用 OR 条件查询匹配的备件；未命中时用去头/去尾的宽松关键词重试，
         # 规避「减震垫有多少库存」抽出「减震垫有」这类功能词粘连导致查不到
         def _search_by_terms(terms: list) -> list:
+            """按一组关键词对配件名称、编码、规格和设备类型做模糊匹配（ILIKE），没有关键词时返回空列表。"""
             if not terms:
                 return []
             from sqlalchemy import or_

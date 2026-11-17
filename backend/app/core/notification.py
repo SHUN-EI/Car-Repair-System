@@ -19,10 +19,12 @@ class NotificationService:
     """通知服务"""
 
     def __init__(self):
+        """初始化通知服务开关，具体渠道是否真正外发还要看配置和 mock 模式。"""
         self._enabled = True
 
     @property
     def enabled(self) -> bool:
+        """是否允许向钉钉等外部渠道发通知。总开关打开且当前不是钉钉 mock 模式时才为真，避免本地联调误发到真实群。"""
         return self._enabled and not settings.DINGTALK_MOCK_MODE
 
     def notify_dispatch(self, userid: str, work_order_no: str, device: str,

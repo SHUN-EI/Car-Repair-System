@@ -21,20 +21,24 @@ class TestAgentRouterIntents:
     """至少覆盖：故障咨询、库存只读、引导会话、建单、查单、完工。"""
 
     def setup_method(self):
+        """每个用例前准备路由器测试所需的默认状态。"""
         self.router = AgentRouter()
 
     def test_fault_consult_goes_to_consult(self):
+        """故障咨询应路由到咨询/引导 Agent。"""
         result = self.router.route("注塑机锁模力不够怎么办？")
         assert result.agent == CONSULT
         assert result.intent == "fault_consult"
         assert result.use_read_tool is False
 
     def test_inventory_read_only_goes_to_consult(self):
+        """只读库存查询应路由到咨询 Agent。"""
         result = self.router.route("查一下保险丝的库存")
         assert result.agent == CONSULT
         assert result.intent == "inventory_read"
 
     def test_guided_session_goes_to_consult(self):
+        """已在引导维修会话中的请求应保持咨询 Agent。"""
         by_text = self.router.route("请按追踪维修一步步排查注塑机报 E3091")
         assert by_text.agent == CONSULT
         assert by_text.intent in ("guided_repair", "expert_repair")
@@ -46,17 +50,20 @@ class TestAgentRouterIntents:
         assert by_intent.intent == "expert_repair"
 
     def test_create_work_order_goes_to_work_order_agent(self):
+        """创建工单应路由到工单 Agent。"""
         result = self.router.route("帮我创建一张工单，设备报修锁模力不足")
         assert result.agent == WORK_ORDER
         assert result.intent == "create_work_order"
 
     def test_query_work_order_goes_to_work_order_agent(self):
+        """查询工单默认路由到工单 Agent。"""
         result = self.router.route("查询工单 WO-20260804-002 的进度")
         assert result.agent == WORK_ORDER
         assert result.intent == "query_work_order"
         assert result.use_read_tool is False
 
     def test_query_work_order_in_guide_session_uses_consult_read_tool(self):
+        """引导会话中查询工单时，主责任仍是咨询 Agent，只用只读工具。"""
         result = self.router.route(
             "这张工单 WO-20260804-002 现在进度怎么样？",
             in_guide_session=True,
@@ -66,11 +73,13 @@ class TestAgentRouterIntents:
         assert result.use_read_tool is True
 
     def test_complete_work_order_goes_to_work_order_agent(self):
+        """完成工单应路由到工单 Agent。"""
         result = self.router.route("把这张工单提交完成并完工")
         assert result.agent == WORK_ORDER
         assert result.intent == "complete_work_order"
 
     def test_explicit_entries_are_stable(self):
+        """显式入口（HTTP/MCP）的意图映射应稳定，不再二次文本分类。"""
         assert self.router.route("", entry="answer/stream").agent == CONSULT
         assert self.router.route("", entry="work-order-create").agent == WORK_ORDER
         assert self.router.route("", entry="work-order-complete").agent == WORK_ORDER
@@ -78,6 +87,7 @@ class TestAgentRouterIntents:
         assert self.router.route("", entry="mcp/draft_quote").agent == WORK_ORDER
 
     def test_write_intent_is_not_redirected_by_guide_session(self):
+        """即使在引导会话中，写工单意图也不能改派给咨询 Agent。"""
         result = self.router.route("完成工单", in_guide_session=True)
         assert result.agent == WORK_ORDER
         assert result.intent == "complete_work_order"
@@ -85,15 +95,19 @@ class TestAgentRouterIntents:
 
 
 class TestConsultFacadeCannotWrite:
+    """咨询门面不能写工单。"""
     def test_consult_facade_exposes_no_work_order_write_apis(self):
+        """咨询门面不应暴露创建、完成工单等写接口。"""
         for name in WORK_ORDER_WRITE_METHODS:
             assert not hasattr(consult_guide_agent, name), f"咨询门面不应暴露写方法 {name}"
         assert consult_guide_agent.can_write_work_order() is False
 
     def test_consult_query_work_order_delegates_to_work_order_read(self, monkeypatch):
+        """咨询侧查工单应转给工单 Agent 的只读方法。"""
         called = {}
 
         def fake_query(work_order_no: str) -> str:
+            """假的工单只读查询，用于确认咨询门面会转调它。"""
             called["no"] = work_order_no
             return "只读进度"
 
@@ -103,12 +117,14 @@ class TestConsultFacadeCannotWrite:
         assert text == "只读进度"
 
     def test_consult_invoke_qa_delegates(self, monkeypatch):
+        """咨询门面的问答调用应转给问答图。"""
         import sys
         import types
 
         fake = types.ModuleType("app.agents.qa_graph")
 
         def invoke_qa(question, device_type=None, fault_code=None, top_k=10):
+            """假的问答调用，用于确认咨询门面会转给问答图。"""
             return {"kind": "fault", "payload": {"cases": []}, "question": question}
 
         fake.invoke_qa = invoke_qa
@@ -119,7 +135,9 @@ class TestConsultFacadeCannotWrite:
 
 
 class TestWorkOrderFacadeWrites:
+    """工单门面的写操作和查询方法。"""
     def test_work_order_facade_has_write_and_query_methods(self):
+        """工单门面应同时具备写操作和只读查询方法。"""
         for name in (
             "create_work_order",
             "complete_work_order",
@@ -133,6 +151,7 @@ class TestWorkOrderFacadeWrites:
             assert callable(getattr(work_order_agent, name))
 
     def test_create_and_complete_go_through_write_gate(self):
+        """创建和完成工单必须先经过写权限守门。"""
         created = work_order_agent.create_work_order({"fault_description": "锁模力不足"})
         assert created["accepted"] is True
         assert created["action"] == "create_work_order"
@@ -140,7 +159,9 @@ class TestWorkOrderFacadeWrites:
         assert completed["ok"] is True
 
     def test_create_persist_callback_is_used(self):
+        """创建工单时应调用调用方传入的 persist 回调来落库。"""
         def persist(data):
+            """测试用的落库回调，确认创建工单时会被调用。"""
             return {"saved": data["fault_description"]}
 
         result = work_order_agent.create_work_order(
@@ -149,11 +170,14 @@ class TestWorkOrderFacadeWrites:
         assert result == {"saved": "油温报警"}
 
     def test_analyze_ticket_delegates(self, monkeypatch):
+        """分析工单应转给工单理解 Agent。"""
         import sys
         import types
 
         class Fake:
+            """假的工单理解模块，用于确认分析请求被转交。"""
             def analyze(self, data):
+                """返回带入参标记的假分析结果。"""
                 return {"device_type": data.get("device_type"), "ok": True}
 
         fake = types.ModuleType("app.agents.ticket_agent")
@@ -165,6 +189,8 @@ class TestWorkOrderFacadeWrites:
 
 
 class TestSingletonRouter:
+    """模块级路由器单例。"""
     def test_module_singleton_matches_class(self):
+        """模块导出的 agent_router 单例与类的路由结果一致。"""
         result = agent_router.route("查一下备件库存")
         assert result.agent == CONSULT

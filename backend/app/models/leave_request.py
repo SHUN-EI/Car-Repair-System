@@ -13,6 +13,7 @@ from datetime import datetime
 
 
 class LeaveType(str, enum.Enum):
+    """请假类型枚举，如年假、病假、事假、调休、婚假、产假、丧假和其它。"""
     ANNUAL = "ANNUAL"               # 年假
     SICK = "SICK"                   # 病假
     PERSONAL = "PERSONAL"           # 事假
@@ -24,6 +25,7 @@ class LeaveType(str, enum.Enum):
 
 
 class LeaveRequestStatus(str, enum.Enum):
+    """请假单状态：待审批 PENDING、已批准 APPROVED、已拒绝 REJECTED、已取消 CANCELLED。"""
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
@@ -31,12 +33,14 @@ class LeaveRequestStatus(str, enum.Enum):
 
 
 class LeaveShift(str, enum.Enum):
+    """请假覆盖的班次：全天 ALL_DAY、早班 MORNING、午班 AFTERNOON。"""
     ALL_DAY = "ALL_DAY"
     MORNING = "MORNING"
     AFTERNOON = "AFTERNOON"
 
 
 class LeaveRequest(BaseModel):
+    """请假申请主单。按日期区间提交，明细拆到 LeaveRequestDetail；批准后可指定替班人并回写排班。"""
     __tablename__ = "leave_requests"
 
     requester_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,

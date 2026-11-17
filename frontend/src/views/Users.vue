@@ -163,9 +163,18 @@ const form = ref({
 })
 
 const roleMap = { ADMIN: '管理员', TECHNICIAN: '技术员', SUPERVISOR: '主管', OWNER: '车主' }
+/**
+ * 把角色代码转成中文名称。
+ */
 const roleLabel = (r) => roleMap[r] || r
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
+/**
+ * 按条件加载用户列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -176,17 +185,26 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 清空新增或编辑用户的表单。
+ */
 const resetForm = () => {
   editingId.value = null
   form.value = { username: '', password: '', real_name: '', email: '', phone: '', role: 'TECHNICIAN', is_active: true }
 }
 
+/**
+ * 打开编辑用户对话框并回填数据。
+ */
 const handleEdit = (row) => {
   editingId.value = row.id
   form.value = { ...row, password: '' }
   dialogVisible.value = true
 }
 
+/**
+ * 重置指定用户的密码。
+ */
 const handleResetPwd = async (row) => {
   try {
     const { value } = await ElMessageBox.prompt('请输入新密码', '重置密码', { inputType: 'password' })
@@ -197,6 +215,9 @@ const handleResetPwd = async (row) => {
   } catch { /* cancelled */ }
 }
 
+/**
+ * 新增或保存用户资料。
+ */
 const handleSave = async () => {
   saving.value = true
   try {
@@ -214,6 +235,9 @@ const handleSave = async () => {
   } finally { saving.value = false }
 }
 
+/**
+ * 删除用户。
+ */
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm('确定删除该用户？', '删除确认', { type: 'warning' })
@@ -223,6 +247,9 @@ const handleDelete = async (row) => {
   } catch { /* cancelled */ }
 }
 
+/**
+ * 解除该用户与钉钉的绑定。
+ */
 const handleUnbindDingTalk = async (row) => {
   try {
     await ElMessageBox.confirm(
@@ -249,6 +276,9 @@ const dtBindCountdown = ref(120)
 let dtBindPollTimer = null
 let dtBindRefreshTimer = null
 
+/**
+ * 清理管理员代绑钉钉时的扫码定时器。
+ */
 const cleanupBindScan = (opts = {}) => {
   // 默认只清轮询定时器；传 full=true 才连倒计时一起清
   const { full = false } = opts
@@ -260,12 +290,18 @@ const cleanupBindScan = (opts = {}) => {
   }
 }
 
+/**
+ * 打开为该用户绑定钉钉的对话框。
+ */
 const openBindDingTalk = (row) => {
   bindTarget.value = row
   bindDialogVisible.value = true
   initBindScan()
 }
 
+/**
+ * 初始化代绑二维码并开始轮询。
+ */
 const initBindScan = () => {
   // 先完整清理
   cleanupBindScan({ full: true })
@@ -304,6 +340,9 @@ const initBindScan = () => {
     .finally(() => { dtBindLoading.value = false })
 }
 
+/**
+ * 轮询该用户的钉钉绑定扫码状态。
+ */
 const pollBindStatus = async () => {
   if (!dtBindState.value) return
   try {
@@ -324,6 +363,9 @@ const pollBindStatus = async () => {
   } catch { /* 静默忽略轮询错误 */ }
 }
 
+/**
+ * 扫码成功后确认绑定。
+ */
 const confirmBindDingTalk = async () => {
   if (dtBindStatus.value !== 'scanned') return
   dtBindConfirming.value = true

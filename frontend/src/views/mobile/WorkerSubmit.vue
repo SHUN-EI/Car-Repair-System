@@ -95,12 +95,18 @@ const quickOptions = [
   '显示屏故障',
 ]
 
+/**
+ * 模拟扫码填入设备编号；尚未接入钉钉扫码接口。
+ */
 const handleScan = () => {
   // 模拟扫码（实际接入钉钉 JSAPI dd.biz.util.scan）
   const codes = ['EQ-001', 'EQ-002', 'MTR-005', 'PUMP-003', 'CNC-001']
   form.device_code = codes[Math.floor(Math.random() * codes.length)]
 }
 
+/**
+ * 模拟拍照并加入附件列表；尚未接入真实相机。
+ */
 const handleCamera = () => {
   // 模拟拍照（实际接入钉钉 JSAPI dd.biz.util.uploadImage）
   const url = `https://via.placeholder.com/200x150/1677FF/fff?text=Photo_${Date.now()}`
@@ -108,6 +114,9 @@ const handleCamera = () => {
   form.media.push(url)
 }
 
+/**
+ * 模拟录音，把占位文字加入附件列表。
+ */
 const handleVoice = () => {
   // 模拟录音（实际接入钉钉 JSAPI dd.device.audio.startRecord）
   const text = '语音已记录: ' + new Date().toLocaleTimeString()
@@ -115,16 +124,25 @@ const handleVoice = () => {
   form.media.push(text)
 }
 
+/**
+ * 模拟从相册选图，目前复用拍照占位逻辑。
+ */
 const handleGallery = () => {
   // 模拟选图（实际接入钉钉 JSAPI dd.biz.util.chooseImage）
   handleCamera()
 }
 
+/**
+ * 模拟定位，填入车间位置文案。
+ */
 const getLocation = async () => {
   // 模拟定位
   form.location = '1号车间 A区 3号机位'
 }
 
+/**
+ * 提交报修工单，带上设备、故障描述、附件和位置。
+ */
 const handleSubmit = async () => {
   submitting.value = true
   try {

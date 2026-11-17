@@ -224,6 +224,9 @@ const pushResult = reactive({
 
 const pushHistory = ref([])
 
+/**
+ * 把设备类型树压平，供筛选使用。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -232,6 +235,9 @@ const flattenTree = (nodes, result = []) => {
   return result
 }
 
+/**
+ * 加载设备类型。
+ */
 const fetchDeviceTypes = async () => {
   try {
     const res = await request.get('/categories/', { params: { category_type: 'DEVICE_TYPE', page_size: 1000 } })
@@ -239,17 +245,26 @@ const fetchDeviceTypes = async () => {
   } catch { /* fallback to empty */ }
 }
 
+/**
+ * 按库存数量返回库存状态文案。
+ */
 const stockLabel = (row) => {
   if (row.stock_quantity <= 0) return '缺货'
   if (row.stock_quantity <= row.safety_stock) return '紧张'
   return '充足'
 }
+/**
+ * 按库存状态返回对应的样式类名。
+ */
 const stockClass = (row) => {
   if (row.stock_quantity <= 0) return 'stock-out'
   if (row.stock_quantity <= row.safety_stock) return 'stock-low'
   return 'stock-ok'
 }
 
+/**
+ * 加载仓库配件列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -265,6 +280,9 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 加载仓库库存预警。
+ */
 const fetchAlerts = async () => {
   try {
     const res = await request.get('/spare-parts/alerts')
@@ -274,9 +292,18 @@ const fetchAlerts = async () => {
   } catch { /* handled */ }
 }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchData() }
+/**
+ * 清空筛选并重新加载。
+ */
 const handleReset = () => { keyword.value = ''; typeFilter.value = ''; stockFilter.value = ''; page.value = 1; fetchData() }
 
+/**
+ * 把库存预警推送给后勤处理。
+ */
 const handlePushToLogistics = async () => {
   pushing.value = true
   try {

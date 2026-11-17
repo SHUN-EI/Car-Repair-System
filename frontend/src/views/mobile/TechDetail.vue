@@ -116,14 +116,23 @@ const showReport = ref(false)
 const reportForm = ref({ work_hours: 1.0, solution_desc: '', completion_photos: [] })
 
 
+/**
+ * 把工单状态转成中文标签。
+ */
 const statusLabel = (s) => ({
   ASSIGNED: '待接单', ACCEPTED: '已接单', ARRIVED: '已到达', INSPECTING: '检查中',
   IN_PROGRESS: '维修中', QC: '质检', ARCHIVING: '待归档', ARCHIVED: '已归档',
   COMPLETED: '已完成', APPROVED: '报价已确认',
   INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中', QC: '质检', CLOSED: '已结案', CANCELLED: '已取消',
 }[s] || s)
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : '-'
 
+/**
+ * 加载当前维修单详情。
+ */
 const fetchData = async () => {
   try {
     const res = await request.get(`/dingtalk/tech/detail/${route.params.id}`)
@@ -133,6 +142,9 @@ const fetchData = async () => {
   } catch { /* handled */ }
 }
 
+/**
+ * 技师接单并开始维修。
+ */
 const handleStart = async () => {
   loading.value = true
   try {
@@ -143,12 +155,18 @@ const handleStart = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 添加现场照片；当前仍是占位图，尚未接真实拍照。
+ */
 const addPhoto = () => {
   reportForm.value.completion_photos.push(
     `https://via.placeholder.com/120/52C41A/fff?text=Done_${Date.now()}`
   )
 }
 
+/**
+ * 提交完成维修。
+ */
 const handleComplete = async () => {
   completing.value = true
   try {

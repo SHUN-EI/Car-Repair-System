@@ -1,3 +1,5 @@
+"""服务目录：保养套餐和服务工时（SKU）。品牌、车系、里程留空表示这一维不限制，推荐逻辑在 domain 层。"""
+
 from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -21,6 +23,7 @@ class ServicePackage(BaseModel):
     is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
 
     def __repr__(self):
+        """调试时输出套餐主键、编码和名称。"""
         return f"<ServicePackage(code='{self.code}', name='{self.name}')>"
 
 
@@ -49,4 +52,5 @@ class ServiceSku(BaseModel):
     is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
 
     def __repr__(self):
+        """调试时输出服务项目主键、编码和名称。"""
         return f"<ServiceSku(code='{self.code}', name='{self.name}')>"

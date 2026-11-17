@@ -1,3 +1,5 @@
+"""客户（车主）档案。车辆通过 owner_id 指向这里，也可选绑定登录账号 user_id。"""
+
 from sqlalchemy import Column, String, Text, Integer, ForeignKey
 from app.models.base import BaseModel
 
@@ -20,4 +22,5 @@ class Customer(BaseModel):
     )
 
     def __repr__(self):
+        """调试时输出客户主键和姓名。"""
         return f"<Customer(name='{self.name}', phone='{self.phone}')>"

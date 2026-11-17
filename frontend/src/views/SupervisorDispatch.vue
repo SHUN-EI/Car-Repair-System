@@ -129,6 +129,9 @@ import { leaveSummary } from '../api/supervisor'
 
 // 班次文字映射
 const shiftTextMap = { MORNING: '早班', AFTERNOON: '中班', NIGHT: '晚班', ALL_DAY: '全天' }
+/**
+ * 把班次代码转成中文名称。
+ */
 function shiftText(s) { return shiftTextMap[s] || s || '未排班' }
 
 // 当前时段（与后端 dispatch_agent 逻辑一致）
@@ -219,9 +222,18 @@ const fetchTechnicians = async () => {
   }
 }
 
+/**
+ * 预览派工单里的图片。
+ */
 const handlePicturePreview = () => {}
+/**
+ * 从派工附件中移除一张图片。
+ */
 const handleRemove = () => {}
 
+/**
+ * 提交主管派工。
+ */
 const handleSubmit = async () => {
   // 清空上次的错误提示
   submitError.value = ''

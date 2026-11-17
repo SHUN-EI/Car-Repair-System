@@ -1,3 +1,5 @@
+"""维修工单主表。工业维修与汽车维修共用同一张表和同一套状态枚举，具体车道和流转规则在 domain 层。"""
+
 from sqlalchemy import Column, String, Text, Integer, Float, TIMESTAMP, ForeignKey, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -7,6 +9,7 @@ from datetime import datetime
 
 
 class WorkOrderStatus(str, enum.Enum):
+    """工单状态枚举，同时覆盖工业维修（如草稿、提交、派工、接单、维修、待归档）和汽修接车链路（接车、诊断、报价、质检、结案等）。合法迁移表见 work_order_status。"""
     DRAFT = "DRAFT"
     SUBMITTED = "SUBMITTED"
     ASSIGNED = "ASSIGNED"
@@ -32,6 +35,7 @@ class WorkOrderStatus(str, enum.Enum):
 
 
 class WorkOrder(BaseModel):
+    """一张维修工单。可关联设备或车辆/客户/门店/预约；technician_id 是被指派维修员。used_parts、附件和现象/根因/方案等字段供闭环和知识提取使用，状态不能由调用方任意改写，必须走流转接口。"""
     __tablename__ = "work_orders"
 
     work_order_no = Column(String(50), unique=True, nullable=False, index=True)
@@ -85,4 +89,5 @@ class WorkOrder(BaseModel):
     )
 
     def __repr__(self):
+        """调试时输出工单主键、单号和当前状态。"""
         return f"<WorkOrder(work_order_no='{self.work_order_no}', status='{self.status}')>"

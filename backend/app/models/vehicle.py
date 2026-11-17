@@ -1,3 +1,5 @@
+"""车辆档案：车牌、VIN、品牌车系年款，车主指向客户档案而不是系统用户。"""
+
 from sqlalchemy import Column, String, Integer, ForeignKey
 from app.models.base import BaseModel
 
@@ -21,4 +23,5 @@ class Vehicle(BaseModel):
     )
 
     def __repr__(self):
+        """调试时输出车辆主键和车牌。"""
         return f"<Vehicle(plate='{self.plate}', vin='{self.vin}')>"

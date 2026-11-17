@@ -1,3 +1,5 @@
+"""系统用户：登录账号、角色、可选的所属门店，以及钉钉绑定和技师负荷等扩展字段。"""
+
 from sqlalchemy import Column, String, Boolean, Integer, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -6,6 +8,7 @@ from datetime import datetime
 
 
 class UserRole(str, __import__('enum').Enum):
+    """用户角色：管理员 ADMIN、维修员 TECHNICIAN、主管 SUPERVISOR、车间工人 WORKER、车主 OWNER。车主走 H5 预约和进度，不按门店角色授权。"""
     ADMIN = "ADMIN"
     TECHNICIAN = "TECHNICIAN"
     SUPERVISOR = "SUPERVISOR"
@@ -14,6 +17,7 @@ class UserRole(str, __import__('enum').Enum):
 
 
 class User(BaseModel):
+    """登录用户。role 决定接口权限；store_id 绑定门店后，店内角色只能操作本店数据。钉钉相关字段用于免登和推送，current_workload_count 由工单流转维护。"""
     __tablename__ = "users"
 
     username = Column(String(50), unique=True, nullable=False, index=True)
@@ -44,4 +48,5 @@ class User(BaseModel):
                                   cascade="all, delete-orphan")
 
     def __repr__(self):
+        """调试时输出用户主键、用户名和角色。"""
         return f"<User(username='{self.username}', role='{self.role}')>"

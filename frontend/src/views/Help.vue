@@ -175,6 +175,9 @@ const quickCards = [
   { title: '账号权限', desc: '密码修改、钉钉绑定', icon: 'User', color: '#722ED1', target: 'account' },
 ]
 
+/**
+ * 滚动到帮助页中的指定章节。
+ */
 const scrollToSection = (id) => {
   const el = document.getElementById(id)
   if (el) {
@@ -182,6 +185,9 @@ const scrollToSection = (id) => {
   }
 }
 
+/**
+ * 按关键字在帮助内容里定位。
+ */
 const handleHelpSearch = () => {
   if (searchKeyword.value.trim()) {
     ElMessage.info(`搜索"${searchKeyword.value}"相关帮助内容（功能开发中）`)

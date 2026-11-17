@@ -26,6 +26,7 @@ READ_SCOPE = "mcp:read"
 
 
 def is_public_read_tool(name: str) -> bool:
+    """判断工具名是否在允许对外部公开的只读工具名单中。写操作工具不应出现在这个集合里。"""
     return name in PUBLIC_READ_TOOLS
 
 
@@ -37,6 +38,7 @@ def write_tools_enabled(flag: bool) -> tuple:
 
 
 def _scopes_of(payload: Optional[dict]) -> Optional[set]:
+    """从鉴权载荷里解析 scope 集合。没有 scope 字段返回 None（表示不按 scope 限制）；字符串按逗号或空格拆分，列表则转成字符串集合。"""
     if not payload or "scope" not in payload or payload.get("scope") is None:
         return None
     raw = payload.get("scope")

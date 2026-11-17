@@ -154,6 +154,7 @@ async def analyze_answer_stream(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    """以 SSE 流式返回问答图的分析与回答。请求走咨询侧 search_app，可带 scene（如 consult）切换提示词风格。"""
     return StreamingResponse(
         search_app.iter_analyze_answer_sse(
             question=request.question,
@@ -172,6 +173,7 @@ async def expert_answer_stream(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    """以 SSE 流式返回专家模式首轮分析，把问题、设备类型和故障码交给咨询 Agent。"""
     return StreamingResponse(
         search_app.iter_expert_answer_sse(
             question=request.question,
@@ -207,11 +209,13 @@ async def expert_next_step(request: ExpertStepRequest,
 # ==================== 追踪维修引导 ====================
 
 class GuidedRepairStartRequest(BaseModel):
+    """开始引导维修会话的请求：故障描述必填，设备类型可选。"""
     description: str = Field(..., min_length=2, max_length=500)
     device_type: Optional[str] = None
 
 
 class GuidedRepairStepRequest(BaseModel):
+    """推进引导维修一步：会话 ID、所选选项、已做动作和操作后的设备状态。"""
     session_id: str = Field(..., min_length=1)
     selected_option: str = Field(..., description="选择的选项ID，如 A/B/C")
     action_taken: str = Field(..., min_length=1, max_length=1000, description="执行了什么操作")
@@ -219,12 +223,14 @@ class GuidedRepairStepRequest(BaseModel):
 
 
 class RepairOptionOut(BaseModel):
+    """引导维修当前步骤的一个可选项：编号、可能原因和建议的排查动作。"""
     id: str
     cause: str
     diagnostic_action: str
 
 
 class GuidedRepairStepOut(BaseModel):
+    """引导维修一步之后的返回：当前步数、说明、可选项、会话状态和可选摘要。"""
     session_id: str
     step: int
     message: str
@@ -276,6 +282,7 @@ def guided_repair_next_step(session_id: str, request: GuidedRepairStepRequest,
 # ==================== 对话式追踪维修（流式） ====================
 
 class GuidedRepairChatRequest(BaseModel):
+    """引导维修对话请求：维修员消息，可选已有会话 ID 和设备类型；scene=consult 时按车主问诊风格回答。"""
     message: str = Field(..., min_length=1, max_length=2000, description="维修员消息")
     session_id: Optional[str] = Field(None, description="追踪会话ID，首次为空则自动创建")
     device_type: Optional[str] = Field(None, description="设备类型")
@@ -299,6 +306,7 @@ async def guided_repair_chat_stream(request: GuidedRepairChatRequest,
     sid = request.session_id or str(uuid.uuid4())
 
     async def stream():
+        """把引导维修的异步生成结果写成 SSE：先发 thinking，再逐段 answer，结束时带上 session_id；失败时把错误写进 answer 事件。"""
         yield f"data: {json_module.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
 
         try:

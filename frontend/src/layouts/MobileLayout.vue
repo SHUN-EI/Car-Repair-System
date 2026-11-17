@@ -43,14 +43,29 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
+/**
+ * 从本地缓存解析当前登录用户，解析失败则返回空对象，供判断是否车主。
+ */
 const savedUser = (() => {
   try { return JSON.parse(localStorage.getItem('current_user') || '{}') } catch { return {} }
 })()
+/**
+ * 当前登录用户是否是车主，用于切换车主和技师的移动端导航。
+ */
 const isOwner = computed(() => savedUser.role === 'OWNER')
 const ownerRoots = ['/m/book', '/m/progress']
 const techRoots = ['/m/report', '/m/queue']
+/**
+ * 不在移动端首页时显示返回按钮。
+ */
 const showBack = computed(() => !(isOwner.value ? ownerRoots : techRoots).includes(route.path))
+/**
+ * 在车主预约/进度或技师报修/队列等根页面显示底部页签。
+ */
 const showTabs = computed(() => (isOwner.value ? ownerRoots : techRoots).includes(route.path) || (isOwner.value && route.path.startsWith('/m/progress')))
+/**
+ * 取当前路由标题，没有则显示维修助手。
+ */
 const title = computed(() => route.meta?.title || '维修助手')
 
 const user = { name: savedUser.name || '用户' }

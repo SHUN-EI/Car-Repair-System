@@ -37,6 +37,7 @@ router = APIRouter()
 
 
 def _require_scheduler_token(token: str) -> None:
+    """校验定时任务调用带的调度令牌。未单独配置或仍是默认占位值时拒绝，避免用公开默认令牌触发调度。"""
     expected = (settings.SCHEDULER_TOKEN or "").strip()
     if not expected or expected == "sched_token_2026":
         raise HTTPException(status_code=503, detail="调度令牌未配置")
@@ -45,6 +46,7 @@ def _require_scheduler_token(token: str) -> None:
 
 
 def _internal_token_ok(token: Optional[str]) -> bool:
+    """用固定时间比较校验钉钉内部回调令牌，未配置或未传入时视为不通过。"""
     expected = (settings.DINGTALK_INTERNAL_TOKEN or "").strip()
     if not expected or not token:
         return False
@@ -52,10 +54,12 @@ def _internal_token_ok(token: Optional[str]) -> bool:
 
 
 def _status_value(status) -> str:
+    """把工单状态转成字符串，兼容枚举和普通字符串。"""
     return status.value if hasattr(status, "value") else str(status or "")
 
 
 def _load_tech_order(db: Session, work_order_id: int, user: User) -> WorkOrder:
+    """按 ID 加载工单，且必须落在当前用户的门店范围内，否则按 404 处理。"""
     wo = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not wo or not row_in_scope(resolve_store_scope(user), wo.store_id):
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -63,6 +67,7 @@ def _load_tech_order(db: Session, work_order_id: int, user: User) -> WorkOrder:
 
 
 def _claim_actor(wo: WorkOrder, user: User) -> None:
+    """校验当前用户有权处理这张工单：主管和管理员直接放行；其他人必须是被指派或当前维修员。若还没有维修员，则把当前用户记为维修员。"""
     role = role_name(user)
     if role in ("ADMIN", "SUPERVISOR"):
         return
@@ -73,6 +78,7 @@ def _claim_actor(wo: WorkOrder, user: User) -> None:
 
 
 def _walk_transitions(wo: WorkOrder, user: User, db: Session, targets: list[str]) -> list[str]:
+    """按目标状态列表依次尝试流转工单，来源记为钉钉技师端。遇到不允许的下一状态就停止，返回实际走到的状态列表。"""
     from app.domain.work_order_transition import do_transition as _do_transition
     from app.schemas import WorkOrderTransition
     moved = []
@@ -287,10 +293,12 @@ def dingtalk_oauth_callback(
 
 
 class DingTalkLoginRequest(BaseModel):
+    """钉钉免登请求体：前端拿到的授权码。"""
     code: str
 
 
 class DingTalkLoginResponse(BaseModel):
+    """钉钉登录成功后的返回：钉钉用户资料、推断角色，以及系统 JWT。"""
     userid: str
     name: str
     mobile: Optional[str] = ""
@@ -320,6 +328,7 @@ class CompletionReportRequest(BaseModel):
 
 
 class ContactSyncResponse(BaseModel):
+    """同步钉钉通讯录的结果：部门数、用户数、实际写入或更新的用户数和说明。"""
     total_departments: int
     total_users: int
     synced_users: int
@@ -757,6 +766,7 @@ _SHIFT_MAP = {
 
 
 def _cn_leave_type(v: str) -> str:
+    """把钉钉请假文案里的中文类型映射成系统请假类型，识别不出时默认年假。"""
     for k, val in _LEAVE_TYPE_MAP.items():
         if k in v:
             return val
@@ -764,6 +774,7 @@ def _cn_leave_type(v: str) -> str:
 
 
 def _cn_shift(v: str) -> str:
+    """把钉钉文案里的班次映射成系统班次，识别不出时默认全天。"""
     for k, val in _SHIFT_MAP.items():
         if k in v:
             return val
@@ -1001,6 +1012,7 @@ def _process_dispatch_card_action(sender_userid: str, correlation_id: str,
 
 
 def _find_or_create_user_by_dtuserid(db: Session, dt_userid: str):
+    """按钉钉 userid 查找已绑定用户；没有则尽量拉钉钉详情并推断角色后自动建号，建号失败时用技术员角色兜底。"""
     from app.models.user import User
     u = db.query(User).filter(User.dingtalk_userid == dt_userid).first()
     if u:
@@ -1270,6 +1282,7 @@ def _cmd_submit_leave(u, tail: str, db: Session) -> List[str]:
 
 
 def _cmd_approve_leave(current_user, lr_id: int, sub_id: int | None, comment: str | None, db: Session) -> List[str]:
+    """在钉钉侧批准请假：复用请假接口的审批逻辑，成功后通知申请人和顶岗人，并把结果格式化成卡片文案。失败不抛给机器人主循环。"""
     from app.schemas import LeaveRequestApprove
     from app.api.leave_requests import approve_leave_request as _fn
     try:
@@ -1294,6 +1307,7 @@ def _cmd_approve_leave(current_user, lr_id: int, sub_id: int | None, comment: st
 
 
 def _cmd_reject_leave(current_user, lr_id: int, reason: str, db: Session) -> List[str]:
+    """在钉钉侧拒绝请假：复用请假接口，成功后通知申请人，并把结果格式化成卡片文案。"""
     from app.schemas import LeaveRequestReject
     from app.api.leave_requests import reject_leave_request as _fn
     try:
@@ -1434,6 +1448,7 @@ def _notify_leave_result(db: Session, resp: Dict, status: str):
 # ====================================================================
 
 class ScheduleRunResult(BaseModel):
+    """定时调度执行结果：已推送条数、加急条数和明细说明。"""
     pushed: int = 0
     urgent: int = 0
     detail: List[Any] = []
@@ -1476,6 +1491,7 @@ def leave_daily_9am_task(token: str = Query(..., description="内部调度 token
              summary="[定时调用] 每小时检查一次：待审批超过 N 小时的加急 @ 主管")
 def leave_urgent_check(token: str = Query(..., description="调度 token"),
                        db: Session = Depends(get_db)):
+    """定时检查超过等待时限仍未审批的请假单，并向已绑定钉钉的主管或管理员推送加急提醒。需带有效调度令牌。"""
     from app.models.user import User, UserRole
     from app.models.leave_request import LeaveRequest, LeaveRequestStatus
     from app.core import sys_config as sys_conf
@@ -1511,6 +1527,7 @@ def leave_urgent_check(token: str = Query(..., description="调度 token"),
 # ============================================================
 
 class OASyncResult(BaseModel):
+    """与钉钉审批/OA 同步一次的结果：成功、跳过、失败计数和明细。"""
     synced: int = 0
     skipped: int = 0
     failed: int = 0

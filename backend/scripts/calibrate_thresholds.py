@@ -101,6 +101,7 @@ def _percentile(sorted_vals, p):
 
 
 def calibrate(queries, top_k):
+    """对一组代表性查询做无阈值的向量检索，统计每条查询和全部命中的余弦分数分位数，并打印建议的粗筛阈值。运行前会检查推理服务是否可用。"""
     check_inference_server()
     logger.info(f"推理服务正常，开始标定 {len(queries)} 条查询（每条 top_k={top_k}）...")
 

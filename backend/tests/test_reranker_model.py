@@ -22,6 +22,7 @@ def test_default_reranker_model_name_is_bge_v2_m3():
 
 
 def test_embedding_server_uses_flag_reranker_not_causal_lm():
+    """推理服务应使用 FlagReranker（BGE），而不是因果语言模型做重排。"""
     source = EMBEDDING_SERVER_PY.read_text(encoding="utf-8")
     assert "FlagReranker" in source
     assert "compute_score" in source and "normalize=True" in source
@@ -33,6 +34,7 @@ def test_embedding_server_uses_flag_reranker_not_causal_lm():
 
 
 def _have_inference_test_deps() -> bool:
+    """判断是否安装了运行重排接口测试所需的依赖。"""
     for name in ("fastapi", "loguru", "numpy", "pydantic", "pydantic_settings", "httpx"):
         if importlib.util.find_spec(name) is None:
             return False
@@ -41,16 +43,20 @@ def _have_inference_test_deps() -> bool:
 
 @pytest.mark.skipif(not _have_inference_test_deps(), reason="缺少 fastapi/loguru 等，跳过接口契约测试（不安装全局包）")
 def test_v1_rerank_response_is_index_and_normalized_score(monkeypatch):
+    """/v1/rerank 应返回文档下标和 0 到 1 的归一化分数。"""
     import app.core.embedding_server as es
     from fastapi.testclient import TestClient
 
     class FakeFlagReranker:
+        """假的重排器，返回固定分数，避免测试加载真实模型。"""
         def compute_score(self, pairs, normalize=True):
+            """按输入对数量返回预定的归一化分数。"""
             assert normalize is True, "必须使用 normalize=True，禁止输出原始 logit"
             # 模拟已归一化的 0~1 分（与 documents 同序）
             return [0.21, 0.94]
 
     def fake_load():
+        """拦截模型加载，换成假的 FlagReranker。"""
         es._reranker_model = FakeFlagReranker()
         es._reranker_kind = "flag"
 

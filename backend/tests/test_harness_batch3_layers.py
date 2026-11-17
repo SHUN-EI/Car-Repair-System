@@ -24,6 +24,7 @@ BANNED_SEARCH_FUNCS = frozenset({
 
 
 def _imported_modules(path: Path) -> list[tuple[int, str]]:
+    """从源码里解析出一个模块 import 了哪些 app 包。"""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
@@ -36,10 +37,12 @@ def _imported_modules(path: Path) -> list[tuple[int, str]]:
 
 
 def _is_api_module(mod: str) -> bool:
+    """判断导入路径是否属于 app.api，用于检查分层是否被破坏。"""
     return mod == "app.api" or mod.startswith("app.api.")
 
 
 def test_core_does_not_import_app_api():
+    """core 层不应反向导入 API 层。"""
     violations = []
     for path in sorted((APP / "core").rglob("*.py")):
         for lineno, mod in _imported_modules(path):
@@ -50,12 +53,14 @@ def test_core_does_not_import_app_api():
 
 
 def test_dingtalk_wo_card_uses_domain_transition():
+    """钉钉工单卡片的状态流转应调用领域层，而不是 API 里的接口函数。"""
     text = (APP / "core" / "dingtalk_wo_card.py").read_text(encoding="utf-8")
     assert "from app.api.work_orders import" not in text
     assert "from app.domain.work_order_transition import do_transition" in text
 
 
 def test_search_api_does_not_define_retrieval_orchestration():
+    """search API 文件里不应再实现检索编排细节。"""
     path = APP / "api" / "search.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     defined = {
@@ -77,6 +82,7 @@ def test_search_api_does_not_define_retrieval_orchestration():
 
 
 def test_search_orchestration_lives_in_search_app():
+    """检索编排应放在 search_app（rag 层）中。"""
     path = APP / "rag" / "search_app.py"
     assert path.is_file(), "缺少 app.rag.search_app"
     text = path.read_text(encoding="utf-8")
@@ -110,6 +116,7 @@ def test_search_orchestration_lives_in_search_app():
 
 
 def test_work_orders_reexports_transition_helpers():
+    """工单 API 可以再导出流转辅助函数，但实现应来自领域层。"""
     path = APP / "api" / "work_orders.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     # 路由模块不得再定义 _do_transition，但须从领域层再导出同名符号

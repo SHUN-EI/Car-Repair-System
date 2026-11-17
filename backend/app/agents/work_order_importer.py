@@ -33,6 +33,7 @@ from app.models.user import User
 # 状态定义
 # ============================================================
 class ImportState(TypedDict, total=False):
+    """历史工单 PDF 导入图的状态：文件路径、批次、解析文本、模型抽取出的字段、校验警告、错误信息和待确认记录 ID。"""
     pdf_path: str          # 当前 PDF 文件路径
     file_name: str         # 原始文件名
     batch_id: int          # 导入批次 id
@@ -50,6 +51,7 @@ _OCR = None  # 懒加载单例
 
 
 def _get_ocr():
+    """惰性创建 RapidOCR 实例并复用，避免每份 PDF 都重新加载模型。"""
     global _OCR
     if _OCR is None:
         from rapidocr_onnxruntime import RapidOCR
@@ -80,6 +82,7 @@ def _extract_pdf_text(pdf_path: str) -> str:
 
 
 def parse_node(state: ImportState) -> dict:
+    """从 PDF 抽出文本。解析失败、文本过短或可能是加密/纯图片时写入 error；成功则截断到 12000 字以控制后续模型 token。"""
     try:
         text = _extract_pdf_text(state.get("pdf_path") or "")
     except Exception as e:
@@ -97,6 +100,7 @@ _llm: Optional[ChatOpenAI] = None
 
 
 def _get_llm() -> ChatOpenAI:
+    """惰性构造低温、非流式对话模型，供把 OCR/文本结构化成工单字段。"""
     global _llm
     if _llm is None:
         _llm = make_chat_llm(
@@ -162,6 +166,7 @@ def _extract_work_order(text: str) -> Dict:
 
 
 def extract_node(state: ImportState) -> dict:
+    """调用模型把文本抽成工单字段。没有文本或抽取为空时记 error；并尝试把 OCR 常见的 W0- 误识修正为 WO-。"""
     text = state.get("text") or ""
     if not text:
         return {"error": "无文本可抽取"}
@@ -179,6 +184,7 @@ def extract_node(state: ImportState) -> dict:
 # 校验（工单号唯一 / 设备 / 用户匹配）
 # ============================================================
 def validate_node(state: ImportState) -> dict:
+    """校验抽取结果：工单号是否已存在、设备编码能否匹配设备库、维修员和报修人姓名能否对上用户，把问题记入 warnings，不在这一步创建正式工单。"""
     extracted = dict(state.get("extracted") or {})
     warnings: List[str] = []
     db = SessionLocal()
@@ -221,6 +227,7 @@ def validate_node(state: ImportState) -> dict:
 # 保存草稿（写入待确认记录）
 # ============================================================
 def save_draft_node(state: ImportState) -> dict:
+    """把抽取结果和警告存成 PENDING 的导入草稿，供人工确认后再生成正式工单。"""
     db = SessionLocal()
     try:
         item = WorkOrderImportItem(
@@ -242,6 +249,7 @@ def save_draft_node(state: ImportState) -> dict:
 
 
 def save_error_node(state: ImportState) -> dict:
+    """把解析或抽取失败的文件记成 ERROR 状态的导入记录，保留部分原文便于排查。"""
     db = SessionLocal()
     try:
         item = WorkOrderImportItem(
@@ -264,14 +272,17 @@ def save_error_node(state: ImportState) -> dict:
 # 图构建
 # ============================================================
 def _parse_success(state: ImportState) -> str:
+    """解析节点之后的条件边：没有 error 则进入抽取，否则直接保存错误记录。"""
     return "extract" if not state.get("error") else "save_error"
 
 
 def _extract_success(state: ImportState) -> str:
+    """抽取节点之后的条件边：有结构化结果则进入校验，否则保存错误记录。"""
     return "validate" if state.get("extracted") else "save_error"
 
 
 def build_import_graph():
+    """编译 PDF 导入 LangGraph：解析 → 抽取 → 校验 → 保存草稿，任一步失败则保存错误记录后结束。"""
     graph = StateGraph(ImportState)
     graph.add_node("parse", parse_node)
     graph.add_node("extract", extract_node)

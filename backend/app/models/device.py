@@ -1,3 +1,5 @@
+"""设备台账：工业维修车道使用的设备主数据，也容纳外部监控同步过来的运行状态。"""
+
 from sqlalchemy import Column, String, Date, Text, Integer, TIMESTAMP
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -5,6 +7,7 @@ from app.models.base import BaseModel
 
 
 class Device(BaseModel):
+    """设备主数据。device_code 全局唯一；run_status、heartbeat 和 fault_tags 等监控字段可由外部系统同步，不代替工单状态。"""
     __tablename__ = "devices"
 
     device_code = Column(String(50), unique=True, nullable=False, index=True)
@@ -32,4 +35,5 @@ class Device(BaseModel):
     work_orders = relationship("WorkOrder", back_populates="device")
 
     def __repr__(self):
+        """调试时输出设备主键、编码和名称。"""
         return f"<Device(device_code='{self.device_code}', device_name='{self.device_name}', status='{self.run_status}')>"

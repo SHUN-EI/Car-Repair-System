@@ -1,3 +1,8 @@
+"""数据模型汇总入口：把各业务表的 SQLAlchemy 模型集中导出，供接口、领域层和脚本统一 import。
+
+具体表结构和字段说明写在各自模块里；本文件只做重新导出，不定义新表。
+"""
+
 from app.models.device import Device
 from app.models.work_order import WorkOrder, WorkOrderStatus
 from app.models.knowledge import KnowledgeItem, KnowledgeStatus

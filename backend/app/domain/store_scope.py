@@ -16,21 +16,26 @@ STORE_ROLES = frozenset({"SUPERVISOR", "TECHNICIAN", "WORKER"})
 
 
 class StoreScopeError(Exception):
+    """解析或应用门店数据范围失败时抛出的业务异常，接口层通常转成 403。"""
     def __init__(self, message: str):
+        """保存可读的错误说明，供接口层放到 HTTP 响应里。"""
         super().__init__(message)
         self.message = message
 
 
 def role_name(user) -> str:
+    """取出用户角色的字符串名。兼容枚举（用 .value）和普通字符串两种存法，缺省时视为空串。"""
     role = getattr(user, "role", "") or ""
     return role.value if hasattr(role, "value") else str(role)
 
 
 def is_admin(user) -> bool:
+    """判断用户是否为管理员 ADMIN，管理员默认可看全部门店数据。"""
     return role_name(user) == "ADMIN"
 
 
 def is_store_role(user) -> bool:
+    """判断用户是否属于绑定门店的岗位（STORE_ROLES，如主管、技师、车间工人），这类角色默认只能看本店数据。"""
     return role_name(user) in STORE_ROLES
 
 
@@ -43,6 +48,10 @@ class StoreScope:
 
 
 def resolve_store_scope(user, requested_store_id: Optional[int] = None) -> StoreScope:
+    """根据角色和请求里的门店参数，得到本次查询应使用的数据范围。
+
+    管理员不带门店参数时是 all（全部门店），带参数则锁定到该店；门店角色优先用账号绑定的 store_id，没有绑定门店时退回 legacy（只看 store_id 为空的历史数据）。其它角色（含车主）当前也返回 all，调用方若需按客户档案收窄，要另外使用 owner_access。
+    """
     if is_admin(user):
         if requested_store_id:
             return StoreScope("store", int(requested_store_id))
@@ -56,6 +65,7 @@ def resolve_store_scope(user, requested_store_id: Optional[int] = None) -> Store
 
 
 def row_in_scope(scope: StoreScope, row_store_id: Optional[int]) -> bool:
+    """判断一行记录的 store_id 是否落在给定范围内。all 全部通过；legacy 只接受 store_id 为空的行；store 模式必须等于范围内的门店 ID。"""
     if scope.mode == "all":
         return True
     if scope.mode == "legacy":
@@ -64,6 +74,7 @@ def row_in_scope(scope: StoreScope, row_store_id: Optional[int]) -> bool:
 
 
 def apply_store_column(query, column, scope: StoreScope):
+    """把门店范围落到 SQLAlchemy 查询上：store 模式过滤为指定门店，legacy 过滤 store_id 为空，all 不加条件。"""
     if scope.mode == "store":
         return query.filter(column == scope.store_id)
     if scope.mode == "legacy":

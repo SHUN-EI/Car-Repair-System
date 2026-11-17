@@ -16,11 +16,13 @@ router = APIRouter()
 
 
 def _ensure_writer(current_user: User):
+    """主管不能修改车辆档案，否则返回 403，需由管理员操作。"""
     if current_user.role == "SUPERVISOR":
         raise HTTPException(status_code=403, detail="主管仅可查看车辆，如需修改请联系管理员")
 
 
 def _norm_plate(plate: str) -> str:
+    """规范化车牌：去空格并转大写。空车牌返回 400。"""
     value = (plate or "").strip().upper().replace(" ", "")
     if not value:
         raise HTTPException(status_code=400, detail="车牌号不能为空")
@@ -28,6 +30,7 @@ def _norm_plate(plate: str) -> str:
 
 
 def _norm_vin(vin: Optional[str]) -> Optional[str]:
+    """规范化 VIN：去空格转大写。空值视为未填写；填写了则必须是 17 位字母或数字。"""
     if vin is None:
         return None
     value = vin.strip().upper()
@@ -39,6 +42,7 @@ def _norm_vin(vin: Optional[str]) -> Optional[str]:
 
 
 def _ensure_owner(db: Session, owner_id: Optional[int]):
+    """若传入了车主客户 ID，校验该客户确实存在，否则返回 400。"""
     if owner_id is None:
         return
     if not db.query(Customer.id).filter(Customer.id == owner_id).first():
@@ -46,6 +50,7 @@ def _ensure_owner(db: Session, owner_id: Optional[int]):
 
 
 def _to_response(vehicle: Vehicle, owner_name: Optional[str] = None) -> VehicleResponse:
+    """把车辆模型转成接口返回，并可附上车主姓名。"""
     resp = VehicleResponse.model_validate(vehicle)
     resp.owner_name = owner_name
     return resp
@@ -60,6 +65,7 @@ def list_vehicles(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出车辆，可按车牌、VIN、品牌或车型关键词过滤。车主只能看到自己客户档案下的车辆；店员还可按 owner_id 筛选。"""
     query = db.query(Vehicle)
     if is_owner(current_user):
         ids = customer_ids_for_user(db, current_user)
@@ -97,6 +103,7 @@ def get_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按 ID 获取车辆详情并带上车主姓名。车主只能看自己名下的车辆，否则按 404 处理。"""
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="车辆不存在")
@@ -117,6 +124,7 @@ def create_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """新增车辆。主管不能写。车主创建时会绑定到自己的客户档案。车牌必填且全局唯一，VIN 若填写也必须唯一。"""
     _ensure_writer(current_user)
     plate = _norm_plate(data.plate)
     vin = _norm_vin(data.vin)
@@ -148,6 +156,7 @@ def update_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新车辆资料。车主只能改自己的车，且不能改所属车主。车牌和 VIN 的唯一性校验与创建时相同。"""
     _ensure_writer(current_user)
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
@@ -191,6 +200,7 @@ def delete_vehicle(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """删除车辆档案。车主不能删除；若已被工单或预约引用则拒绝删除以免破坏关联。"""
     _ensure_writer(current_user)
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:

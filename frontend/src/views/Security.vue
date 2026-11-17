@@ -250,6 +250,9 @@ const phoneForm = reactive({ phone: '', code: '' })
 
 let phoneTimer = null
 
+/**
+ * 加载当前账号的手机绑定状态。
+ */
 const loadPhoneBind = () => {
   try {
     const saved = localStorage.getItem('phone_bind_info')
@@ -277,6 +280,9 @@ const loadPhoneBind = () => {
   } catch { /* ignore */ }
 }
 
+/**
+ * 发送用于绑定手机的短信验证码。
+ */
 const sendBindCode = async () => {
   if (!phoneForm.phone || phoneForm.phone.length < 11) {
     ElMessage.warning('请输入正确的手机号')
@@ -301,6 +307,9 @@ const sendBindCode = async () => {
   }, 1000)
 }
 
+/**
+ * 提交验证码，完成手机号绑定。
+ */
 const handleBindPhone = async () => {
   if (!phoneForm.phone || !phoneForm.code) {
     ElMessage.warning('请填写完整信息')
@@ -346,6 +355,9 @@ const pwdForm = reactive({ old_password: '', new_password: '', confirm_password:
 const pwdCodeForm = reactive({ code: '', new_password: '', confirm_password: '' })
 const pwdCodeCountdown = ref(0)
 let pwdCodeTimer = null
+/**
+ * 校验修改密码时两次输入是否一致。
+ */
 const validateConfirm = (rule, value, callback) => {
   if (value !== pwdForm.new_password) {
     callback(new Error('两次输入的密码不一致'))
@@ -365,6 +377,9 @@ const pwdRules = {
   ],
 }
 
+/**
+ * 提交旧密码和新密码，完成修改。
+ */
 const handleChangePassword = async () => {
   const valid = await pwdFormRef.value.validate().catch(() => false)
   if (!valid) return
@@ -398,6 +413,9 @@ const pwdCodeRules = {
   ],
 }
 
+/**
+ * 发送用于重置密码的短信验证码。
+ */
 const sendPwdResetCode = async () => {
   if (!boundPhone.value) {
     ElMessage.warning('请先绑定手机号')
@@ -422,6 +440,9 @@ const sendPwdResetCode = async () => {
   }, 1000)
 }
 
+/**
+ * 用验证码重置密码。
+ */
 const handleResetPasswordByCode = async () => {
   const valid = await pwdCodeFormRef.value.validate().catch(() => false)
   if (!valid) return
@@ -522,6 +543,9 @@ const dtBindCountdown = ref(120)
 let dtBindPollTimer = null
 let dtBindRefreshTimer = null
 
+/**
+ * 清理钉钉绑定扫码的轮询定时器。
+ */
 const cleanupBindScan = (opts = {}) => {
   // 默认只清轮询定时器；倒计时定时器保留（条件渲染不会显示文字），只有传 full=true 才全部清
   const { full = false } = opts
@@ -533,11 +557,17 @@ const cleanupBindScan = (opts = {}) => {
   }
 }
 
+/**
+ * 打开钉钉绑定对话框。
+ */
 const openBindDingTalk = () => {
   bindDialogVisible.value = true
   initBindScan()
 }
 
+/**
+ * 初始化钉钉绑定二维码并开始轮询。
+ */
 const initBindScan = () => {
   // 先完整清理：清所有定时器 + 重置状态，然后启动新二维码
   cleanupBindScan({ full: true })
@@ -584,6 +614,9 @@ const initBindScan = () => {
     .finally(() => { dtBindLoading.value = false })
 }
 
+/**
+ * 轮询钉钉扫码绑定状态。
+ */
 const pollBindStatus = async () => {
   if (!dtBindState.value) return
   try {
@@ -606,6 +639,9 @@ const pollBindStatus = async () => {
   } catch { /* 静默忽略轮询错误 */ }
 }
 
+/**
+ * 扫码成功后确认把钉钉账号绑到当前用户。
+ */
 const confirmBindDingTalk = async () => {
   if (dtBindStatus.value !== 'scanned') return
   dtBindConfirming.value = true
@@ -629,6 +665,9 @@ const confirmBindDingTalk = async () => {
   }
 }
 
+/**
+ * 解除当前账号与钉钉的绑定。
+ */
 const unbindDingTalk = async () => {
   try {
     await ElMessageBox.confirm('解绑后无法接收钉钉派工/进度通知，是否继续？', '解绑确认', { type: 'warning' })

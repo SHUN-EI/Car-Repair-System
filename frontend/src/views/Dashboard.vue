@@ -228,10 +228,16 @@ const stats = ref({
   total_spare_parts: 0,
   device_monitor: { online: 0, offline: 0, alarm: 0, fault: 0, unknown: 0, with_fault_tags: 0 },
 })
+/**
+ * 设备监控统计数据的快捷引用。
+ */
 const dm = computed(() => stats.value.device_monitor)
 const recentOrders = ref([])
 const alertItems = ref([])
 
+/**
+ * 知识条目和手册码数量合计，用于驾驶舱展示。
+ */
 const knowledgeContentTotal = computed(() => {
   return (stats.value.total_knowledge || 0) + (stats.value.total_manual_codes || 0)
 })
@@ -248,9 +254,18 @@ const statusMap = {
   CLOSED: '已结案',
   CANCELLED: '已取消',
 }
+/**
+ * 把工单状态码转成中文标签。
+ */
 const statusLabel = (s) => statusMap[s] || s
+/**
+ * 把时间格式化成页面展示文案。
+ */
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
+/**
+ * 拉取驾驶舱统计数字。
+ */
 const fetchStats = async () => {
   try {
     const res = await request.get('/dashboard/stats')
@@ -281,6 +296,9 @@ const fetchStats = async () => {
   } catch { /* handled */ }
 }
 
+/**
+ * 拉取最近工单列表。
+ */
 const fetchRecentOrders = async () => {} // 已合并到 fetchStats
 
 onMounted(() => { fetchStats() })

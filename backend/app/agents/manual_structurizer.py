@@ -86,6 +86,7 @@ def structurize_manual_text(
 def _clean_entry(e: dict) -> dict:
     """字段白名单 + 类型规整，防 LLM 输出脏字段"""
     def _str(v, default=""):
+        """把手册条目里的字段安全转成字符串；非字符串则返回默认空串，避免脏数据进入结构化结果。"""
         return v if isinstance(v, str) else default
 
     conditions = e.get("conditions")

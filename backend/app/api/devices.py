@@ -1,3 +1,5 @@
+"""设备档案与外部监控同步接口：店内增删改查设备，外部系统用密钥或签名上报运行状态和故障标签。"""
+
 import hashlib
 import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -41,6 +43,7 @@ def _device_sync_ok(api_key: Optional[str], signature: Optional[str], body: byte
 
 
 def _require_device_sync(api_key: Optional[str], signature: Optional[str], body: bytes) -> None:
+    """校验外部同步请求的 API Key 或签名。未配置密钥时返回 503，校验失败返回 401。"""
     if not (settings.DEVICE_SYNC_API_KEY or "").strip():
         raise HTTPException(status_code=503, detail="设备同步未配置 DEVICE_SYNC_API_KEY")
     if not _device_sync_ok(api_key, signature, body):
@@ -48,6 +51,7 @@ def _require_device_sync(api_key: Optional[str], signature: Optional[str], body:
 
 
 def _device_to_dict(d: Device) -> dict:
+    """把设备模型按表字段转成普通字典。"""
     data = {c.name: getattr(d, c.name) for c in d.__table__.columns}
     return data
 
@@ -63,6 +67,7 @@ def list_devices(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出设备，可按类型、运行状态、是否带故障标签以及名称/编码关键词过滤。需登录。"""
     query = db.query(Device)
     if device_type:
         query = query.filter(Device.device_type == device_type)
@@ -93,6 +98,7 @@ def list_devices(
 
 @router.get("/{device_id}", response_model=DeviceResponse, summary="获取设备详情")
 def get_device(device_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取设备，不存在返回 404。"""
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
@@ -105,6 +111,7 @@ def create_device(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """创建设备。纯主管不能写。设备编码必须唯一。"""
     _ensure_not_pure_supervisor(current_user)
     existing = db.query(Device).filter(Device.device_code == data.device_code).first()
     if existing:
@@ -123,6 +130,7 @@ def update_device(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新设备资料。纯主管不能写。只写入请求中明确给出的字段。"""
     _ensure_not_pure_supervisor(current_user)
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
@@ -140,6 +148,7 @@ def delete_device(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """删除设备。纯主管不能写。设备不存在返回 404。"""
     _ensure_not_pure_supervisor(current_user)
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
@@ -197,6 +206,7 @@ def get_device_maintenance_summary(
 
 
 class DeviceMonitorStats(BaseModel):
+    """设备监控汇总：总数、在线/离线/告警/故障/未知数量，以及带故障标签的台数。"""
     total: int
     online: int
     offline: int
@@ -212,6 +222,7 @@ def get_device_monitor_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按运行状态统计设备数量，可再按设备类型过滤。"""
     query = db.query(Device)
     if device_type:
         query = query.filter(Device.device_type == device_type)
@@ -238,6 +249,7 @@ def get_device_monitor_stats(
 # ---- 批量同步状态（外部系统唯一入口：统一参数、统一判定、统一幂等） ----
 
 class DeviceStatusSyncItem(BaseModel):
+    """外部同步一条设备状态：可用外部系统 ID、设备编码或内部 ID 匹配，并带上运行状态和心跳时间。"""
     ext_system_id: Optional[str] = None
     device_code: Optional[str] = None
     device_id: Optional[int] = None
@@ -248,6 +260,7 @@ class DeviceStatusSyncItem(BaseModel):
 
 
 class DeviceStatusSyncResponse(BaseModel):
+    """批量同步结果：成功数、失败数，以及每条失败的原因。"""
     success: int
     failed: int
     failures: List[dict] = []
@@ -261,6 +274,7 @@ async def sync_device_status(
     x_device_sync_key: Optional[str] = Header(None, alias="X-Device-Sync-Key"),
     x_device_sync_signature: Optional[str] = Header(None, alias="X-Device-Sync-Signature"),
 ):
+    """外部故障上报系统批量同步设备运行状态。需带同步密钥或签名。匹配优先级为外部系统 ID、设备编码、内部 ID；状态非法或找不到设备计入 failures。"""
     _require_device_sync(x_device_sync_key, x_device_sync_signature, await request.body())
     """
     中心化同步入口：给外部故障上报系统调用。
@@ -310,6 +324,7 @@ async def sync_device_status(
 # ---- 故障标签上报（外部系统标故障时调用，同步到这里） ----
 
 class FaultTag(BaseModel):
+    """一条设备故障标签：编码、名称、级别和触发时间。"""
     code: str
     name: str
     level: Optional[str] = "WARNING"  # INFO / WARNING / ERROR / CRITICAL
@@ -318,6 +333,7 @@ class FaultTag(BaseModel):
 
 
 class FaultTagReport(BaseModel):
+    """外部上报故障标签的请求：用外部系统 ID、编码或内部 ID 定位设备；可选择覆盖已有标签或去重合并。"""
     ext_system_id: Optional[str] = None
     device_code: Optional[str] = None
     device_id: Optional[int] = None
@@ -333,6 +349,7 @@ async def report_fault_tags(
     x_device_sync_key: Optional[str] = Header(None, alias="X-Device-Sync-Key"),
     x_device_sync_signature: Optional[str] = Header(None, alias="X-Device-Sync-Signature"),
 ):
+    """外部系统把故障标签写到设备上。需带同步密钥或签名。找不到设备返回 404。可覆盖或与已有标签按编码去重合并。"""
     _require_device_sync(x_device_sync_key, x_device_sync_signature, await request.body())
     """
     外部故障上报系统标故障时调用：把故障标签同步到设备上。

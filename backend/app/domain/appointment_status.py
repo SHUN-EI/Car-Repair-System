@@ -19,10 +19,12 @@ APPOINTMENT_TRANSITIONS: Dict[str, List[str]] = {
 
 
 def appointment_targets(status: str) -> List[str]:
+    """返回当前预约状态允许转入的目标状态列表；未知状态返回空列表。"""
     return list(APPOINTMENT_TRANSITIONS.get(status or "", []))
 
 
 def is_allowed_appointment_transition(from_status: str, to_status: str) -> bool:
+    """校验预约状态迁移是否合法。目标与当前相同视为允许（幂等，不视为一次真正流转）。"""
     if from_status == to_status:
         return True
     return to_status in appointment_targets(from_status)

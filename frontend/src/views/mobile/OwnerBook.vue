@@ -75,15 +75,27 @@ const plate = ref('')
 const make = ref('')
 const model = ref('')
 
+/**
+ * 把车辆信息格式化成展示文案。
+ */
 const vehicleText = (item) => [item.plate, item.make, item.model].filter(Boolean).join(' ')
+/**
+ * 把预约时段格式化成展示文案。
+ */
 const timeText = (value) => (value || '').slice(11, 16)
 
+/**
+ * 加载当前车主的车辆列表。
+ */
 const loadVehicles = async () => {
   const res = await request.get('/vehicles/', { params: { page_size: 50 } })
   vehicles.value = res.items || []
   if (!vehicleId.value && vehicles.value.length) vehicleId.value = String(vehicles.value[0].id)
 }
 
+/**
+ * 加载可预约的工位时段。
+ */
 const loadSlots = async () => {
   picked.value = null
   slots.value = []
@@ -97,6 +109,9 @@ const loadSlots = async () => {
   }
 }
 
+/**
+ * 为车主新增一辆车后再继续预约。
+ */
 const createVehicle = async () => {
   if (!plate.value.trim()) return
   creating.value = true
@@ -115,6 +130,9 @@ const createVehicle = async () => {
   }
 }
 
+/**
+ * 提交预约。
+ */
 const book = async () => {
   message.value = ''
   if (!picked.value || !vehicleId.value) {

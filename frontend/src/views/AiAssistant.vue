@@ -355,6 +355,9 @@ import {
 } from '@element-plus/icons-vue'
 import request from '../api'
 
+/**
+ * 按当前用户生成会话在本地缓存中的存储键，避免不同账号共用一份聊天记录。
+ */
 const getStorageKey = () => {
   try {
     const raw = localStorage.getItem('current_user')
@@ -380,12 +383,18 @@ const sourceDialog = reactive({ visible: false, item: null })
 
 // ===== 追踪模式 =====
 const repairMode = ref('qa')
+/**
+ * 按当前模式返回欢迎区标题。
+ */
 const welcomeTitle = computed(() => {
   if (repairMode.value === 'guided') return '追踪维修模式'
   if (repairMode.value === 'expert') return '专家问答模式'
   if (repairMode.value === 'consult') return '车主问诊'
   return '向咨询 / 引导 Agent 提问'
 })
+/**
+ * 按当前模式返回欢迎区说明文案。
+ */
 const welcomeText = computed(() => {
   if (repairMode.value === 'guided') return '描述设备故障现象，AI 将逐步引导排查和维修'
   if (repairMode.value === 'expert') return 'AI 多轮智能检索知识库，先给出深入分析，再像老师傅一样逐步引导排查'
@@ -436,6 +445,9 @@ const modeIntroCards = [
 // ===== 模式介绍折叠面板（记住用户的展开/收起选择） =====
 const MODE_INTRO_KEY = 'ai_mode_intro_collapsed'
 const modeIntroExpanded = ref(localStorage.getItem(MODE_INTRO_KEY) !== '1')
+/**
+ * 展开或收起当前模式的说明文案。
+ */
 const toggleModeIntro = () => {
   modeIntroExpanded.value = !modeIntroExpanded.value
   localStorage.setItem(MODE_INTRO_KEY, modeIntroExpanded.value ? '0' : '1')
@@ -486,6 +498,9 @@ const saveSessions = () => {
   }
 }
 
+/**
+ * 从本地缓存恢复问答、引导或专家会话列表。
+ */
 const loadSessions = () => {
   try {
     const raw = localStorage.getItem(getStorageKey())
@@ -574,6 +589,9 @@ const filteredSessions = computed(() => {
   )
 })
 
+/**
+ * 把会话列表按今天、昨天和更早的日期分组。
+ */
 const groupedSessions = computed(() => {
   const groups = []
   const today = [], yesterday = []
@@ -605,6 +623,9 @@ const scrollToBottom = async () => {
   }
 }
 
+/**
+ * 把助手回复里的 Markdown 转成可展示的 HTML。
+ */
 const renderMarkdown = (text) => {
   if (!text) return ''
   let html = text
@@ -618,18 +639,27 @@ const renderMarkdown = (text) => {
   return `<p style="margin:0;">${html}</p>`
 }
 
+/**
+ * 按置信度返回对应的样式类名。
+ */
 const getConfidenceClass = (score) => {
   if (score >= 0.7) return 'high'
   if (score >= 0.4) return 'medium'
   return 'low'
 }
 
+/**
+ * 格式化消息时间。
+ */
 const formatTime = (d) => {
   const h = d.getHours().toString().padStart(2, '0')
   const m = d.getMinutes().toString().padStart(2, '0')
   return `${h}:${m}`
 }
 
+/**
+ * 把日期格式化成会话列表上的分组标签。
+ */
 const formatDateLabel = (d) => {
   return `${d.getMonth() + 1}月${d.getDate()}日`
 }
@@ -656,6 +686,9 @@ const startNewChat = (type = 'qa') => {
   saveSessions()
 }
 
+/**
+ * 切换到指定会话并展示其消息。
+ */
 const switchSession = async (s) => {
   activeSessionId.value = s.id
   currentSession.value = s
@@ -666,6 +699,9 @@ const switchSession = async (s) => {
   await scrollToBottom()
 }
 
+/**
+ * 删除一个会话；若删的是当前会话则切到剩下的第一个。
+ */
 const deleteSession = (id) => {
   sessions.value = sessions.value.filter(s => s.id !== id)
   if (activeSessionId.value === id) {
@@ -675,6 +711,9 @@ const deleteSession = (id) => {
   saveSessions()
 }
 
+/**
+ * 新建一个追踪维修（引导）会话。
+ */
 const startNewGuidedChat = () => {
   sessionIdCounter.value++
   const id = `session_${sessionIdCounter.value}`
@@ -697,6 +736,9 @@ const startNewGuidedChat = () => {
   saveSessions()
 }
 
+/**
+ * 新建一个专家问答会话。
+ */
 const startNewExpertChat = () => {
   sessionIdCounter.value++
   const id = `session_${sessionIdCounter.value}`
@@ -724,6 +766,9 @@ const startRename = (s) => {
   editingTitleValue.value = s.title
 }
 
+/**
+ * 保存会话标题的重命名。
+ */
 const saveRename = (s) => {
   const val = editingTitleValue.value.trim()
   if (val) {
@@ -734,6 +779,9 @@ const saveRename = (s) => {
   editingTitleValue.value = ''
 }
 
+/**
+ * 取消标题编辑，恢复原标题。
+ */
 const cancelRename = () => {
   editingTitleId.value = null
   editingTitleValue.value = ''
@@ -745,11 +793,17 @@ const COMPRESS_KEEP_LATEST = 8       // 保留最新的 N 条消息不压缩
 const COMPRESS_BATCH = 8             // 每次压缩多少条旧消息
 const expandedSummaries = ref({})    // { sessionId_msgIdx: true/false }
 
+/**
+ * 展开或收起某条会话摘要。
+ */
 const toggleSummaryExpand = (sessionId, msgIdx) => {
   const key = `${sessionId}_${msgIdx}`
   expandedSummaries.value[key] = !expandedSummaries.value[key]
 }
 
+/**
+ * 会话消息过多时，把较早的对话压缩成摘要并保留最近几条。
+ */
 const compressSession = async (session) => {
   if (!session || session._summarizing) return
 
@@ -815,6 +869,9 @@ const sendMessage = (text) => {
   handleSend()
 }
 
+/**
+ * 发送当前输入。若还没有会话，会按模式先新建引导或普通问答会话。
+ */
 const handleSend = async () => {
   const text = inputText.value.trim()
   if (!text || sending.value) return

@@ -1,3 +1,5 @@
+"""配件目录（SKU 主数据）。库存数量仍记在 spare_parts，这里只放编码、规格和目录价格。"""
+
 from sqlalchemy import Column, String, Float, Boolean
 from app.models.base import BaseModel
 
@@ -17,4 +19,5 @@ class PartSku(BaseModel):
     is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
 
     def __repr__(self):
+        """调试时输出 SKU 主键、编码和名称。"""
         return f"<PartSku(code='{self.code}', name='{self.name}')>"

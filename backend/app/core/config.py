@@ -1,3 +1,5 @@
+"""应用配置：从 backend/.env 加载，并按 CHAT_LLM_MODE 在云端千问、本地 vLLM 和兼容 DeepSeek 之间解析对话模型参数。"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 from pathlib import Path
@@ -8,6 +10,7 @@ _ENV_FILE = str(Path(__file__).resolve().parent.parent.parent / ".env")
 
 class Settings(BaseSettings):
     # 强制用绝对路径加载 .env，避免相对路径依赖 CWD 导致 uvicorn worker 读取不到配置
+    """全局配置对象。用绝对路径加载 .env，避免 uvicorn worker 因工作目录不同而读不到文件；未出现在模型里的环境变量会被忽略。数据库和 Redis 的完整 URL 若未填写，会在初始化时用主机、端口和账号拼出来。"""
     model_config = SettingsConfigDict(env_file=_ENV_FILE, case_sensitive=True, extra="ignore")
     # 应用配置
     APP_NAME: str = "Smart-Repair-System"
@@ -146,6 +149,7 @@ class Settings(BaseSettings):
     MCP_ENABLE_WRITE_TOOLS: bool = False  # 默认不把写工具挂到 HTTP MCP
 
     def __init__(self, **kwargs):
+        """加载环境变量后，补全 DATABASE_URL、REDIS_URL；若公网地址仍是默认的本机 8000，则尝试自动探测实际对外地址。"""
         super().__init__(**kwargs)
         if not self.DATABASE_URL:
             self.DATABASE_URL = f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
@@ -169,11 +173,13 @@ class Settings(BaseSettings):
 
     @property
     def milvus_connection(self) -> str:
+        """把 Milvus 主机和端口拼成 host:port，供向量库客户端连接。"""
         return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
 
 
     @staticmethod
     def _normalize_chat_llm_mode(raw: str) -> str:
+        """把 CHAT_LLM_MODE 规范成 cloud / local / deepseek。空值按 cloud；其它值抛出 ValueError。"""
         mode = (raw or "cloud").strip().lower()
         if not mode:
             return "cloud"
@@ -185,10 +191,12 @@ class Settings(BaseSettings):
 
     @property
     def chat_llm_mode(self) -> str:
+        """返回规范化后的对话模型模式，供工厂和启动日志使用。"""
         return self._normalize_chat_llm_mode(self.CHAT_LLM_MODE)
 
     @property
     def chat_llm_base_url(self) -> str:
+        """按当前模式返回对话接口根地址：本地走 vLLM，deepseek 走旧兼容配置，默认走云端千问兼容地址。"""
         mode = self.chat_llm_mode
         if mode == "local":
             return (self.CHAT_LOCAL_BASE_URL or "").strip()
@@ -198,6 +206,7 @@ class Settings(BaseSettings):
 
     @property
     def chat_llm_model(self) -> str:
+        """按当前模式返回对话模型名：本地默认 Qwen2.5-7B-Instruct，云端默认 qwen-plus，deepseek 走旧配置。"""
         mode = self.chat_llm_mode
         if mode == "local":
             return (self.CHAT_LOCAL_MODEL or "").strip()
@@ -207,6 +216,7 @@ class Settings(BaseSettings):
 
     @property
     def chat_llm_api_key(self) -> str:
+        """按当前模式返回密钥。本地模式若未配则用 dummy（vLLM 通常不校验）；云端优先 CHAT_CLOUD_API_KEY，其次 DASHSCOPE_API_KEY。"""
         mode = self.chat_llm_mode
         if mode == "local":
             return (self.CHAT_LOCAL_API_KEY or "dummy").strip()
@@ -216,6 +226,7 @@ class Settings(BaseSettings):
 
     @property
     def chat_llm_configured(self) -> bool:
+        """判断当前模式是否已具备调用条件：本地看地址和模型名，云端或 deepseek 看是否已配置密钥。"""
         if self.chat_llm_mode == "local":
             return bool(self.chat_llm_base_url and self.chat_llm_model)
         return bool(self.chat_llm_api_key)

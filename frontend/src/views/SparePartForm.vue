@@ -91,6 +91,9 @@ import request from '../api'
 
 const route = useRoute()
 const router = useRouter()
+/**
+ * 当前是否处于新增配件。
+ */
 const isNew = computed(() => !route.params.id || route.params.id === 'new')
 const saving = ref(false)
 
@@ -100,6 +103,9 @@ const form = ref({
   device_type: '', location: '', supplier: '', fitment: []
 })
 
+/**
+ * 编辑时加载配件详情。
+ */
 const loadData = async () => {
   if (isNew.value) return
   const res = await request.get(`/spare-parts/${route.params.id}`)
@@ -113,6 +119,9 @@ const loadData = async () => {
   }))
 }
 
+/**
+ * 新增或保存配件档案。
+ */
 const handleSave = async () => {
   saving.value = true
   try {

@@ -28,22 +28,27 @@ router = APIRouter()
 
 
 def _role(user: User) -> str:
+    """取出用户角色字符串，兼容枚举和普通字符串两种存法。"""
     return user.role.value if hasattr(user.role, "value") else str(user.role or "")
 
 
 def _staff(user: User) -> bool:
+    """判断是否为可出具或修改报价的门店人员（管理员、主管或维修员）。"""
     return _role(user) in {"ADMIN", "SUPERVISOR", "TECHNICIAN"}
 
 
 def _can_staff_confirm(user: User) -> bool:
+    """判断是否为可确认或代录确认的主管/管理员。"""
     return _role(user) in {"ADMIN", "SUPERVISOR"}
 
 
 def _raise_quote(exc: QuoteError):
+    """把报价领域异常转成对应 HTTP 状态码和错误说明。"""
     raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 def _to_response(quote: Quote, notify: Optional[dict] = None):
+    """把报价单转成接口返回，带状态中文、允许的下一步和明细；若有通知结果则包在动作响应里一起返回。"""
     payload = QuoteResponse(
         id=quote.id,
         quote_no=quote.quote_no,
@@ -70,6 +75,7 @@ def _to_response(quote: Quote, notify: Optional[dict] = None):
 
 
 def _get_quote(db: Session, quote_id: int) -> Quote:
+    """按 ID 加载报价单，不存在返回 404。"""
     row = db.query(Quote).filter(Quote.id == quote_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="报价单不存在")
@@ -77,6 +83,7 @@ def _get_quote(db: Session, quote_id: int) -> Quote:
 
 
 def _owner_can_see(db: Session, user: User, quote: Quote) -> bool:
+    """判断车主能否看到这张报价：报价关联的客户或车辆属于其客户档案。"""
     ids = set(customer_ids_for_user(db, user))
     if quote.customer_id and quote.customer_id in ids:
         return True
@@ -88,6 +95,7 @@ def _owner_can_see(db: Session, user: User, quote: Quote) -> bool:
 
 
 def _quote_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+    """解析当前用户的门店范围，可从参数或请求头 X-Store-Id 指定门店。"""
     requested = store_id
     if requested is None and x_store_id and str(x_store_id).strip().isdigit():
         requested = int(str(x_store_id).strip())
@@ -98,6 +106,7 @@ def _quote_scope(user: User, store_id: Optional[int] = None, x_store_id: Optiona
 
 
 def _ensure_visible(db: Session, user: User, quote: Quote):
+    """校验报价对当前用户可见：车主必须能对上自己的档案，店员必须在门店范围内，否则按 404 处理。"""
     if is_owner(user) and not _owner_can_see(db, user, quote):
         raise HTTPException(status_code=404, detail="报价单不存在")
     if not row_in_scope(_quote_scope(user), quote.store_id):
@@ -115,6 +124,7 @@ def list_quotes(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出报价单，可按工单和状态过滤。店员按门店范围；车主只能看到与自己客户或名下车辆相关的报价。"""
     query = apply_store_column(db.query(Quote), Quote.store_id, _quote_scope(current_user, store_id, x_store_id))
     if work_order_id:
         query = query.filter(Quote.work_order_id == work_order_id)
@@ -144,6 +154,7 @@ def draft_quote(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """门店人员出具草稿报价。价格由规则引擎和目录计算，不由模型定价。关联工单必须在可写门店范围内，写操作先经工单 Agent 声明权限。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="车主不能出具报价")
     if data.work_order_id:
@@ -181,6 +192,7 @@ def draft_quote(
 
 @router.get("/{quote_id}", response_model=QuoteResponse, summary="报价单详情")
 def get_quote(quote_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """获取报价单详情，不可见时按 404 处理。"""
     quote = _get_quote(db, quote_id)
     _ensure_visible(db, current_user, quote)
     return _to_response(quote)
@@ -193,6 +205,7 @@ def create_line(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """门店人员向草稿报价手工追加一行明细，并重算合计。车主不能改明细。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="车主不能修改报价明细")
     quote = _get_quote(db, quote_id)
@@ -210,6 +223,7 @@ def remove_line(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """门店人员删除报价中的一行明细，并重算合计。车主不能改明细。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="车主不能修改报价明细")
     quote = _get_quote(db, quote_id)
@@ -221,6 +235,7 @@ def remove_line(
 
 
 def _after_status(db: Session, quote: Quote, label: str, title: str):
+    """报价状态变化后通知车主，标题和状态文案由调用方指定。"""
     return notify_owner(
         db,
         customer_id=quote.customer_id,
@@ -234,6 +249,7 @@ def _after_status(db: Session, quote: Quote, label: str, title: str):
 
 @router.post("/{quote_id}/staff-confirm", response_model=QuoteActionResponse, summary="店员确认报价")
 def staff_confirm(quote_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """主管或管理员把草稿报价确认为待车主确认，并通知车主。"""
     if not _can_staff_confirm(current_user):
         raise HTTPException(status_code=403, detail="仅主管或管理员可确认报价")
     quote = _get_quote(db, quote_id)
@@ -252,6 +268,7 @@ def customer_confirm(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """车主确认报价，或由主管/管理员代录确认。其他人不能做确认。成功后通知车主。"""
     data = data or CustomerConfirmRequest()
     quote = _get_quote(db, quote_id)
     if is_owner(current_user):
@@ -272,6 +289,7 @@ def customer_confirm(
 
 @router.post("/{quote_id}/reject", response_model=QuoteActionResponse, summary="拒绝报价")
 def reject_quote(quote_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """车主、主管或管理员拒绝报价。车主只能拒绝自己可见的报价。成功后发出通知。"""
     quote = _get_quote(db, quote_id)
     if is_owner(current_user):
         if not _owner_can_see(db, current_user, quote):
@@ -288,6 +306,7 @@ def reject_quote(quote_id: int, db: Session = Depends(get_db), current_user: Use
 
 @router.post("/{quote_id}/cancel", response_model=QuoteResponse, summary="取消报价")
 def cancel_quote(quote_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """门店人员取消报价单。车主不能取消，如需反对应使用拒绝。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="车主不能取消报价单，如需拒绝请使用拒绝")
     quote = _get_quote(db, quote_id)

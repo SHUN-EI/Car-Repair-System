@@ -129,10 +129,16 @@ import request from '../api'
 
 const route = useRoute()
 const router = useRouter()
+/**
+ * 当前是否处于新增设备，而不是编辑已有设备。
+ */
 const isNew = computed(() => !route.params.id || route.params.id === 'new')
 const saving = ref(false)
 const activeTab = ref('basic')
 
+/**
+ * 把设备类型树压平，方便下拉框选择。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -170,6 +176,9 @@ watch(
   },
   { immediate: true }
 )
+/**
+ * 在表单中追加一条故障记录。
+ */
 const addFault = () => faultList.value.push({ level: 'WARNING', code: '', name: '', message: '', triggered_at: new Date().toISOString() })
 
 const monitorExtraRaw = ref('')
@@ -186,6 +195,9 @@ watch(monitorExtraRaw, (val) => {
   try { JSON.parse(val); monitorExtraInvalid.value = false } catch { monitorExtraInvalid.value = true }
 })
 
+/**
+ * 编辑时按编号加载设备详情。
+ */
 const loadData = async () => {
   if (isNew.value) return
   const res = await request.get(`/devices/${route.params.id}`)
@@ -198,6 +210,9 @@ const loadData = async () => {
   monitorExtraRaw.value = res.monitor_extra != null ? JSON.stringify(res.monitor_extra, null, 2) : ''
 }
 
+/**
+ * 新增或保存设备档案。
+ */
 const handleSave = async () => {
   saving.value = true
   try {

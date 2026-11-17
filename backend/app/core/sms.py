@@ -9,6 +9,7 @@ class SMSService:
     """短信发送服务，封装阿里云 SMS SDK"""
 
     def __init__(self):
+        """初始化短信服务。默认关闭客户端，是否启用取决于配置项 SMS_ENABLED。"""
         self._client = None
         self._enabled = settings.SMS_ENABLED
 

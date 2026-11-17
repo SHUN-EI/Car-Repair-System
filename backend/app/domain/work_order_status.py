@@ -110,12 +110,14 @@ STATUS_LABELS: Dict[str, str] = {
 
 
 def status_value(status) -> Optional[str]:
+    """把工单状态规范成枚举的字符串值；空值返回 None，已是字符串则原样返回。"""
     if status is None:
         return None
     return status.value if hasattr(status, "value") else str(status)
 
 
 def allowed_transitions(status) -> List[str]:
+    """返回当前工单状态在状态机里允许转入的目标状态列表；空状态或未知状态返回空列表。"""
     key = status_value(status)
     if not key:
         return []
@@ -123,6 +125,7 @@ def allowed_transitions(status) -> List[str]:
 
 
 def is_allowed_transition(from_status, to_status: str) -> bool:
+    """判断工单是否允许从 from_status 转到 to_status，依据是 VALID_TRANSITIONS。"""
     return to_status in allowed_transitions(from_status)
 
 
@@ -150,6 +153,7 @@ def next_auto_step(status) -> Optional[str]:
 
 
 def parts_issue_allowed(status) -> bool:
+    """判断当前工单状态是否允许发料/扣料。只有 PARTS_ISSUE_STATUSES 中的状态可以操作库存，避免在未开工或已结案时扣料。"""
     return status_value(status) in PARTS_ISSUE_STATUSES
 
 

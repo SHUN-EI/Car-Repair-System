@@ -211,6 +211,7 @@ class EmbeddingRequest(BaseModel):
 
 
 class EmbeddingResponse(BaseModel):
+    """OpenAI 兼容的向量接口响应体：包含 data 列表、模型名和 usage。"""
     object: str = "list"
     data: List[dict]
     model: str
@@ -227,6 +228,10 @@ class RerankRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """推理服务启动时在主线程同步加载 bge-m3 和 bge-reranker-v2-m3。
+
+    必须在主线程加载：后台线程初始化这些原生库在部分环境下会段错误。某个模型加载失败只记错误，不阻止进程起来，对应接口稍后会返回失败。关闭时打一条退出日志。
+    """
     global _started_at
     _started_at = time.time()
     # 主线程同步加载双模型（在真正的启动事件里阻塞直至就绪）。
@@ -346,6 +351,7 @@ def health():
 
 
 def main():
+    """命令行入口：按配置或参数指定的地址端口启动 uvicorn，托管本推理服务。"""
     parser = argparse.ArgumentParser(description="本地推理服务（bge-m3 编码 + bge-reranker-v2-m3 重排）")
     parser.add_argument("--host", default=settings.EMBEDDING_SERVER_HOST)
     parser.add_argument("--port", type=int, default=settings.EMBEDDING_SERVER_PORT)

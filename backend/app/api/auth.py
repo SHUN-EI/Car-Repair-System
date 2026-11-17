@@ -32,28 +32,33 @@ _scan_expire_check_running = False
 
 
 class SendCodeRequest(BaseModel):
+    """发送短信验证码的请求体：手机号，以及场景（登录、绑定或重置密码）。"""
     phone: str
     scene: str = "login"  # login / bind / reset_password
 
 
 class LoginByCodeRequest(BaseModel):
+    """用短信验证码登录的请求体：手机号和验证码。"""
     phone: str
     code: str
 
 
 class VerifyCodeRequest(BaseModel):
+    """校验短信验证码的请求体，默认场景为绑定手机。"""
     phone: str
     code: str
     scene: str = "bind"
 
 
 class ResetPasswordRequest(BaseModel):
+    """用短信验证码重置密码的请求体，需同时提供新密码。"""
     phone: str
     code: str
     new_password: str
 
 
 class RegisterRequest(BaseModel):
+    """手机号注册请求体：验证码、真实姓名和登录密码。"""
     phone: str
     code: str
     real_name: str
@@ -70,11 +75,13 @@ class DingTalkRegisterRequest(BaseModel):
 
 
 class BindPhoneRequest(BaseModel):
+    """已登录用户绑定手机号的请求体：新手机号和验证码。"""
     phone: str
     code: str
 
 
 class PasswordLoginRequest(BaseModel):
+    """账号密码登录请求体，用户名可以是工号或登录名。"""
     username: str
     password: str
 
@@ -442,6 +449,7 @@ def register_dingtalk(req: DingTalkRegisterRequest, db: Session = Depends(get_db
 
 
 class DingTalkScanCallbackRequest(BaseModel):
+    """钉钉扫码回调请求体：登录态 state、授权码，以及可选的用户信息字典。"""
     state: str
     code: str = ""
     user_info: dict = {}
@@ -772,6 +780,7 @@ def dingtalk_scan_confirm(
 
 
 class DingTalkBindByCredentialRequest(BaseModel):
+    """把已有系统账号绑定到这次钉钉扫码会话：state、用户名或工号，以及密码。"""
     state: str
     username: str  # 用户名或工号
     password: str
@@ -851,6 +860,7 @@ def dingtalk_bind_by_credential(req: DingTalkBindByCredentialRequest, db: Sessio
 
 
 class DingTalkCreateNewAccountRequest(BaseModel):
+    """用这次钉钉扫码会话新建系统账号：state、真实姓名、密码，手机号可选。"""
     state: str
     real_name: str
     password: str

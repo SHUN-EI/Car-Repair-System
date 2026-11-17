@@ -23,6 +23,7 @@ def test_config_defaults_are_qwen_cloud_and_local_7b():
 
 
 def test_call_sites_go_through_make_chat_llm():
+    """检查对话客户端都通过 make_chat_llm 构造，源码里不应再散落直接的 ChatOpenAI 调用。"""
     source = CHAT_LLM_PY.read_text(encoding="utf-8")
     assert "def make_chat_llm(" in source
     assert "ChatOpenAI(**params)" in source or "return ChatOpenAI(" in source
@@ -40,11 +41,13 @@ def test_call_sites_go_through_make_chat_llm():
 
 
 def _have_settings_deps() -> bool:
+    """判断当前环境是否安装了 pydantic_settings，没有则跳过依赖配置类的用例。"""
     return importlib.util.find_spec("pydantic_settings") is not None
 
 
 @pytest.mark.skipif(not _have_settings_deps(), reason="缺少 pydantic_settings，跳过解析测试（不安装全局包）")
 def test_cloud_mode_resolves_dashscope_qwen():
+    """cloud 模式下应解析出 DashScope 兼容地址、qwen 模型和云端密钥。"""
     from app.core.config import Settings
 
     s = Settings(
@@ -62,6 +65,7 @@ def test_cloud_mode_resolves_dashscope_qwen():
 
 @pytest.mark.skipif(not _have_settings_deps(), reason="缺少 pydantic_settings，跳过解析测试（不安装全局包）")
 def test_cloud_mode_falls_back_to_dashscope_api_key():
+    """未配 CHAT_CLOUD_API_KEY 时，cloud 模式应回退使用 DASHSCOPE_API_KEY。"""
     from app.core.config import Settings
 
     s = Settings(CHAT_LLM_MODE="CLOUD", CHAT_CLOUD_API_KEY="", DASHSCOPE_API_KEY="sk-dash")
@@ -71,6 +75,7 @@ def test_cloud_mode_falls_back_to_dashscope_api_key():
 
 @pytest.mark.skipif(not _have_settings_deps(), reason="缺少 pydantic_settings，跳过解析测试（不安装全局包）")
 def test_local_mode_resolves_vllm_qwen25():
+    """local 模式应指向本地 vLLM 地址和 Qwen2.5-7B-Instruct。"""
     from app.core.config import Settings
 
     s = Settings(CHAT_LLM_MODE="local")
@@ -83,6 +88,7 @@ def test_local_mode_resolves_vllm_qwen25():
 
 @pytest.mark.skipif(not _have_settings_deps(), reason="缺少 pydantic_settings，跳过解析测试（不安装全局包）")
 def test_deepseek_legacy_mode_still_reads_old_keys():
+    """deepseek 兼容模式仍应读取旧的 DEEPSEEK_* 配置。"""
     from app.core.config import Settings
 
     s = Settings(
@@ -98,6 +104,7 @@ def test_deepseek_legacy_mode_still_reads_old_keys():
 
 @pytest.mark.skipif(not _have_settings_deps(), reason="缺少 pydantic_settings，跳过解析测试（不安装全局包）")
 def test_invalid_mode_raises():
+    """非法的 CHAT_LLM_MODE 应在解析配置时报错。"""
     from app.core.config import Settings
 
     s = Settings(CHAT_LLM_MODE="foo")
@@ -106,6 +113,7 @@ def test_invalid_mode_raises():
 
 
 def _have_chat_llm_deps() -> bool:
+    """判断是否能导入对话客户端依赖，没有则跳过构造客户端的用例。"""
     for name in ("pydantic_settings", "langchain_openai"):
         if importlib.util.find_spec(name) is None:
             return False
@@ -114,13 +122,16 @@ def _have_chat_llm_deps() -> bool:
 
 @pytest.mark.skipif(not _have_chat_llm_deps(), reason="缺少 pydantic_settings/langchain_openai，跳过工厂测试")
 def test_make_chat_llm_raises_local_timeout_floor(monkeypatch):
+    """local 模式下较短的超时应被抬升到下限，避免本地推理被过早掐断。"""
     import app.core.chat_llm as chat_llm
     from app.core.config import Settings
 
     captured = {}
 
     class FakeChatOpenAI:
+        """假的对话客户端，只记录传入的超时时间，用于验证本地模式会抬升过短超时。"""
         def __init__(self, **kwargs):
+            """记下构造参数，方便断言 timeout。"""
             captured.update(kwargs)
 
     local = Settings(CHAT_LLM_MODE="local")

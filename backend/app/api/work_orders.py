@@ -1,3 +1,5 @@
+"""工单接口：按门店和车主范围查询工单，创建、流转、删除、查看进度，以及主管通过派工开单。"""
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import cast, Date, or_
@@ -57,6 +59,7 @@ from app.domain.work_order_transition import (
 router = APIRouter()
 
 def _wo_to_dict(w: WorkOrder) -> dict:
+    """把工单按表字段转成普通字典，供列表等接口序列化。"""
     return {c.name: getattr(w, c.name) for c in w.__table__.columns}
 
 def _get_current_shift() -> str:
@@ -83,6 +86,7 @@ def list_work_orders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出工单，可按状态、关键词、设备类型和创建日期过滤。店员按门店范围；车主只能看到与自己客户或名下车辆相关的工单。"""
     query = db.query(WorkOrder)
     query = apply_store_column(query, WorkOrder.store_id, _work_order_scope(current_user, store_id, x_store_id))
     if status:
@@ -279,6 +283,7 @@ def get_work_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """获取工单详情，附带设备名称、创建人工号、维修员姓名、允许的下一步和车牌。车主或不在门店范围内的请求按 404 处理。"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order or not _owner_may_view(db, current_user, work_order):
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -301,6 +306,7 @@ def get_work_order(
     return resp
 
 def _next_work_order_no(db: Session) -> str:
+    """按当天日期生成新工单号，格式 WO-YYYYMMDD-序号，序号在当天已有最大号上加一。"""
     today_str = date.today().strftime("%Y%m%d")
     prefix = f"WO-{today_str}-"
     latest = db.query(WorkOrder).filter(
@@ -315,6 +321,7 @@ def _next_work_order_no(db: Session) -> str:
     return f"{prefix}{seq:03d}"
 
 def _scope_owner_work_orders(query, db: Session, current_user: User):
+    """把工单查询限制在当前车主的客户档案和名下车辆上。没有关联客户时返回空结果。"""
     ids = customer_ids_for_user(db, current_user)
     if not ids:
         return query.filter(WorkOrder.id == -1)
@@ -326,6 +333,7 @@ def _scope_owner_work_orders(query, db: Session, current_user: User):
     return query.filter(or_(*clauses))
 
 def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> bool:
+    """判断车主是否可以查看这张工单：客户或车辆属于其档案。非车主角色一律视为可看，再由门店范围另行约束。"""
     if not is_owner(current_user):
         return True
     ids = set(customer_ids_for_user(db, current_user))
@@ -338,6 +346,7 @@ def _owner_may_view(db: Session, current_user: User, work_order: WorkOrder) -> b
     return bool(vehicle and vehicle.owner_id in ids)
 
 def _validate_auto_links(db: Session, store_id=None, bay_id=None, vehicle_id=None, customer_id=None, appointment_id=None):
+    """校验汽修工单关联的门店、车辆、客户、预约和工位是否存在，且工位属于该门店。"""
     from app.models.appointment import Appointment
     from app.models.customer import Customer
     from app.models.store import Bay, Store
@@ -359,6 +368,7 @@ def _validate_auto_links(db: Session, store_id=None, bay_id=None, vehicle_id=Non
             raise HTTPException(status_code=400, detail="工位不属于该门店")
 
 def _bind_technician(db: Session, work_order: WorkOrder, technician_id: int) -> User:
+    """把维修员绑定为工单的 technician 和 assignee。人员必须在职且角色为维修员或管理员。"""
     technician = db.query(User).filter(User.id == technician_id).first()
     if not technician or not technician.is_active:
         raise HTTPException(status_code=400, detail="指派的维修员不存在或已停用")
@@ -712,6 +722,7 @@ def complete_work_order(
 
 @router.delete("/{work_order_id}", summary="删除工单")
 def delete_work_order(work_order_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除工单。仅创建者或管理员可删，其他人返回 403。"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -907,6 +918,7 @@ def transition_work_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按状态机流转工单。先向工单 Agent 声明写权限，再交给领域层的流转函数；领域异常原样抛出，未预期错误记日志后返回 500。"""
     work_order_agent.claim_write("transition_status")
     try:
         return _do_transition(work_order_id, data, db, current_user)
@@ -918,6 +930,7 @@ def transition_work_order(
         raise HTTPException(status_code=500, detail=f"工单流转内部错误: {e}")
 
 def complete_work_order_internal(work_order_id: int, db: Session):
+    """工单转到已完成时由领域层调用的内部收尾：收集故障和方案字段，做知识沉淀等后续处理。已是完成状态则直接返回，避免重复处理。"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -1107,6 +1120,7 @@ def get_work_order_progress(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """返回工单当前状态、允许的下一步，以及按时间排序的进度日志。车主看不到别人的工单；店员路径当前主要靠工单是否存在，未再单独按门店过滤日志。"""
     work_order = db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
     if not work_order or not _owner_may_view(db, current_user, work_order):
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -1154,6 +1168,7 @@ def create_work_order_from_dispatch(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员通过派工创建工单并指定维修员。被指派人必须在职且为维修员；当天全天请假或当前班次请假时拒绝派工。创建成功后在后台尝试给维修员发钉钉进度卡片。"""
     work_order_agent.claim_write("create_work_order")
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管或管理员可通过派工创建工单")
@@ -1260,6 +1275,7 @@ def create_work_order_from_dispatch(
 
     # ===== 钉钉通知（异步）：发送带进度确认按钮的互动卡片 =====
     def _send_dingtalk_dispatch(technician_userid, wo, sup_name):
+        """在后台给被派维修员发送钉钉进度卡片。发送失败只记警告，不影响工单已经创建成功。"""
         try:
             from app.core.dingtalk_wo_card import send_progress_card
             from app.core.config import settings

@@ -63,10 +63,16 @@ import request from '../api'
 
 const route = useRoute()
 const router = useRouter()
+/**
+ * 当前是否处于新增知识条目。
+ */
 const isNew = computed(() => !route.params.id || route.params.id === 'new')
 const saving = ref(false)
 const categories = ref([])
 
+/**
+ * 把知识分类树压平，供下拉选择。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -87,6 +93,9 @@ const form = ref({
   status: 'DRAFT'
 })
 
+/**
+ * 加载知识分类。
+ */
 const loadCategories = async () => {
   const res = await request.get('/categories/', { params: { page_size: 1000, category_type: 'KNOWLEDGE_TYPE' } })
   // 后端返回树形结构，展平为下拉选项
@@ -102,12 +111,18 @@ const loadCategories = async () => {
   categories.value = flatten(res.items || [])
 }
 
+/**
+ * 编辑时加载知识详情。
+ */
 const loadData = async () => {
   if (isNew.value) return
   const res = await request.get(`/knowledge/${route.params.id}`)
   Object.assign(form.value, res)
 }
 
+/**
+ * 新增或保存知识条目。
+ */
 const handleSave = async () => {
   if (!isNew.value) {
     ElMessage.warning('知识库为只读，禁止修改知识条目')
@@ -123,6 +138,9 @@ const handleSave = async () => {
   } finally { saving.value = false }
 }
 
+/**
+ * 返回知识列表。
+ */
 const goBack = () => {
   // 有历史记录则返回上一页，否则兜底回知识列表（避免直接访问详情页时 back 无效）
   if (window.history.state.back) {

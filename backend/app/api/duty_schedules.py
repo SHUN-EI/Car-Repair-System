@@ -1,3 +1,5 @@
+"""排班与请假日历接口：按日或按周查看班次，主管可批量排班、复制上周，以及登记和汇总请假。"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -46,6 +48,7 @@ def _get_shift_by_hour(hour: int, minute: int = 0) -> str:
 
 
 class ShiftMetaResponse(BaseModel):
+    """班次元数据：班次键、中文名称和上下班时间范围。"""
     key: str
     name: str
     time_range: str
@@ -53,6 +56,7 @@ class ShiftMetaResponse(BaseModel):
 
 @router.get("/shift-meta", response_model=List[ShiftMetaResponse], summary="班次元数据（显示名+时间范围，前后端统一来源）")
 def get_shift_meta():
+    """返回系统支持的班次列表及其时间范围，无需登录鉴权以外的业务判断。"""
     return [
         {"key": k, "name": v["name"], "time_range": v["time"]}
         for k, v in SHIFT_LABELS.items()
@@ -60,6 +64,7 @@ def get_shift_meta():
 
 
 class DutyScheduleItem(BaseModel):
+    """批量排班中的一项：某个班次要排上的用户 ID 列表，以及排班类型和备注。"""
     shift: ShiftType
     user_ids: List[int]
     schedule_type: str = "MANUAL"
@@ -67,12 +72,14 @@ class DutyScheduleItem(BaseModel):
 
 
 class DutyBatchCreate(BaseModel):
+    """在一个日期范围内批量排班的请求，包含若干班次人员项。"""
     date_from: date
     date_to: date
     items: List[DutyScheduleItem]
 
 
 class DutyScheduleUpdate(BaseModel):
+    """更新单条排班的请求，班次、备注、类型和人员均可选改。"""
     shift: Optional[ShiftType] = None
     note: Optional[str] = None
     schedule_type: Optional[str] = None
@@ -80,6 +87,7 @@ class DutyScheduleUpdate(BaseModel):
 
 
 class DutyScheduleResponse(BaseModel):
+    """一条排班或请假记录的接口返回，带上人员姓名、工号和请假状态，字段命名兼顾今日看板和其它列表。"""
     id: int
     date: date
     shift: str
@@ -98,12 +106,14 @@ class DutyScheduleResponse(BaseModel):
 
 
 class DutyTodayResponse(BaseModel):
+    """今日排班按早、中、晚班分组后的返回。"""
     MORNING: List[DutyScheduleResponse] = []
     AFTERNOON: List[DutyScheduleResponse] = []
     NIGHT: List[DutyScheduleResponse] = []
 
 
 def _to_response(ds: DutySchedule) -> dict:
+    """把排班记录转成接口字典，补上真实姓名、展示名和工号，方便前端卡片直接渲染。"""
     user = ds.user
     real_name = ""
     username = ""
@@ -132,16 +142,19 @@ def _to_response(ds: DutySchedule) -> dict:
 
 
 def _require_supervisor_or_admin(current_user: User):
+    """校验当前用户是主管或管理员，否则返回 403。"""
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管或管理员可执行此操作")
 
 
 def _require_manage_role(current_user: User):
+    """校验当前用户是管理员、主管或经理，否则不能批量登记请假。"""
     if current_user.role not in ('ADMIN', 'SUPERVISOR', 'MANAGER', UserRole.ADMIN.value, UserRole.SUPERVISOR.value):
         raise HTTPException(status_code=403, detail="仅管理员/主管/经理可执行此操作")
 
 
 def _get_shift_by_hour(hour: int) -> str:
+    """按小时粗分班次：8 到 12 点为早班，12 到 18 点为中班，其余为夜班。与文件前部带分钟的班次函数并存，供请假汇总等仍按整点判断的地方使用。"""
     if 8 <= hour < 12:
         return "MORNING"
     elif 12 <= hour < 18:
@@ -152,6 +165,7 @@ def _get_shift_by_hour(hour: int) -> str:
 
 
 class LeaveBatchCreate(BaseModel):
+    """批量登记请假的请求：人员、起止日期、请假类型，默认全天，备注可选。"""
     user_ids: List[int]
     start_date: date
     end_date: date
@@ -161,10 +175,12 @@ class LeaveBatchCreate(BaseModel):
 
 
 class BatchDeleteRequest(BaseModel):
+    """按 ID 列表批量删除排班或请假记录。"""
     ids: List[int]
 
 
 class CopyWeekRequest(BaseModel):
+    """把源周的排班复制到目标周，只需提供两周的起始日期。"""
     source_start_date: date
     target_start_date: date
 
@@ -178,6 +194,7 @@ def list_duty_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按单日或日期范围列出排班，可再按班次过滤。必须提供 date 或 from+to，起始不能晚于结束。"""
     if date is None and (date_from is None or date_to is None):
         raise HTTPException(status_code=422, detail="请提供 date（单日）或 from+to（日期范围）参数")
     if date_from and date_to and date_from > date_to:
@@ -200,6 +217,7 @@ def get_today_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """返回今天的排班，按早、中、晚班分组，供值班看板使用。"""
     today = datetime.now().date()
     items = (
         db.query(DutySchedule)
@@ -221,6 +239,7 @@ def get_week_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按起始日期给出一周的排班，并附上在职维修员名单，便于前端画周视图。"""
     end_date = start_date + timedelta(days=6)
 
     # 查询该范围内所有排班记录
@@ -317,6 +336,7 @@ def batch_create_duty_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员在日期范围内批量排班。会预先检查同一天同一班次同一人是否冲突，冲突项不会写入，并在结果里说明。"""
     _require_supervisor_or_admin(current_user)
 
     if data.date_from > data.date_to:
@@ -438,6 +458,7 @@ def copy_week_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """把源周的非请假排班复制到目标周。目标周已有相同记录则跳过，避免覆盖请假。"""
     _require_supervisor_or_admin(current_user)
 
     source_start = data.source_start_date
@@ -526,6 +547,7 @@ def update_duty_schedule(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员更新一条排班记录，只写入请求里给出的字段。"""
     _require_supervisor_or_admin(current_user)
 
     ds = db.query(DutySchedule).filter(DutySchedule.id == id).first()
@@ -553,6 +575,7 @@ def delete_duty_schedule_by_query(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员按人员、日期和班次删除一条排班，找不到返回 404。"""
     _require_supervisor_or_admin(current_user)
 
     ds = (
@@ -578,6 +601,7 @@ def delete_duty_schedule(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员按记录 ID 删除一条排班。"""
     _require_supervisor_or_admin(current_user)
 
     ds = db.query(DutySchedule).filter(DutySchedule.id == id).first()
@@ -596,6 +620,7 @@ def batch_create_leave(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """管理员、主管或经理在日期范围内为多名人员登记请假排班记录。"""
     _require_manage_role(current_user)
 
     if data.start_date > data.end_date:
@@ -645,6 +670,7 @@ def get_leave_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """汇总某一天（默认今天）在职维修员的在岗和请假情况，并结合当前班次给出值班概览。"""
     target_date = date or datetime.now().date()
     now_hour = datetime.now().hour
     date_shift_now = _get_shift_by_hour(now_hour)
@@ -716,6 +742,7 @@ def batch_delete_schedules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """批量删除排班或请假记录。主管和管理员可删任何人的记录；普通用户只能删除自己的请假记录。"""
     is_manager = current_user.role in ('ADMIN', 'SUPERVISOR', 'MANAGER',
                                        UserRole.ADMIN.value, UserRole.SUPERVISOR.value)
 

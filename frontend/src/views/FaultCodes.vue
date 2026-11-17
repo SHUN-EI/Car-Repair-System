@@ -178,6 +178,9 @@ const createDialog = reactive({
   result: null,
 })
 
+/**
+ * 加载设备类型，供故障码筛选。
+ */
 const loadDeviceTypes = async () => {
   try {
     const res = await request.get('/fault-codes/device-types')
@@ -185,6 +188,9 @@ const loadDeviceTypes = async () => {
   } catch { /* ignore */ }
 }
 
+/**
+ * 按条件查询故障码列表。
+ */
 const loadData = async () => {
   loading.value = true
   try {
@@ -199,16 +205,25 @@ const loadData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => {
   page.value = 1
   loadData()
 }
 
+/**
+ * 打开故障码详情。
+ */
 const showDetail = (row) => {
   currentItem.value = row
   dialogVisible.value = true
 }
 
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => {
   if (!t) return '-'
   return dayjs(t).format('YYYY-MM-DD HH:mm')
@@ -223,6 +238,9 @@ const openCreateDialog = () => {
   createDialog.visible = true
 }
 
+/**
+ * 关闭新增故障码对话框。
+ */
 const closeCreateDialog = () => {
   createDialog.visible = false
   createDialog.result = null
@@ -230,6 +248,9 @@ const closeCreateDialog = () => {
   loadDeviceTypes()
 }
 
+/**
+ * 提交新建故障码并刷新列表。
+ */
 const handleCreateFaultCode = async () => {
   if (!createDialog.description.trim()) {
     ElMessage.warning('请填写故障描述')

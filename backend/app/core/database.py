@@ -1,3 +1,5 @@
+"""PostgreSQL 连接与会话工厂。同步引擎给现网绝大部分接口使用，异步引擎留给需要 AsyncSession 的路径；连接池会先 ping 再复用。"""
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, Session
@@ -31,6 +33,7 @@ Base = declarative_base()
 
 
 def get_db():
+    """FastAPI 依赖：打开一个同步 Session，请求结束时关闭。调用方负责提交或回滚事务。"""
     db = SessionLocal()
     try:
         yield db
@@ -39,6 +42,7 @@ def get_db():
 
 
 async def get_async_db():
+    """FastAPI 依赖：打开一个异步 Session，请求结束时关闭。"""
     async with AsyncSessionLocal() as session:
         try:
             yield session

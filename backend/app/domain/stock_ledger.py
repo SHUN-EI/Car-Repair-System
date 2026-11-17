@@ -15,7 +15,9 @@ from app.models.stock import StockMovement, StorePartStock
 
 
 class StockError(Exception):
+    """库存记账失败时抛出的业务异常，例如变动数量为 0 或库存不足。"""
     def __init__(self, message: str):
+        """保存可读的错误说明，供接口层直接返回给调用方。"""
         super().__init__(message)
         self.message = message
 
@@ -34,6 +36,10 @@ def apply_stock_delta(
     unit_price: Optional[float] = None,
     supplier: Optional[str] = None,
 ) -> StockMovement:
+    """对配件总库存和可选的门店分库存做一次加减，并写入库存流水。
+
+    变动数量不能为 0；总库存或本店库存减成负数时抛出 StockError。入库时若该店还没有分库存记录会先补建。单价大于 0 或提供了供应商时，会同步更新配件主数据上的单价和供应商。返回已 flush 的流水，调用方负责提交事务。
+    """
     delta = int(qty_delta)
     if delta == 0:
         raise StockError("变动数量不能为 0")

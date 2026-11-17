@@ -226,16 +226,25 @@ const saving = ref(false)
 const editWarnings = ref([])
 const form = reactive({})
 
+/**
+ * 选择导入文件后记下待上传的文件。
+ */
 function handleFileChange(file) {
   if (file.raw && file.raw.type !== 'application/pdf' && !file.raw.name.toLowerCase().endsWith('.pdf')) {
     ElMessage.error(`「${file.name}」不是 PDF 文件`)
     fileList.value = fileList.value.filter((f) => f.uid !== file.uid)
   }
 }
+/**
+ * 从待上传列表里去掉文件。
+ */
 function handleFileRemove(file) {
   fileList.value = fileList.value.filter((f) => f.uid !== file.uid)
 }
 
+/**
+ * 上传工单文件并开始解析。
+ */
 async function handleUpload() {
   if (!fileList.value.length) return
   const fd = new FormData()
@@ -258,6 +267,9 @@ async function handleUpload() {
   }
 }
 
+/**
+ * 加载本次导入解析出的工单条目。
+ */
 async function loadItems() {
   loading.value = true
   try {
@@ -271,6 +283,9 @@ async function loadItems() {
   }
 }
 
+/**
+ * 打开一条解析结果的编辑框。
+ */
 function openEdit(row) {
   editWarnings.value = row.validate_warnings || []
   const d = row.extracted_data || {}
@@ -284,6 +299,9 @@ function openEdit(row) {
 }
 let editRowId = null
 
+/**
+ * 保存对解析条目的修改。
+ */
 async function saveEdit() {
   saving.value = true
   try {
@@ -307,6 +325,9 @@ async function saveEdit() {
   }
 }
 
+/**
+ * 确认一条解析结果，生成正式工单。
+ */
 async function confirmItem(row) {
   try {
     await ElMessageBox.confirm(
@@ -327,6 +348,9 @@ async function confirmItem(row) {
   }
 }
 
+/**
+ * 驳回一条解析结果。
+ */
 async function rejectItem(row) {
   try {
     await ElMessageBox.confirm(`确定拒绝「${row.file_name}」吗？`, '拒绝记录', { type: 'warning' })
@@ -338,10 +362,16 @@ async function rejectItem(row) {
   loadItems()
 }
 
+/**
+ * 展示导入或解析失败的原因。
+ */
 function showError(row) {
   ElMessageBox.alert(row.error_message || '未知错误', '解析失败原因')
 }
 
+/**
+ * 跳转到对应的正式工单详情。
+ */
 function goWorkOrder(id) {
   if (id) router.push(`/work-orders/${id}`)
 }

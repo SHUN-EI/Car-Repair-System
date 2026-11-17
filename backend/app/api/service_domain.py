@@ -97,6 +97,7 @@ def _customer_visible_ids(db: Session, user: User):
 
 
 def _customer_query(query, db: Session, user: User):
+    """按当前用户可见的客户范围收窄查询。店员看到本店客户；若返回 None 表示不做额外过滤。"""
     visible = _customer_visible_ids(db, user)
     if visible is None:
         return query
@@ -107,17 +108,20 @@ def _customer_query(query, db: Session, user: User):
 
 
 def _ensure_writer(current_user: User):
+    """主管不能修改客户、门店、工位和预约等档案，需由管理员操作。"""
     if current_user.role == "SUPERVISOR":
         raise HTTPException(status_code=403, detail="主管仅可查看，如需修改请联系管理员")
 
 
 def _page(query, page: int, page_size: int):
+    """对查询做分页，返回总数和当前页记录。"""
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     return total, items
 
 
 def _must(db: Session, model, pk: Optional[int], label: str):
+    """按 ID 加载关联对象，ID 为空则返回 None，找不到时返回 400 并带上对象名称。"""
     if pk is None:
         return None
     row = db.query(model).filter(model.id == pk).first()
@@ -127,6 +131,7 @@ def _must(db: Session, model, pk: Optional[int], label: str):
 
 
 def _commit(db: Session, conflict_detail: str):
+    """提交数据库变更。遇到完整性冲突时回滚，并用指定文案返回 400。"""
     try:
         db.commit()
     except IntegrityError:
@@ -144,6 +149,7 @@ def list_customers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出当前用户可见的客户，可按姓名或手机号过滤。"""
     query = _customer_query(db.query(Customer), db, current_user)
     if keyword:
         like = f"%{keyword.strip()}%"
@@ -154,6 +160,7 @@ def list_customers(
 
 @customers_router.get("/{customer_id}", response_model=CustomerResponse, summary="客户详情")
 def get_customer(customer_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取客户，不在可见范围内时按 404 处理。"""
     row = _customer_query(db.query(Customer), db, current_user).filter(Customer.id == customer_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="客户不存在")
@@ -162,6 +169,7 @@ def get_customer(customer_id: int, db: Session = Depends(get_db), current_user: 
 
 @customers_router.post("/", response_model=CustomerResponse, summary="新增客户")
 def create_customer(data: CustomerCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """新建客户。若关联了系统用户，该用户必须存在。主管不能写。"""
     _ensure_writer(current_user)
     if data.user_id is not None:
         _must(db, User, data.user_id, "关联用户")
@@ -174,6 +182,7 @@ def create_customer(data: CustomerCreate, db: Session = Depends(get_db), current
 
 @customers_router.put("/{customer_id}", response_model=CustomerResponse, summary="更新客户")
 def update_customer(customer_id: int, data: CustomerUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """更新客户资料。关联用户如有变更必须存在。主管不能写。"""
     _ensure_writer(current_user)
     row = db.query(Customer).filter(Customer.id == customer_id).first()
     if not row:
@@ -190,6 +199,7 @@ def update_customer(customer_id: int, data: CustomerUpdate, db: Session = Depend
 
 @customers_router.delete("/{customer_id}", summary="删除客户")
 def delete_customer(customer_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除客户。已被车辆或预约引用时拒绝删除。"""
     _ensure_writer(current_user)
     row = db.query(Customer).filter(Customer.id == customer_id).first()
     if not row:
@@ -209,6 +219,7 @@ def list_stores(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出门店。绑定了门店的角色只能看到本店；legacy 范围返回空列表。可按名称或编码过滤。"""
     query = db.query(Store)
     scope = resolve_store_scope(current_user)
     if scope.mode == "store":
@@ -243,6 +254,7 @@ def store_context(
 
 @stores_router.get("/{store_id}", response_model=StoreResponse, summary="门店详情")
 def get_store(store_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取门店，超出当前门店范围按 404 处理。"""
     row = db.query(Store).filter(Store.id == store_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.id):
         raise HTTPException(status_code=404, detail="门店不存在")
@@ -251,6 +263,7 @@ def get_store(store_id: int, db: Session = Depends(get_db), current_user: User =
 
 @stores_router.post("/", response_model=StoreResponse, summary="新增门店")
 def create_store(data: StoreCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """仅管理员可新增门店，编码必须唯一。"""
     if role_name(current_user) != "ADMIN":
         raise HTTPException(status_code=403, detail="仅管理员可新增门店")
     code = data.code.strip()
@@ -267,6 +280,7 @@ def create_store(data: StoreCreate, db: Session = Depends(get_db), current_user:
 
 @stores_router.put("/{store_id}", response_model=StoreResponse, summary="更新门店")
 def update_store(store_id: int, data: StoreUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """更新门店资料。主管不能写。"""
     _ensure_writer(current_user)
     row = db.query(Store).filter(Store.id == store_id).first()
     if not row:
@@ -280,6 +294,7 @@ def update_store(store_id: int, data: StoreUpdate, db: Session = Depends(get_db)
 
 @stores_router.delete("/{store_id}", summary="删除门店")
 def delete_store(store_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除门店。门店下仍有工位或预约时拒绝删除。"""
     _ensure_writer(current_user)
     row = db.query(Store).filter(Store.id == store_id).first()
     if not row:
@@ -300,6 +315,7 @@ def list_bays(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按门店范围分页列出工位，门店可由参数或请求头 X-Store-Id 指定。"""
     requested = store_id
     if requested is None and x_store_id and str(x_store_id).strip().isdigit():
         requested = int(str(x_store_id).strip())
@@ -310,6 +326,7 @@ def list_bays(
 
 @bays_router.get("/{bay_id}", response_model=BayResponse, summary="工位详情")
 def get_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取工位，不在当前门店范围时按 404 处理。"""
     row = db.query(Bay).filter(Bay.id == bay_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
         raise HTTPException(status_code=404, detail="工位不存在")
@@ -318,6 +335,7 @@ def get_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Dep
 
 @bays_router.post("/", response_model=BayResponse, summary="新增工位")
 def create_bay(data: BayCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """在可写门店下新建工位。同一门店内工位编码必须唯一。"""
     _ensure_writer(current_user)
     if not row_in_scope(resolve_store_scope(current_user), data.store_id):
         raise HTTPException(status_code=403, detail="只能操作本门店数据")
@@ -337,6 +355,7 @@ def create_bay(data: BayCreate, db: Session = Depends(get_db), current_user: Use
 
 @bays_router.put("/{bay_id}", response_model=BayResponse, summary="更新工位")
 def update_bay(bay_id: int, data: BayUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """更新工位资料。改编码时仍须在本店内唯一；超出范围按 404 处理。"""
     _ensure_writer(current_user)
     row = db.query(Bay).filter(Bay.id == bay_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
@@ -357,6 +376,7 @@ def update_bay(bay_id: int, data: BayUpdate, db: Session = Depends(get_db), curr
 
 @bays_router.delete("/{bay_id}", summary="删除工位")
 def delete_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除工位。已被预约或工单引用时拒绝删除。"""
     _ensure_writer(current_user)
     row = db.query(Bay).filter(Bay.id == bay_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
@@ -369,6 +389,7 @@ def delete_bay(bay_id: int, db: Session = Depends(get_db), current_user: User = 
 # ==================== 预约 ====================
 
 class AppointmentBook(BaseModel):
+    """车主或店员预约一个工位时段的请求：门店、工位、车辆、预约时间和备注。"""
     store_id: int
     bay_id: int
     vehicle_id: int
@@ -383,6 +404,7 @@ def list_appointment_slots(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """查询指定门店某一天各工位的可预约整点时段，已占用的时段会标出来。门店必须营业且工位启用。"""
     store = db.query(Store).filter(Store.id == store_id, Store.is_active.is_(True)).first()
     if not store:
         raise HTTPException(status_code=404, detail="门店不存在或未营业")
@@ -430,6 +452,7 @@ def book_appointment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """预约一个营业时间内的整点时段（09:00-17:00）。主管不能预约。车主只能预约自己名下的车辆，并自动绑定自己的客户档案。"""
     if current_user.role == "SUPERVISOR":
         raise HTTPException(status_code=403, detail="主管仅可查看预约")
     if not is_bookable_slot(data.scheduled_at):
@@ -475,12 +498,14 @@ def book_appointment(
     return _appointment_out(row)
 
 def _appointment_out(row: Appointment) -> AppointmentResponse:
+    """把预约转成接口返回，并附上当前状态下允许的下一步。"""
     resp = AppointmentResponse.model_validate(row)
     resp.allowed_transitions = appointment_targets(row.status)
     return resp
 
 
 def _check_appointment_links(db: Session, store_id: int, bay_id: Optional[int], customer_id: Optional[int], vehicle_id: Optional[int]):
+    """校验预约关联的门店、工位、客户和车辆是否存在，且工位属于该门店。"""
     _must(db, Store, store_id, "门店")
     if bay_id is not None:
         bay = _must(db, Bay, bay_id, "工位")
@@ -502,6 +527,7 @@ def list_appointments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出预约。车主只能看到自己客户档案下的预约；店员再按门店范围和状态过滤。"""
     query = db.query(Appointment)
     if is_owner(current_user):
         ids = customer_ids_for_user(db, current_user)
@@ -525,6 +551,7 @@ def list_appointments(
 
 @appointments_router.get("/{appointment_id}", response_model=AppointmentResponse, summary="预约详情")
 def get_appointment(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取预约。店员只能看本门店范围内的记录。车主路径当前不做额外的档案归属校验。"""
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="预约不存在")
@@ -535,6 +562,7 @@ def get_appointment(appointment_id: int, db: Session = Depends(get_db), current_
 
 @appointments_router.post("/", response_model=AppointmentResponse, summary="新增预约")
 def create_appointment(data: AppointmentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """店员在可写门店下创建预约，初始状态为待处理，并校验关联的工位、客户和车辆。"""
     _ensure_writer(current_user)
     try:
         store_id = ensure_writable_store(current_user, data.store_id)
@@ -559,6 +587,7 @@ def update_appointment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新预约资料或按状态机流转状态。超出门店范围按 404 处理；非法状态或不允许的流转返回 400。"""
     _ensure_writer(current_user)
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
@@ -590,6 +619,7 @@ def update_appointment(
 
 @appointments_router.delete("/{appointment_id}", summary="删除预约")
 def delete_appointment(appointment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除预约。已被工单引用时拒绝删除。超出门店范围按 404 处理。"""
     _ensure_writer(current_user)
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not row or not row_in_scope(resolve_store_scope(current_user), row.store_id):
@@ -610,6 +640,7 @@ def list_part_skus(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出配件目录 SKU，可按品牌、编码或名称过滤。需登录。"""
     query = db.query(PartSku)
     if brand:
         query = query.filter(PartSku.brand == brand)
@@ -624,6 +655,7 @@ def list_part_skus(
 
 @part_skus_router.get("/{sku_id}", response_model=PartSkuResponse, summary="配件目录详情")
 def get_part_sku(sku_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取配件目录，不存在返回 404。"""
     row = db.query(PartSku).filter(PartSku.id == sku_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="配件目录不存在")
@@ -632,6 +664,7 @@ def get_part_sku(sku_id: int, db: Session = Depends(get_db), current_user: User 
 
 @part_skus_router.post("/", response_model=PartSkuResponse, summary="新增配件目录")
 def create_part_sku(data: PartSkuCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """新建配件目录 SKU，编码必须唯一。主管不能写。"""
     _ensure_writer(current_user)
     code = data.code.strip()
     if db.query(PartSku.id).filter(PartSku.code == code).first():
@@ -647,6 +680,7 @@ def create_part_sku(data: PartSkuCreate, db: Session = Depends(get_db), current_
 
 @part_skus_router.put("/{sku_id}", response_model=PartSkuResponse, summary="更新配件目录")
 def update_part_sku(sku_id: int, data: PartSkuUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """更新配件目录资料。主管不能写。"""
     _ensure_writer(current_user)
     row = db.query(PartSku).filter(PartSku.id == sku_id).first()
     if not row:
@@ -660,6 +694,7 @@ def update_part_sku(sku_id: int, data: PartSkuUpdate, db: Session = Depends(get_
 
 @part_skus_router.delete("/{sku_id}", summary="删除配件目录")
 def delete_part_sku(sku_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """删除配件目录。已被备件库存引用时拒绝删除。"""
     _ensure_writer(current_user)
     row = db.query(PartSku).filter(PartSku.id == sku_id).first()
     if not row:

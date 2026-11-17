@@ -42,15 +42,19 @@ _INDUSTRIAL_EDGES = {
 
 
 class TestWorkOrderStatusMachine:
+    """校验工单状态枚举和流转表是否与双车道设计一致。"""
     def test_enum_matches_transition_table(self):
+        """状态枚举中的值都应出现在流转表里。"""
         values = {item.value for item in WorkOrderStatus}
         assert values == set(VALID_TRANSITIONS)
 
     def test_industrial_edges_kept(self):
+        """工业维修车道的关键流转边仍然保留。"""
         for src, required in _INDUSTRIAL_EDGES.items():
             assert required <= set(allowed_transitions(src))
 
     def test_auto_repair_path_is_guarded(self):
+        """汽修车道的路径有独立约束，不会把工业单误送进去。"""
         for src, dst in zip(AUTO_REPAIR_PATH, AUTO_REPAIR_PATH[1:]):
             assert is_allowed_transition(src, dst), f"{src} → {dst}"
         assert "CANCELLED" in allowed_transitions("QUOTING")
@@ -60,11 +64,13 @@ class TestWorkOrderStatusMachine:
         assert "INTAKE" not in allowed_transitions("IN_PROGRESS")
 
     def test_completed_can_close_but_not_reopen(self):
+        """已完成可以关闭归档，但不能再回到进行中。"""
         assert allowed_transitions("COMPLETED") == ["CLOSED"]
         assert not is_allowed_transition("CLOSED", "INTAKE")
         assert not is_allowed_transition("ARCHIVED", "CLOSED")
 
     def test_payload_exposes_status_and_transitions(self):
+        """工单返回应带上当前状态和允许的下一步。"""
         payload = status_machine_payload()
         by_value = {row["value"]: row for row in payload["statuses"]}
         assert by_value["INTAKE"]["label"] == "接车"
@@ -75,7 +81,9 @@ class TestWorkOrderStatusMachine:
 
 
 class TestAppointmentStatus:
+    """预约状态机的基本流转。"""
     def test_confirm_then_finish(self):
+        """预约可以先确认再完成。"""
         assert is_allowed_appointment_transition("PENDING", "CONFIRMED")
         assert is_allowed_appointment_transition("CONFIRMED", "COMPLETED")
         assert not is_allowed_appointment_transition("PENDING", "COMPLETED")
@@ -84,6 +92,7 @@ class TestAppointmentStatus:
 
 
 class TestPhase0Models:
+    """Phase 0 核心模型能否建表并互相关联。"""
     @pytest.mark.parametrize("model,table,column", [
         (Vehicle, "vehicles", "plate"),
         (Vehicle, "vehicles", "vin"),
@@ -95,17 +104,20 @@ class TestPhase0Models:
         (PartSku, "part_skus", "list_price"),
     ])
     def test_table_compiles(self, model, table, column):
+        """相关模型在 SQLite 上可以成功建表。"""
         sql = str(CreateTable(model.__table__).compile(dialect=postgresql.dialect()))
         assert table in sql
         assert column in sql
 
     def test_work_order_and_spare_part_links(self):
+        """工单与配件等关联字段可以建立起来。"""
         assert "vehicle_id" in WorkOrder.__table__.c
         assert "appointment_id" in WorkOrder.__table__.c
         assert "sku_id" in SparePart.__table__.c
 
 
 def test_migration_is_single_head():
+    """Alembic 迁移应保持单一 head，避免分叉。"""
     versions = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alembic", "versions")
     revisions = {}
     parents = set()
@@ -138,6 +150,7 @@ def test_migration_is_single_head():
 
 
 def test_domain_routers_import():
+    """领域相关的路由模块可以正常导入。"""
     from app.api.vehicles import router as vehicles_router
     from app.api.service_domain import (
         appointments_router,

@@ -1,3 +1,5 @@
+"""用户管理接口：分页查询、创建、更新、删除，以及角色和门店绑定的权限控制。"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -15,15 +17,18 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def _u_to_dict(u: User) -> dict:
+    """把用户转成接口字典，故意去掉 password_hash，避免把密码哈希返回给前端。"""
     return {c.name: getattr(u, c.name) for c in u.__table__.columns if c.name != 'password_hash'}
 
 
 def _require_admin(user: User) -> None:
+    """校验当前用户是管理员，否则返回 403。"""
     if role_name(user) != "ADMIN":
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
 
 
 def _require_store_binder(user: User) -> None:
+    """校验当前用户是管理员或主管，否则不能给账号绑定门店。"""
     if role_name(user) not in ("ADMIN", "SUPERVISOR"):
         raise HTTPException(status_code=403, detail="仅管理员或主管可绑定门店")
 
@@ -43,6 +48,7 @@ def list_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出用户，可按角色、用户名或真实姓名过滤。当前实现仅要求登录，返回中不含密码哈希。"""
     query = db.query(User)
     if role:
         query = query.filter(User.role == role)
@@ -58,6 +64,7 @@ def list_users(
 
 @router.get("/{user_id}", response_model=UserResponse, summary="获取用户详情（带缓存）")
 def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取用户资料，结果缓存 5 分钟。用户不存在返回 404。"""
     cache_key = f"user:{user_id}"
     cached = cache_service.get(cache_key)
     if cached:
@@ -74,6 +81,7 @@ def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = D
 
 @router.post("/", response_model=UserResponse, summary="创建用户")
 def create_user(data: UserCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """管理员创建用户。用户名不能重复；明文密码会在入库前哈希，不会以明文保存。"""
     _require_admin(current_user)
     existing = db.query(User).filter(User.username == data.username).first()
     if existing:
@@ -94,6 +102,7 @@ def update_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """更新用户资料。只有管理员能改角色；管理员或主管才能绑定门店，且主管只能绑到自己的门店。普通用户只能改自己的资料，且不能改角色、门店和启用状态。"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -120,6 +129,7 @@ def update_user(
 
 @router.delete("/{user_id}", summary="删除用户")
 def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """管理员删除用户，同时清掉该用户的缓存。用户不存在返回 404。"""
     _require_admin(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

@@ -22,6 +22,7 @@ router = APIRouter()
 
 
 def _payment_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+    """解析当前用户的门店范围。优先用查询参数里的 store_id，否则尝试请求头 X-Store-Id。"""
     requested = store_id
     if requested is None and x_store_id and str(x_store_id).strip().isdigit():
         requested = int(str(x_store_id).strip())
@@ -29,16 +30,19 @@ def _payment_scope(user: User, store_id: Optional[int] = None, x_store_id: Optio
 
 
 def _quote_in_scope(user: User, quote: Optional[Quote], store_id: Optional[int] = None, x_store_id: Optional[str] = None) -> bool:
+    """判断报价单是否落在当前用户的门店范围内。报价不存在时视为不在范围内。"""
     if quote is None:
         return False
     return row_in_scope(_payment_scope(user, store_id, x_store_id), quote.store_id)
 
 
 def _role(user: User) -> str:
+    """取出用户角色字符串，兼容枚举和普通字符串两种存法。"""
     return user.role.value if hasattr(user.role, "value") else str(user.role or "")
 
 
 def _to_response(row: PaymentIntent, reused: bool = False) -> PaymentIntentResponse:
+    """把支付意向转成接口返回，并附上中文状态标签；reused 表示这次复用了已有的占位单。"""
     return PaymentIntentResponse(
         id=row.id,
         intent_no=row.intent_no,
@@ -67,6 +71,7 @@ def list_intents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出支付意向，可按报价或工单过滤。车主只能看到与自己客户档案或名下车辆相关的报价对应意向；店员按门店范围过滤。"""
     query = db.query(PaymentIntent)
     if quote_id:
         query = query.filter(PaymentIntent.quote_id == quote_id)
@@ -103,6 +108,7 @@ def create_intent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """为已由车主确认的报价创建占位支付意向。已有未取消的意向则直接复用。金额来自报价，单号格式为 PI-日期-8 位十六进制。工人角色不能创建。注意：车主路径目前不额外做档案归属校验。本接口只建占位单，不发生清算。"""
     if _role(current_user) not in {"ADMIN", "SUPERVISOR", "TECHNICIAN", "OWNER"}:
         raise HTTPException(status_code=403, detail="当前角色不能创建支付意向")
     quote = db.query(Quote).filter(Quote.id == data.quote_id).first()
@@ -139,6 +145,7 @@ def create_intent(
 
 @router.get("/intents/{intent_id}", response_model=PaymentIntentResponse, summary="支付意向详情")
 def get_intent(intent_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取支付意向。店员只能看本门店范围内的记录，超出范围按 404 处理。车主路径当前直接返回该意向。"""
     row = db.query(PaymentIntent).filter(PaymentIntent.id == intent_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="支付意向不存在")
@@ -152,6 +159,7 @@ def get_intent(intent_id: int, db: Session = Depends(get_db), current_user: User
 
 @router.post("/intents/{intent_id}/cancel", response_model=PaymentIntentResponse, summary="取消支付意向")
 def cancel_intent(intent_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """主管或管理员取消仍处于已创建状态的占位支付意向。已取消的不能再取消。取消后不会发生清算。"""
     if _role(current_user) not in {"ADMIN", "SUPERVISOR"}:
         raise HTTPException(status_code=403, detail="仅主管或管理员可取消支付意向")
     row = db.query(PaymentIntent).filter(PaymentIntent.id == intent_id).first()

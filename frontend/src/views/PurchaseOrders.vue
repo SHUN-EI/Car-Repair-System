@@ -77,8 +77,14 @@ const createDialog = ref(false)
 const form = ref({ store_id: null, supplier: '', note: '', lines: [] })
 
 const labels = { ORDERED: '已下单', PARTIAL: '部分入库', RECEIVED: '已入库', CANCELLED: '已取消' }
+/**
+ * 把采购单状态转成中文标签。
+ */
 const statusLabel = (value) => labels[value] || value
 
+/**
+ * 加载采购单列表。
+ */
 const load = async () => {
   loading.value = true
   try {
@@ -89,6 +95,9 @@ const load = async () => {
   }
 }
 
+/**
+ * 打开新建采购单对话框。
+ */
 const openCreate = async () => {
   const saved = localStorage.getItem('current_store_id')
   form.value = {
@@ -102,6 +111,9 @@ const openCreate = async () => {
   createDialog.value = true
 }
 
+/**
+ * 保存新建的采购单。
+ */
 const save = async () => {
   if (!form.value.store_id) {
     ElMessage.warning('请选择门店')
@@ -123,6 +135,9 @@ const save = async () => {
   load()
 }
 
+/**
+ * 对采购单办理入库。
+ */
 const receive = async (row) => {
   await ElMessageBox.confirm(`确认将 ${row.po_no} 的未收数量全部入库？`, '采购入库')
   await request.post(`/purchase-orders/${row.id}/receive`, {})
@@ -130,6 +145,9 @@ const receive = async (row) => {
   load()
 }
 
+/**
+ * 取消采购单。
+ */
 const cancel = async (row) => {
   await ElMessageBox.confirm(`取消采购单 ${row.po_no}？`, '确认')
   await request.post(`/purchase-orders/${row.id}/cancel`)

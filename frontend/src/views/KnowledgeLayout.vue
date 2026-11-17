@@ -35,8 +35,14 @@ import { useRoute, useRouter } from 'vue-router'
 const route = useRoute()
 const router = useRouter()
 
+/**
+ * 根据路由元信息得到当前知识子页签。
+ */
 const activeTab = computed(() => route.meta.knowledgeTab || '')
 
+/**
+ * 切换知识列表和设备手册两个子页。
+ */
 const handleTabChange = (name) => {
   router.push(`/knowledge/${name}`)
 }

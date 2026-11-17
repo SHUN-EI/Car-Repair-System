@@ -12,6 +12,7 @@ from app.models.base import BaseModel
 
 
 class ManualCodeEntry(BaseModel):
+    """从设备说明书导入的错误码条目，作为「错误码 → 故障诊断」的权威映射，可写入向量库做手册检索。"""
     __tablename__ = "manual_code_entries"
 
     milvus_id = Column(String(100), unique=True, index=True, comment="Milvus 向量 ID")
@@ -32,4 +33,5 @@ class ManualCodeEntry(BaseModel):
     version = Column(Integer, default=1, comment="条目版本")
 
     def __repr__(self):
+        """调试时输出手册条目主键、手册名和错误码。"""
         return f"<ManualCodeEntry(id={self.id}, error_code='{self.error_code}', title='{self.title}')>"

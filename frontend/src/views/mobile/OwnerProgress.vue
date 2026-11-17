@@ -63,6 +63,9 @@ const quoteLabels = {
   DRAFT: '报价草案', STAFF_CONFIRMED: '待确认报价', CUSTOMER_CONFIRMED: '报价已确认',
   REJECTED: '报价已拒绝', CANCELLED: '报价已取消',
 }
+/**
+ * 把报价状态转成车主可见的文案。
+ */
 const quoteLabel = (status) => quoteLabels[status] || status || ''
 const detailId = ref(route.params.id || '')
 
@@ -71,9 +74,15 @@ const labels = {
   IN_PROGRESS: '维修中', QC: '质检', COMPLETED: '已完成', CLOSED: '已结案', CANCELLED: '已取消',
 }
 const path = ['INTAKE', 'DIAGNOSING', 'QUOTING', 'APPROVED', 'IN_PROGRESS', 'QC', 'COMPLETED', 'CLOSED']
+/**
+ * 把工单状态转成进度展示文案。
+ */
 const label = (status) => labels[status] || status || '-'
 const steps = ref([])
 
+/**
+ * 按工单状态拼出进度步骤条。
+ */
 const buildSteps = (status) => {
   const index = path.indexOf(status)
   steps.value = path.map((value, i) => ({
@@ -83,11 +92,17 @@ const buildSteps = (status) => {
   }))
 }
 
+/**
+ * 加载当前车主的在修工单列表。
+ */
 const loadList = async () => {
   const res = await request.get('/work-orders/', { params: { page_size: 50 } })
   list.value = res.items || []
 }
 
+/**
+ * 加载某张工单的进度详情。
+ */
 const loadDetail = async (id) => {
   const [order, progress] = await Promise.all([
     request.get(`/work-orders/${id}`),
@@ -100,12 +115,18 @@ const loadDetail = async (id) => {
   const items = quoteRes.items || []
   quote.value = items.find(item => item.status !== 'CANCELLED') || null
 }
+/**
+ * 车主确认报价。
+ */
 const confirmQuote = async () => {
   if (!quote.value) return
   await request.post(`/quotes/${quote.value.id}/customer-confirm`, {})
   await loadDetail(detailId.value)
 }
 
+/**
+ * 打开一张工单的进度详情。
+ */
 const open = (id) => router.push(`/m/progress/${id}`)
 
 watch(() => route.params.id, (id) => {

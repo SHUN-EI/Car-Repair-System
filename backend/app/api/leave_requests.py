@@ -83,6 +83,7 @@ def _parse_details_from_submit(payload: LeaveRequestSubmit) -> List[tuple]:
 
 
 def _validate_leave_type(t: str) -> str:
+    """校验请假类型是否在枚举允许值内，否则返回 422。"""
     allowed = {e.value for e in LeaveType}
     if t not in allowed:
         raise HTTPException(status_code=422, detail=f"leave_type 不合法，允许值: {sorted(allowed)}")
@@ -90,6 +91,7 @@ def _validate_leave_type(t: str) -> str:
 
 
 def _validate_shift(s: str) -> str:
+    """校验请假班次是否合法（请假班次或排班班次枚举），否则返回 422。"""
     allowed = {e.value for e in LeaveShift} | {e.value for e in ShiftType}
     if s not in allowed:
         raise HTTPException(status_code=422, detail=f"leave_shift 不合法，允许值: {sorted(allowed)}")
@@ -169,6 +171,7 @@ def _build_response(lr: LeaveRequest, db: Optional[Session] = None) -> Dict[str,
 
 
 def _require_supervisor_or_admin(current_user: User):
+    """校验当前用户是主管或管理员，否则返回 403。"""
     if current_user.role not in (UserRole.SUPERVISOR.value, UserRole.ADMIN.value):
         raise HTTPException(status_code=403, detail="仅主管/管理员可执行此操作")
 
@@ -177,6 +180,7 @@ def _require_supervisor_or_admin(current_user: User):
 # 预检接口（前端/钉钉卡片提交前调用，辅助展示冲突与警告）
 # ============================================================
 class PreCheckResponse(BaseModel):
+    """请假预检结果：冲突的未完成工单、请假后每天在岗人数、最低值班人数，以及哪些日期需要找替班。"""
     pending_work_orders: List[Dict[str, Any]] = []
     daily_on_duty_after: Dict[str, int] = {}
     min_guard_count: int = 2
@@ -281,6 +285,7 @@ def submit_leave_request(
     current_user: User = Depends(get_current_user),
 ):
     # 1) correlation_id 幂等：已存在则直接返回（不报错，保证钉钉重试安全）
+    """提交请假申请。相同 correlation_id 会直接返回已有记录，方便钉钉重试。申请人默认为当前用户，明细校验通过后写入主表和日期班次明细。"""
     exist = db.query(LeaveRequest).filter(LeaveRequest.correlation_id == payload.correlation_id).first()
     if exist:
         logger.info(f"[Leave] correlation_id 命中幂等: {payload.correlation_id} -> lr_id={exist.id}")
@@ -337,6 +342,7 @@ def list_leave_requests(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员分页查询请假单，可按状态、申请人、审批人、类型以及与明细日期交叠的时间范围过滤。"""
     _require_supervisor_or_admin(current_user)
     q = db.query(LeaveRequest)
     if status:
@@ -373,6 +379,7 @@ def my_leave_requests(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出当前用户自己提交的请假单，可按状态过滤。"""
     q = db.query(LeaveRequest).filter(LeaveRequest.requester_id == current_user.id)
     if status:
         q = q.filter(LeaveRequest.status == status)
@@ -387,6 +394,7 @@ def get_leave_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """查看一张请假单。仅申请人本人或主管/管理员可看。详情里尽量附上冲突工单和请假后在岗人数，预检失败不影响主数据返回。"""
     lr = db.query(LeaveRequest).filter(LeaveRequest.id == lr_id).first()
     if not lr:
         raise HTTPException(status_code=404, detail="请假申请不存在")
@@ -410,6 +418,7 @@ def get_leave_request(
 
 
 def _details_to_json(details) -> str:
+    """把请假明细转成预检函数所需的 JSON 字符串（日期和班次）。"""
     import json
     return json.dumps([{"leave_date": d.leave_date.isoformat(), "leave_shift": d.leave_shift} for d in details],
                       ensure_ascii=False)
@@ -425,6 +434,7 @@ def approve_leave_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员批准待审批的请假单。若请假期间仍有未完成工单会拦截；通过后记录审批人，并按规则处理替班或值班人数校验。"""
     _require_supervisor_or_admin(current_user)
     lr: Optional[LeaveRequest] = db.query(LeaveRequest).filter(LeaveRequest.id == lr_id).first()
     if not lr:
@@ -582,6 +592,7 @@ def reject_leave_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员拒绝仍待审批的请假单，并记下审批意见。非待审批状态不能拒绝。"""
     _require_supervisor_or_admin(current_user)
     lr = db.query(LeaveRequest).filter(LeaveRequest.id == lr_id).first()
     if not lr:
@@ -607,6 +618,7 @@ def cancel_leave_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """申请人撤销自己仍待审批的请假单。别人不能代为撤销，已审批的也不能撤。"""
     lr = db.query(LeaveRequest).filter(LeaveRequest.id == lr_id).first()
     if not lr:
         raise HTTPException(status_code=404, detail="请假申请不存在")

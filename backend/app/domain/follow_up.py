@@ -21,6 +21,7 @@ DELIVERED_CHANNELS = {"sent", "mock"}
 
 
 def follow_up_message(kind: str, work_order_no: str, plate: str = "") -> str:
+    """按提醒类型生成交车后发给车主的文案。REVISIT 是回访复查邀请，其它类型按评价邀请处理；可附带车牌。"""
     plate_text = f"，车牌{plate}" if plate else ""
     no = work_order_no or "-"
     if kind == "REVISIT":
@@ -29,10 +30,12 @@ def follow_up_message(kind: str, work_order_no: str, plate: str = "") -> str:
 
 
 def status_label_for(kind: str) -> str:
+    """把回访提醒类型转成界面上的中文状态标签：REVISIT 为「邀请回访」，否则为「邀请评价」。"""
     return "邀请回访" if kind == "REVISIT" else "邀请评价"
 
 
 def reminder_delivered(result: Optional[dict]) -> bool:
+    """根据发送结果判断提醒是否已通过短信、钉钉或站内信任一渠道送达。结果为空或渠道状态都不在已送达集合里时返回 False。"""
     if not result:
         return False
     return any(result.get(key) in DELIVERED_CHANNELS for key in ("sms", "dingtalk", "inbox"))
@@ -107,6 +110,7 @@ def schedule_after_delivery(db: Session, work_order, *, created_by: Optional[int
 
 
 def _scheduled_id(db: Session, work_order_id: int, kind: str):
+    """查询指定工单、指定类型且仍为 SCHEDULED 的回访提醒主键。没有待发送记录时返回 None，用于避免重复排期。"""
     from app.models.follow_up import FollowUpReminder
 
     row = (

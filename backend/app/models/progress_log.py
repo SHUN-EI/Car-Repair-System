@@ -1,3 +1,5 @@
+"""工单进度流水：每次状态变更记一条，包含操作人、来源渠道、备注、位置和附件。"""
+
 from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import JSONB, ENUM as PG_ENUM
 from sqlalchemy.orm import relationship
@@ -6,6 +8,7 @@ from app.models.work_order import WorkOrderStatus
 
 
 class WorkOrderProgressLog(BaseModel):
+    """一条工单进度日志。from_status / to_status 记录流转两端，source 区分 WEB、钉钉等渠道。"""
     __tablename__ = "work_order_progress_logs"
 
     work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="CASCADE"),

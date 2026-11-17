@@ -36,10 +36,12 @@ class KnowledgeExtractorAgent:
     """知识提取智能体 - 将工单转化为结构化知识"""
 
     def __init__(self):
+        """初始化工单知识提取器，对话模型延迟加载。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造低温、非流式对话模型，用于把工单内容抽成知识条目字段。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.2,

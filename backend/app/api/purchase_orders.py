@@ -27,6 +27,7 @@ router = APIRouter()
 
 
 class PurchaseLineIn(BaseModel):
+    """采购单中的一行：配件编码必填，数量必须大于 0，名称和单价可选。"""
     part_code: str = Field(..., max_length=50)
     part_name: Optional[str] = Field(None, max_length=200)
     qty: int = Field(..., gt=0)
@@ -34,6 +35,7 @@ class PurchaseLineIn(BaseModel):
 
 
 class PurchaseOrderCreate(BaseModel):
+    """创建采购单的请求：门店必填，至少一行、最多 100 行明细，供应商和备注可选。"""
     store_id: int
     supplier: Optional[str] = None
     note: Optional[str] = None
@@ -41,11 +43,13 @@ class PurchaseOrderCreate(BaseModel):
 
 
 class ReceiveLineIn(BaseModel):
+    """入库时指定某一行要收的数量；不填数量则按未收完的剩余数量入库。"""
     line_id: int
     qty: Optional[int] = Field(None, gt=0)
 
 
 class ReceiveRequest(BaseModel):
+    """入库请求。不传明细时对该采购单所有行做入库。"""
     lines: Optional[List[ReceiveLineIn]] = None
 
 
@@ -53,6 +57,7 @@ def requested_store_id(
     store_id: Optional[int] = Query(None),
     x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
 ) -> Optional[int]:
+    """从查询参数或请求头 X-Store-Id 取出要筛选的门店 ID。"""
     if store_id:
         return store_id
     if x_store_id and str(x_store_id).strip().isdigit():
@@ -61,10 +66,12 @@ def requested_store_id(
 
 
 def _staff(user: User) -> bool:
+    """判断用户是否为可操作采购的门店人员（管理员、主管或维修员）。"""
     return user.role in ("ADMIN", "SUPERVISOR", "TECHNICIAN")
 
 
 def _scope(user: User, requested: Optional[int]):
+    """解析当前用户的门店范围，不合法时转成 403。"""
     try:
         return resolve_store_scope(user, requested)
     except StoreScopeError as exc:
@@ -72,6 +79,7 @@ def _scope(user: User, requested: Optional[int]):
 
 
 def _line_out(line: PurchaseOrderLine) -> dict:
+    """把采购明细行转成接口返回字典，包含已订和已收数量。"""
     return {
         "id": line.id,
         "spare_part_id": line.spare_part_id,
@@ -84,6 +92,7 @@ def _line_out(line: PurchaseOrderLine) -> dict:
 
 
 def _order_out(order: PurchaseOrder) -> dict:
+    """把采购单及其明细转成接口返回字典。"""
     return {
         "id": order.id,
         "po_no": order.po_no,
@@ -99,6 +108,7 @@ def _order_out(order: PurchaseOrder) -> dict:
 
 
 def _get_order(db: Session, order_id: int) -> PurchaseOrder:
+    """按 ID 加载采购单，不存在返回 404。"""
     row = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="采购单不存在")
@@ -106,12 +116,14 @@ def _get_order(db: Session, order_id: int) -> PurchaseOrder:
 
 
 def _visible(user: User, order: PurchaseOrder):
+    """校验采购单落在当前用户的门店范围内，否则按 404 处理。"""
     scope = _scope(user, None)
     if not row_in_scope(scope, order.store_id):
         raise HTTPException(status_code=404, detail="采购单不存在")
 
 
 def _find_or_create_part(db: Session, line: PurchaseOrderLine, store_id: int, supplier: Optional[str]) -> SparePart:
+    """按明细上的配件 ID 或编码找到配件；没有则按编码新建一条库存为 0 的配件档案，并回写明细上的配件 ID。"""
     part = None
     if line.spare_part_id:
         part = db.query(SparePart).filter(SparePart.id == line.spare_part_id).first()
@@ -141,6 +153,7 @@ def list_purchase_orders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按门店范围分页列出采购单，可再按状态过滤。"""
     scope = _scope(current_user, requested)
     query = apply_store_column(db.query(PurchaseOrder), PurchaseOrder.store_id, scope)
     if status:
@@ -166,6 +179,7 @@ def get_purchase_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """获取一张采购单详情，超出门店范围按 404 处理。"""
     order = _get_order(db, order_id)
     _visible(current_user, order)
     return _order_out(order)
@@ -177,6 +191,7 @@ def create_purchase_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """门店人员在可写门店下创建采购单。单号按当天已有单自动生成，初始状态为已下单。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="仅门店人员可开采购单")
     try:
@@ -226,6 +241,7 @@ def receive_purchase_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """门店人员对采购单入库。已全部入库或已取消的不能再收。可指定行和数量，也可一次收完全部未收完的行，并同步增加库存流水。"""
     if not _staff(current_user):
         raise HTTPException(status_code=403, detail="仅门店人员可入库")
     order = _get_order(db, order_id)
@@ -281,6 +297,7 @@ def cancel_purchase_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """主管或管理员取消尚未发生入库的采购单。已有入库数量的不能取消。"""
     if current_user.role not in ("ADMIN", "SUPERVISOR"):
         raise HTTPException(status_code=403, detail="仅主管或管理员可取消采购单")
     order = _get_order(db, order_id)

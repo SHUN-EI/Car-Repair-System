@@ -116,6 +116,7 @@ class ConsultGuideAgent:
 
     # ---------- 追踪维修（多轮不上图，Redis 状态机） ----------
     def start_guided_repair(self, description: str, device_type: str = ""):
+        """开始一轮引导维修：把故障描述和可选设备类型转交给引导维修状态机，并返回新会话。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.start_diagnosis(
             description=description, device_type=device_type or "",
@@ -128,6 +129,7 @@ class ConsultGuideAgent:
         action_taken: str,
         device_status: str,
     ):
+        """在引导维修会话中提交用户选择的选项、已做动作和当前设备状态，进入下一步。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.next_step(
             session_id=session_id,
@@ -137,12 +139,14 @@ class ConsultGuideAgent:
         )
 
     def guided_repair_chat(self, session_id: str, message: str, device_type: str = ""):
+        """以流式对话方式继续引导维修会话，适合 HTTP SSE 渠道。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.chat(
             session_id=session_id, message=message, device_type=device_type or "",
         )
 
     def guided_repair_chat_sync(self, session_id: str, message: str, device_type: str = "") -> str:
+        """以同步方式继续引导维修会话，直接返回完整回复文本，适合钉钉等不能流式输出的渠道。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.chat_sync(
             session_id, message, device_type=device_type or "",
@@ -155,6 +159,7 @@ class ConsultGuideAgent:
         device_type: str = "",
         scene: str = "",
     ):
+        """异步继续引导维修会话，可带上 scene（如 consult）以切换提示词风格。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.achat(
             session_id=session_id,
@@ -164,19 +169,23 @@ class ConsultGuideAgent:
         )
 
     def guided_session_status(self, session_id: str):
+        """查询引导维修会话是否存在、当前步数和是否已结束。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.get_session_status(session_id)
 
     def guided_current_options(self, session_id: str):
+        """返回引导维修当前步骤可选的操作项，供前端渲染按钮。"""
         from app.agents.guided_repair_agent import guided_repair_agent
         return guided_repair_agent.get_current_options(session_id)
 
     # ---------- 专家模式（多轮不上图） ----------
     def decompose_fault(self, question: str) -> List[str]:
+        """把复合故障提问拆成若干子问题，供专家模式首轮分析使用。"""
         from app.agents.fault_decomposer import fault_decomposer
         return fault_decomposer.decompose(question)
 
     def expert_first_round(self, question: str, faults: List[Dict]) -> Dict:
+        """根据原始问题和拆出的子故障，生成专家模式的首轮分析。"""
         from app.agents.expert_repair_agent import expert_repair_agent
         return expert_repair_agent.generate_first_round(question, faults)
 
@@ -187,17 +196,20 @@ class ConsultGuideAgent:
         faults: List[Dict],
         first_analysis: str,
     ) -> str:
+        """创建专家模式会话，写入初始问题、子查询、故障列表和首轮分析，返回会话 ID。"""
         from app.agents.expert_repair_agent import expert_repair_agent
         return expert_repair_agent.create_session(
             question, sub_queries, faults, first_analysis,
         )
 
     def expert_next_step(self, session_id: str, message: str):
+        """把维修员的新反馈送入专家模式会话，生成下一轮分析或结束摘要。"""
         from app.agents.expert_repair_agent import expert_repair_agent
         return expert_repair_agent.next_step(session_id, message)
 
     # ---------- 会话摘要 ----------
     def summarize(self, messages: List[dict]) -> str:
+        """把多轮对话消息交给记忆服务压缩成摘要，供会话上下文使用。"""
         from app.memory.memory_service import memory_service
         return memory_service.summarize(messages)
 
@@ -208,6 +220,7 @@ class ConsultGuideAgent:
         return work_order_agent.query_work_order(work_order_no)
 
     def can_write_work_order(self) -> bool:
+        """咨询/引导 Agent 不允许写工单。始终返回 False，创建、改状态、扣料等必须由工单 Agent 执行。"""
         return False
 
 

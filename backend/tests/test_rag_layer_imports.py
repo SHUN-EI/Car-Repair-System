@@ -15,6 +15,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 
 def _iter_targets() -> list[Path]:
+    """遍历需要检查分层的源文件。"""
     paths: list[Path] = []
     paths.extend(sorted((BACKEND / "app" / "api").glob("*.py")))
     paths.extend(sorted((BACKEND / "scripts").glob("*.py")))
@@ -24,6 +25,7 @@ def _iter_targets() -> list[Path]:
 
 
 def _imported_modules(path: Path) -> set[str]:
+    """解析文件中导入的模块。"""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     modules: set[str] = set()
     for node in ast.walk(tree):
@@ -36,6 +38,7 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def test_api_scripts_and_tools_do_not_import_vector_stack():
+    """API、脚本和工具不应直接导入向量库或编码实现，应经 rag_service。"""
     violations = []
     for path in _iter_targets():
         bad = sorted(mod for mod in _imported_modules(path) if mod in FORBIDDEN or mod.split(".")[0] == "pymilvus")
@@ -46,6 +49,7 @@ def test_api_scripts_and_tools_do_not_import_vector_stack():
 
 
 def test_retrieval_flow_shim_exists():
+    """agents 下的 retrieval_flow 应只是兼容转接，真正实现在 rag 层。"""
     shim = BACKEND / "app" / "agents" / "retrieval_flow.py"
     text = shim.read_text(encoding="utf-8")
     assert "from app.rag.retrieval_flow import" in text

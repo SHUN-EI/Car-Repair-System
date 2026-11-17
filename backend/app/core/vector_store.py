@@ -1,3 +1,5 @@
+"""Milvus 向量库封装：知识集合和手册错误码集合共用连接与检索逻辑，字段定义按集合区分。API 层不应直接调用本模块，应走 rag_service。"""
+
 from pymilvus import (
     connections, Collection, FieldSchema, CollectionSchema,
     DataType, utility
@@ -86,6 +88,7 @@ class VectorStore:
 
     def __init__(self, collection_name: Optional[str] = None, fields: Optional[List] = None,
                  description: str = ""):
+        """初始化知识向量集合客户端。可覆盖集合名和字段；默认使用配置中的知识集合和 1024 维向量长度，连接在首次操作时再建立。"""
         self.host = settings.MILVUS_HOST
         self.port = settings.MILVUS_PORT
         self.collection_name = collection_name or settings.MILVUS_COLLECTION
@@ -470,6 +473,7 @@ class LogCodeVectorStore(VectorStore):
     ]
 
     def __init__(self, collection_name: Optional[str] = None):
+        """初始化手册错误码向量集合，复用父类连接逻辑，但使用错误码专用字段和输出列。"""
         super().__init__(
             collection_name=collection_name or settings.MILVUS_LOG_CODE_COLLECTION,
             fields=self._LOG_CODE_FIELDS,

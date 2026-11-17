@@ -21,6 +21,7 @@ from app.mcp import tools
 # 状态定义
 # ============================================================
 class RobotState(TypedDict, total=False):
+    """钉钉机器人主图状态：用户原文、钉钉和企业用户身份、最终回复，以及工单查询子图要用的工单号。"""
     text: str                 # 用户消息原文
     staff_id: str             # 钉钉企业 userId（senderStaffId）
     user_id: Optional[int]    # 系统用户 id（未匹配则为 None）
@@ -30,6 +31,7 @@ class RobotState(TypedDict, total=False):
 
 
 class WoSubState(TypedDict, total=False):
+    """工单查询子图的状态：用户原文、解析出的工单号和回复文本。"""
     text: str
     wo_no: str
     reply: str
@@ -121,6 +123,7 @@ def route_intent(state: RobotState) -> str:
 
 
 def help_node(state: RobotState) -> dict:
+    """返回机器人功能帮助文案，不访问业务数据。"""
     return {"reply": HELP_TEXT}
 
 
@@ -164,10 +167,12 @@ def none_node(state: RobotState) -> dict:
 
 
 def create_node(state: RobotState) -> dict:
+    """钉钉里不能直接创建工单，返回引导用户去系统开单的说明。"""
     return {"reply": _CREATE_WO_TEXT}
 
 
 def todo_node(state: RobotState) -> dict:
+    """查询当前绑定用户的待办工单。未识别到系统账号时，提示先在安全设置里绑定钉钉。"""
     staff_id = state.get("staff_id") or ""
     user_id = state.get("user_id")
     if not user_id and not staff_id:
@@ -176,10 +181,12 @@ def todo_node(state: RobotState) -> dict:
 
 
 def inventory_node(state: RobotState) -> dict:
+    """按用户文本做只读库存查询，并生成回复。"""
     return {"reply": tools.query_inventory(state.get("text") or "")}
 
 
 def duty_node(state: RobotState) -> dict:
+    """按钉钉身份和用户文本查询排班，并生成回复。"""
     return {"reply": tools.query_duty_schedule(state.get("staff_id") or "", state.get("text") or "")}
 
 
@@ -251,6 +258,7 @@ WO_SUBGRAPH = _wo_subgraph.compile()
 # 主图构建
 # ============================================================
 def build_robot_graph():
+    """编译钉钉机器人 LangGraph：入口路由后分到帮助、开单引导、待办、工单查询子图、库存、排班、引导维修或未识别，各分支结束后直接结束。"""
     graph = StateGraph(RobotState)
     graph.add_node("router", lambda s: {})  # 占位节点，实际分发由条件边完成
     graph.add_node("help", help_node)

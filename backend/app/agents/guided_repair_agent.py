@@ -118,6 +118,7 @@ class GuidedRepairAgent:
     _HISTORY_KEEP_RAW = 20            # 压缩后保留的最近原文条数
 
     def __init__(self):
+        """初始化引导维修状态机，对话模型延迟加载；会话存在 Redis 中，不走 LangGraph。"""
         self._llm: Optional[ChatOpenAI] = None
 
     def _load_session(self, session_id: str) -> Optional[Dict]:
@@ -191,6 +192,7 @@ class GuidedRepairAgent:
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造流式对话模型，温度 0.5，超时 60 秒，超时给用户可感知的失败提示。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.5,

@@ -8,6 +8,7 @@ _hits: dict[str, list[float]] = defaultdict(list)
 
 
 def hit(key: str, limit: int, window_seconds: float = 60.0) -> None:
+    """进程内滑动窗口限流。同一 key 在 window_seconds 内超过 limit 次就抛出 HTTP 429。只适合单进程防护，不能替代网关或 Redis 限流。"""
     now = time.monotonic()
     recent = [stamp for stamp in _hits[key] if now - stamp < window_seconds]
     if len(recent) >= limit:

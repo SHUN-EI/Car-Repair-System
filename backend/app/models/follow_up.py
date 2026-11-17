@@ -1,3 +1,5 @@
+"""交车后的回访或评价提醒。到期发送由任务和领域层负责，本表不记录评分结果。"""
+
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -22,4 +24,5 @@ class FollowUpReminder(BaseModel):
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     def __repr__(self):
+        """调试时输出提醒主键、工单号、类型和发送状态。"""
         return f"<FollowUpReminder(work_order_id={self.work_order_id}, kind='{self.kind}', status='{self.status}')>"

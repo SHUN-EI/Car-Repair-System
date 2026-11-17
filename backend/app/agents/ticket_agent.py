@@ -65,10 +65,12 @@ class TicketUnderstandingAgent:
     """
 
     def __init__(self):
+        """初始化工单理解/分析器，对话模型延迟加载。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造低温、非流式对话模型，用于标准化故障现象、根因和方案等字段。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.1,

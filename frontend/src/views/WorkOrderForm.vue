@@ -728,7 +728,13 @@ import { toAuthObjectUrl } from '../utils/authMedia'
 
 const route = useRoute()
 const router = useRouter()
+/**
+ * 当前是否在新建工单。
+ */
 const isNew = computed(() => !route.params.id || route.path.endsWith('/new'))
+/**
+ * 已有工单且未带编辑参数时，进入只读查看模式。
+ */
 const isViewMode = computed(() => !isNew.value && !route.query.edit)
 
 // 查看历史草稿：前往维修报表并预选「草稿」筛选（联动 WorkOrders.vue 的 workorders_filter 恢复逻辑）
@@ -745,6 +751,9 @@ const DEFAULT_DEVICE_TYPES = [
   { label: 'PLC系统', value: 'PLC系统' },
 ]
 
+/**
+ * 把设备类型树压平，供下拉选择。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -795,6 +804,9 @@ const rootCauseOptions = ref([])
 const attachments = ref([])
 const previewMap = ref({})
 
+/**
+ * 把附件地址换成带登录态的预览地址，供图片展示。
+ */
 const hydrateAttachmentPreviews = async (list) => {
   const next = {}
   for (const file of list || []) {
@@ -838,7 +850,13 @@ const canSubmit = computed(() => {
   return !!(form.fault_description)
 })
 
+/**
+ * 按故障严重级别返回标签颜色。
+ */
 const sevTagType = (s) => ({ EX: 'danger', OH: 'warning', INFO: 'info' }[s] || 'info')
+/**
+ * 把严重级别转成中文标签。
+ */
 const sevLabel = (s) => ({ EX: 'EX 急停', OH: 'OH 停机', INFO: 'INFO 提示' }[s] || s)
 
 // 补充信息已填项数（折叠区标题徽标）
@@ -850,6 +868,9 @@ const supplementFilledCount = computed(() => {
   return n
 })
 
+/**
+ * 判断工单表单是否已填写内容，用于切换录入模式前的确认。
+ */
 const isFormDirty = () => {
   return !!(form.device_id || form.device_error_code || form.fault_description ||
     form.fault_phenomenon || form.fault_code.length || form.root_cause ||
@@ -890,8 +911,14 @@ const resetFormFields = () => {
   archiveCheckResult.value = null
 }
 
+/**
+ * 切换手工或日志录入模式；表单已有内容时会先确认，确认后会清空已填项但保留日志解析结果。
+ */
 const switchEntryMode = (mode) => {
   if (entryMode.value === mode) return
+  /**
+   * 确认切换录入模式：重置已填字段并切换模式，日志解析结果保留。
+   */
   const confirmSwitch = () => {
     resetFormFields()
     // 日志解析结果暂存：不清空 ecResults/ecQuery/extractedCodes，切换回来仍可见
@@ -960,6 +987,9 @@ const ecSearch = async () => {
   }
 }
 
+/**
+ * 把解析或手工加入的错误码同步到表单的设备错误码和故障码字段，避免提交时漏掉。
+ */
 const syncExtractedCodes = () => {
   const codes = extractedCodes.value
   form.device_error_code = codes.join(',')
@@ -970,7 +1000,13 @@ const syncExtractedCodes = () => {
 }
 // 监听 extractedCodes 变化，自动同步到 form.device_error_code（确保故障码联动）
 watch(extractedCodes, () => { syncExtractedCodes() }, { deep: true })
+/**
+ * 从已提取错误码中删掉一个，并重新同步到表单。
+ */
 const removeExtractedCode = (c) => { extractedCodes.value = extractedCodes.value.filter(x => x !== c); syncExtractedCodes() }
+/**
+ * 手工输入一个错误码，加入提取列表并同步到表单。
+ */
 const addManualCode = () => {
   const c = (manualCodeInput.value || '').trim().toUpperCase()
   if (!c) return
@@ -1017,6 +1053,9 @@ const applyCaseItem = (c) => {
 }
 const archiving = ref(false)
 const archiveCheckResult = ref(null)
+/**
+ * 归档检查通过后，才允许完成归档。
+ */
 const canArchiveComplete = computed(() => !!archiveCheckResult.value?.passed)
 const deviceMaintenance = ref(null)
 const deviceTypeOptions = ref([...DEFAULT_DEVICE_TYPES])
@@ -1028,6 +1067,9 @@ const aiMsgRef = ref(null)
 const knowledgeDialog = reactive({ visible: false, keyword: '', results: [], searching: false })
 const faultCodeDialog = reactive({ visible: false, description: '', creating: false, result: null })
 
+/**
+ * 根据表单中的设备编号，从本地列表找出对应设备。
+ */
 const selectedDevice = computed(() => {
   // form 是 reactive 对象（无 .value），直接用 form.device_id
   if (!form.device_id) return null
@@ -1036,15 +1078,27 @@ const selectedDevice = computed(() => {
   // 备选：deviceFiltered（远程检索可能引入 devices.value 之外的新数据）
   return deviceFiltered.value.find(d => d.id === form.device_id) || null
 })
+/**
+ * 展示用的设备名称；本地列表没有时回退到详情接口带回的名称。
+ */
 const deviceName = computed(() => {
   if (!form.device_id) return '-'
   if (selectedDevice.value) return selectedDevice.value.device_name
   // 兜底：设备不在本地列表时，用后端详情接口返回的设备名称
   return form.device_name || form.device_code || '-'
 })
+/**
+ * 把设备状态转成中文。
+ */
 const devStatusLabel = (s) => ({ ONLINE: '正常', OFFLINE: '离线', ALARM: '告警', FAULT: '故障', UNKNOWN: '未知' }[s] || '未知')
+/**
+ * 按设备状态返回标签样式。
+ */
 const devStatusTagType = (s) => ({ ONLINE: 'success', OFFLINE: 'info', ALARM: 'warning', FAULT: 'danger' }[s] || 'info')
 
+/**
+ * 把故障码字段格式化成逗号分隔的展示文案。
+ */
 const displayFaultCodes = computed(() => {
   const c = form.fault_code
   if (!c) return ''
@@ -1052,6 +1106,9 @@ const displayFaultCodes = computed(() => {
   return c
 })
 
+/**
+ * 展示承修人姓名，优先用后端返回的最新姓名。
+ */
 const technicianName = computed(() => {
   // 优先用后端返回的 technician_name（确保个人中心改名字后工单同步）
   if (form.technician_name) return form.technician_name
@@ -1060,6 +1117,9 @@ const technicianName = computed(() => {
   return u ? u.real_name : '-'
 })
 
+/**
+ * 从本地缓存读取当前登录用户的显示名。
+ */
 const currentUserName = computed(() => {
   try {
     const raw = localStorage.getItem('current_user')
@@ -1084,7 +1144,13 @@ const statusMap = {
   APPROVED: '报价已确认', INTAKE: '接车', DIAGNOSING: '诊断中', QUOTING: '报价中',
   QC: '质检', CLOSED: '已结案', CANCELLED: '已取消',
 }
+/**
+ * 把工单状态转成中文标签。
+ */
 const statusLabel = computed(() => statusMap[form.status] || form.status || '-')
+/**
+ * 把允许的下一步状态转成中文列表。
+ */
 const allowedTransitionLabels = computed(() => (form.allowed_transitions || []).map(s => statusMap[s] || s))
 const AUTO_NEXT = {
   DRAFT: 'INTAKE', INTAKE: 'DIAGNOSING', DIAGNOSING: 'QUOTING', QUOTING: 'APPROVED',
@@ -1094,16 +1160,34 @@ const AUTO_ACTION = {
   INTAKE: '接车', DIAGNOSING: '开始诊断', QUOTING: '出具报价', APPROVED: '确认报价',
   IN_PROGRESS: '开始施工', QC: '提交质检', COMPLETED: '质检通过', CLOSED: '结案交车',
 }
+/**
+ * 判断当前工单是否走汽修车道。
+ */
 const isAutoLane = computed(() => !!(form.vehicle_id || form.appointment_id || form.store_id || ['INTAKE', 'DIAGNOSING', 'QUOTING', 'QC'].includes(form.status)))
+/**
+ * 汽修车道上允许的下一步状态，没有则空。
+ */
 const autoNextStatus = computed(() => {
   if (!isAutoLane.value) return ''
   const next = AUTO_NEXT[form.status]
   return next && (form.allowed_transitions || []).includes(next) ? next : ''
 })
+/**
+ * 下一步自动流转对应的按钮文案。
+ */
 const autoActionLabel = computed(() => AUTO_ACTION[autoNextStatus.value] || '')
+/**
+ * 下一步若是确认报价或结案，则需要门店主管。
+ */
 const needsStoreSupervisor = computed(() => autoNextStatus.value === 'APPROVED' || autoNextStatus.value === 'CLOSED')
+/**
+ * 汽修车道上当前是否允许取消工单。
+ */
 const canCancelAuto = computed(() => isAutoLane.value && (form.allowed_transitions || []).includes('CANCELLED'))
 const transitioning = ref(false)
+/**
+ * 读取本地缓存中的当前登录用户。
+ */
 const currentUser = (() => {
   try { return JSON.parse(localStorage.getItem('current_user') || '{}') } catch { return {} }
 })()
@@ -1121,7 +1205,13 @@ const quoteStatusText = {
   REJECTED: '已拒绝', CANCELLED: '已取消',
 }
 const lineTypeText = { PART: '配件', LABOR: '工时', PACKAGE: '套餐' }
+/**
+ * 打开支付或收款相关对话框。
+ */
 const openPayment = (quoteId) => payments.value.find(item => item.quote_id === quoteId && item.status === 'CREATED')
+/**
+ * 加载这张工单已有的报价单。
+ */
 const loadQuotes = async () => {
   const id = form.id || route.params.id
   if (!id) return
@@ -1132,6 +1222,9 @@ const loadQuotes = async () => {
   quotes.value = quoteRes.items || []
   payments.value = payRes.items || []
 }
+/**
+ * 按当前项目生成草稿报价，价格由规则引擎计算。
+ */
 const draftQuote = async (kind) => {
   quoteBusy.value = true
   try {
@@ -1149,6 +1242,9 @@ const draftQuote = async (kind) => {
     quoteBusy.value = false
   }
 }
+/**
+ * 预览可推荐的保养套餐。
+ */
 const previewPackages = async () => {
   quoteBusy.value = true
   try {
@@ -1163,6 +1259,9 @@ const previewPackages = async () => {
     quoteBusy.value = false
   }
 }
+/**
+ * 店员确认报价。
+ */
 const confirmQuote = async (quote, action) => {
   quoteBusy.value = true
   try {
@@ -1176,6 +1275,9 @@ const confirmQuote = async (quote, action) => {
     quoteBusy.value = false
   }
 }
+/**
+ * 为已确认报价创建支付占位单。
+ */
 const createPayment = async (quote) => {
   quoteBusy.value = true
   try {
@@ -1186,6 +1288,9 @@ const createPayment = async (quote) => {
     quoteBusy.value = false
   }
 }
+/**
+ * 按汽修车道自动走到允许的下一步状态。
+ */
 const runAutoTransition = async (toStatus) => {
   const id = route.params.id || form.id
   if (!id) return
@@ -1199,6 +1304,9 @@ const runAutoTransition = async (toStatus) => {
     transitioning.value = false
   }
 }
+/**
+ * 按工单状态返回标签颜色。
+ */
 const statusTagType = computed(() => {
   const map = {
     DRAFT: 'info', SUBMITTED: 'info', ASSIGNED: 'primary', ACCEPTED: 'primary',
@@ -1208,15 +1316,24 @@ const statusTagType = computed(() => {
   return map[form.status] || 'info'
 })
 
+/**
+ * 把维修结果转成中文。
+ */
 const repairResultLabel = computed(() => {
   const map = { PERMANENT_FIX: '彻底修复', TEMPORARY_FIX: '临时措施', UNABLE_FIX: '未能修复' }
   return map[form.repair_result] || form.repair_result || ''
 })
+/**
+ * 按维修结果返回标签颜色。
+ */
 const repairResultTagType = computed(() => {
   const map = { PERMANENT_FIX: 'success', TEMPORARY_FIX: 'warning', UNABLE_FIX: 'danger' }
   return map[form.repair_result] || 'info'
 })
 
+/**
+ * 加载设备类型。
+ */
 const loadDeviceTypes = async () => {
   try {
     const res = await request.get('/categories/', { params: { category_type: 'DEVICE_TYPE', page_size: 1000 } })
@@ -1228,6 +1345,9 @@ const loadDeviceTypes = async () => {
   } catch { /* ignore */ }
 }
 
+/**
+ * 按设备加载可选故障码。
+ */
 const fetchFaultCodes = async () => {
   try {
     const res = await request.get('/fault-codes/', { params: { page_size: 200 } })
@@ -1251,6 +1371,9 @@ const filterFaultCodes = (query) => {
   )
 }
 
+/**
+ * 按设备或故障码加载故障现象选项。
+ */
 const fetchFaultPhenomena = async (deviceType) => {
   try {
     const params = {}
@@ -1260,6 +1383,9 @@ const fetchFaultPhenomena = async (deviceType) => {
   } catch { faultPhenomenaOptions.value = [] }
 }
 
+/**
+ * 按已选现象加载可能的原因选项。
+ */
 const fetchRootCauses = async () => {
   try {
     const res = await request.get('/categories/data/root-causes')
@@ -1267,6 +1393,9 @@ const fetchRootCauses = async () => {
   } catch { rootCauseOptions.value = [] }
 }
 
+/**
+ * 设备变更后，联动刷新故障码和现象等选项。
+ */
 const onDeviceChange = async (deviceId) => {
   if (!deviceId) {
     form.device_type = ''
@@ -1287,6 +1416,9 @@ const onDeviceChange = async (deviceId) => {
   } catch { deviceMaintenance.value = null }
 }
 
+/**
+ * 故障现象变更后，联动刷新原因选项。
+ */
 const onFaultPhenomenonChange = (val) => {
   if (val && val.length >= 2) {
     form.fault_category = val[0]
@@ -1300,6 +1432,9 @@ const onFaultPhenomenonChange = (val) => {
   }
 }
 
+/**
+ * 原因变更后，联动刷新后续维修建议字段。
+ */
 const onRootCauseChange = (val) => {
   if (val && val.length >= 2) {
     form.root_cause_category = val[0]
@@ -1313,12 +1448,18 @@ const onRootCauseChange = (val) => {
   }
 }
 
+/**
+ * 维修结果变更后，按需要补充后续字段。
+ */
 const onRepairResultChange = (val) => {
   if (val !== 'TEMPORARY_FIX' && val !== 'UNABLE_FIX') {
     form.follow_up_plan = ''
   }
 }
 
+/**
+ * 根据开始和结束时间计算工时。
+ */
 const calcWorkHours = () => {
   if (timeRange.value && timeRange.value.length === 2 && timeRange.value[0] && timeRange.value[1]) {
     const diff = timeRange.value[1].getTime() - timeRange.value[0].getTime()
@@ -1328,6 +1469,9 @@ const calcWorkHours = () => {
   }
 }
 
+/**
+ * 上传工单附件。
+ */
 const uploadFile = async (option) => {
   const formData = new FormData()
   formData.append('file', option.file)
@@ -1344,6 +1488,9 @@ const uploadFile = async (option) => {
   }
 }
 
+/**
+ * 上传前校验文件类型或大小。
+ */
 const beforeUpload = (file) => {
   const maxSize = 50 * 1024 * 1024
   if (file.size > maxSize) {
@@ -1353,11 +1500,17 @@ const beforeUpload = (file) => {
   return true
 }
 
+/**
+ * 从工单中移除一个附件。
+ */
 const removeAttachment = (uploadFile) => {
   const idx = attachments.value.findIndex(f => f.name === uploadFile.name)
   if (idx >= 0) attachments.value.splice(idx, 1)
 }
 
+/**
+ * 打开知识参考面板，检索可用方案。
+ */
 const openKnowledgeRef = () => {
   knowledgeDialog.keyword = [form.fault_description, form.fault_phenomenon_type, form.device_type]
     .filter(Boolean).join(' ')
@@ -1366,6 +1519,9 @@ const openKnowledgeRef = () => {
   if (knowledgeDialog.keyword) searchSolutions()
 }
 
+/**
+ * 按当前故障信息检索解决方案。
+ */
 const searchSolutions = async () => {
   if (!knowledgeDialog.keyword.trim()) return
   knowledgeDialog.searching = true
@@ -1382,6 +1538,9 @@ const searchSolutions = async () => {
   }
 }
 
+/**
+ * 把选中的知识方案填进工单的处理步骤等字段。
+ */
 const applySolution = (item) => {
   form.solution_steps = item.solution_steps || ''
   form.solution_ref_knowledge_id = item.knowledge_id
@@ -1389,6 +1548,9 @@ const applySolution = (item) => {
   ElMessage.success(`已引用知识库方案: ${item.title}`)
 }
 
+/**
+ * 把 AI 分析结果填进对应表单字段。
+ */
 const applyAIFields = () => {
   if (!analysisResult.value) return
   const a = analysisResult.value
@@ -1405,6 +1567,9 @@ const applyAIFields = () => {
   ElMessage.success('AI 推荐字段已填充')
 }
 
+/**
+ * 按关键字搜索设备，供工单选择。
+ */
 const searchDevices = (query) => {
   if (!query) { deviceFiltered.value = devices.value; return }
   const q = query.toLowerCase()
@@ -1415,6 +1580,9 @@ const searchDevices = (query) => {
 }
 
 let sparePartSearchTimer = null
+/**
+ * 按关键字过滤可选用的配件。
+ */
 const filterSpareParts = (query) => {
   if (sparePartSearchTimer) clearTimeout(sparePartSearchTimer)
   if (!query) { sparePartOptions.value = [...spareParts.value]; return }
@@ -1440,10 +1608,16 @@ const filterSpareParts = (query) => {
   }, 300)
 }
 
+/**
+ * 配件下拉展开时加载或刷新可选配件。
+ */
 const onSelectVisible = (visible) => {
   if (visible) sparePartOptions.value = [...spareParts.value]
 }
 
+/**
+ * 选中配件后加入用料明细。
+ */
 const onPartSelected = (code, idx) => {
   if (!code) {
     usedParts.value[idx].name = ''
@@ -1462,6 +1636,9 @@ const onPartSelected = (code, idx) => {
   }
 }
 
+/**
+ * 把工单标记为加急。
+ */
 const handleUrgentOrder = (part) => {
   const sp = spareParts.value.find(s => s.part_code === part.code)
   const name = sp ? `${sp.part_code} - ${sp.part_name}` : part.code
@@ -1474,8 +1651,14 @@ const handleUrgentOrder = (part) => {
   }).catch(() => {})
 }
 
+/**
+ * 禁用不可选的日期，例如预约或计划时间。
+ */
 const disabledDate = (time) => time.getTime() > Date.now()
 
+/**
+ * 把当前表单保存为工单，供提交或存草稿复用。
+ */
 const saveForm = async () => {
   try {
     const validFields = [
@@ -1521,6 +1704,9 @@ const saveForm = async () => {
   }
 }
 
+/**
+ * 归档前检查工单是否还缺必填信息。
+ */
 const handleArchiveCheck = async () => {
   archiving.value = true
   try {
@@ -1537,6 +1723,9 @@ const handleArchiveCheck = async () => {
   finally { archiving.value = false }
 }
 
+/**
+ * 完成归档操作。
+ */
 const handleArchiveComplete = async () => {
   if (!canArchiveComplete.value) return
   archiving.value = true
@@ -1562,6 +1751,9 @@ const fieldLabelMap = {
   work_hours: '工时',
 }
 
+/**
+ * 调用工单分析，预填故障和方案字段。
+ */
 const handleAnalyze = async () => {
   if (!form.fault_description) {
     ElMessage.warning('请填写故障描述')
@@ -1583,6 +1775,9 @@ const handleAnalyze = async () => {
   finally { analyzing.value = false }
 }
 
+/**
+ * 提交工单（新建或更新）。
+ */
 const handleSubmit = async () => {
   if (!canSubmit.value) return
   // 补充信息选填：根因未填时仅文字提醒，不阻塞提交
@@ -1615,6 +1810,9 @@ const handleSubmit = async () => {
   finally { submitting.value = false }
 }
 
+/**
+ * 把工单保存为草稿，不进入正式流转。
+ */
 const handleSaveDraft = async () => {
   saving.value = true
   try {
@@ -1624,6 +1822,9 @@ const handleSaveDraft = async () => {
   finally { saving.value = false }
 }
 
+/**
+ * 在工单页里快速新建一条故障码。
+ */
 const handleCreateFaultCode = async () => {
   if (!faultCodeDialog.description.trim()) {
     ElMessage.warning('请填写故障描述')
@@ -1649,6 +1850,9 @@ const handleCreateFaultCode = async () => {
   }
 }
 
+/**
+ * 确认快速新建故障码的结果并写回表单。
+ */
 const confirmFaultCodeResult = () => {
   if (faultCodeDialog.result && faultCodeDialog.result.fault_code) {
     const code = faultCodeDialog.result.fault_code
@@ -1659,6 +1863,9 @@ const confirmFaultCodeResult = () => {
   faultCodeDialogClose()
 }
 
+/**
+ * 关闭快速新建故障码对话框。
+ */
 const faultCodeDialogClose = () => {
   faultCodeDialog.visible = false
   setTimeout(() => {
@@ -1677,6 +1884,9 @@ const trimAiHistory = () => {
   }
 }
 
+/**
+ * 打开工单页里的 AI 助手，围绕当前故障提问。
+ */
 const askAI = async (type) => {
   if (form.fault_description) {
     try { await saveForm() } catch { /* ignore */ }
@@ -1712,6 +1922,9 @@ const askAI = async (type) => {
   aiDialog.visible = true
 }
 
+/**
+ * 向工单页 AI 助手发送一条问题。
+ */
 const sendAIMessage = async () => {
   const text = aiDialog.input.trim()
   const lastMsg = aiDialog.messages[aiDialog.messages.length - 1]

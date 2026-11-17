@@ -20,11 +20,13 @@ from app.models.vehicle import Vehicle
 
 
 def owner_status_text(work_order_no: str, status_label: str, plate: str = "") -> str:
+    """生成工单进度通知的正文：包含工单号、可选车牌和当前状态中文说明。"""
     plate_text = f"，车牌{plate}" if plate else ""
     return f"工单{work_order_no}{plate_text}，当前进度：{status_label}。"
 
 
 def _customer_for(db: Session, customer_id: Optional[int], vehicle_id: Optional[int]) -> Optional[Customer]:
+    """按客户 ID 查找车主档案；找不到时再通过车辆的 owner_id 回退查找。两者都没有时返回 None。"""
     if customer_id:
         row = db.query(Customer).filter(Customer.id == customer_id).first()
         if row:

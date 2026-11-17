@@ -5,10 +5,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 def _norm(value: Any) -> str:
+    """做套餐匹配用的归一化：转字符串、去空白并 casefold。None 视为空串。"""
     return ("" if value is None else str(value)).strip().casefold()
 
 
 def _keywords(value: Any) -> List[str]:
+    """把症状关键词规范成去空白的字符串列表。字符串按中英文逗号拆分；其它非列表类型返回空列表。"""
     if not value:
         return []
     if isinstance(value, str):
@@ -19,6 +21,7 @@ def _keywords(value: Any) -> List[str]:
 
 
 def _field_matches(rule_value: Any, query_value: Any) -> bool:
+    """比较规则字段与查询值。规则未填写时视为不限制（返回 True），否则做忽略大小写的精确比较。"""
     expected = _norm(rule_value)
     if not expected:
         return True
@@ -26,6 +29,7 @@ def _field_matches(rule_value: Any, query_value: Any) -> bool:
 
 
 def _mileage_matches(mileage: Optional[int], start: Any, end: Any) -> bool:
+    """判断里程是否落在规则区间内。查询里程为空，或规则起止都未设时视为通过；只设一端时另一端用 0 或一个很大的上限补齐。"""
     if mileage is None:
         return True
     if start is None and end is None:
@@ -36,6 +40,7 @@ def _mileage_matches(mileage: Optional[int], start: Any, end: Any) -> bool:
 
 
 def _symptom_hits(keywords: Iterable[str], symptoms: str) -> int:
+    """统计规则关键词有多少个出现在症状文本里（包含匹配，忽略大小写）。文本或关键词为空则计 0。"""
     blob = _norm(symptoms)
     if not blob:
         return 0

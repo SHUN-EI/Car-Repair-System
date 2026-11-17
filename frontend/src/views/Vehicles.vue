@@ -89,6 +89,9 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
 
+/**
+ * 读取本地缓存中的当前登录用户。
+ */
 const currentUser = (() => {
   try {
     const raw = localStorage.getItem('current_user')
@@ -108,15 +111,27 @@ const dialogVisible = ref(false)
 const saving = ref(false)
 const editingId = ref(null)
 const customers = ref([])
+/**
+ * 返回一份空白的车辆表单。
+ */
 const emptyForm = () => ({ plate: '', vin: '', make: '', model: '', year: null, owner_id: null })
 const form = ref(emptyForm())
 
+/**
+ * 生成车辆在列表中的标题文案。
+ */
 const vehicleTitle = (row) => {
   const parts = [row.make, row.model].filter(Boolean)
   return parts.length ? parts.join(' ') : '-'
 }
+/**
+ * 把关联客户格式化成展示文案。
+ */
 const customerLabel = (c) => c.phone ? `${c.name}（${c.phone}）` : c.name
 
+/**
+ * 按条件加载车辆列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -130,6 +145,9 @@ const fetchData = async () => {
   }
 }
 
+/**
+ * 加载客户列表，供选择车主。
+ */
 const loadCustomers = async () => {
   try {
     const res = await request.get('/customers/', { params: { page: 1, page_size: 200 } })
@@ -137,9 +155,18 @@ const loadCustomers = async () => {
   } catch { /* 拦截器已提示 */ }
 }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchData() }
+/**
+ * 清空筛选并重新加载。
+ */
 const handleReset = () => { keyword.value = ''; page.value = 1; fetchData() }
 
+/**
+ * 打开新增车辆对话框。
+ */
 const openCreate = async () => {
   editingId.value = null
   form.value = emptyForm()
@@ -147,6 +174,9 @@ const openCreate = async () => {
   dialogVisible.value = true
 }
 
+/**
+ * 打开编辑车辆对话框并回填数据。
+ */
 const openEdit = async (row) => {
   editingId.value = row.id
   form.value = {
@@ -161,6 +191,9 @@ const openEdit = async (row) => {
   dialogVisible.value = true
 }
 
+/**
+ * 新增或保存车辆档案。
+ */
 const handleSave = async () => {
   if (!form.value.plate || !form.value.plate.trim()) {
     ElMessage.warning('请填写车牌号')
@@ -190,6 +223,9 @@ const handleSave = async () => {
   }
 }
 
+/**
+ * 删除车辆档案。
+ */
 const handleDelete = (row) => {
   ElMessageBox.confirm(`确认删除车辆 ${row.plate}？`, '删除车辆', { type: 'warning' })
     .then(async () => {

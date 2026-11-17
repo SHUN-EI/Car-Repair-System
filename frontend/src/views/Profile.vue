@@ -155,16 +155,28 @@ const form = reactive({
   dingtalk_bound_at: null,
 })
 
+/**
+ * 把当前资料里的角色代码转成中文名称。
+ */
 const roleLabel = computed(() => roleLabelMap[form.role] || form.role)
 const saving = ref(false)
 const unbinding = ref(false)
+/**
+ * 当前账号是否已绑定钉钉。
+ */
 const dtBound = computed(() => !!form.dingtalk_userid)
 
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => {
   if (!t) return ''
   return new Date(t).toLocaleString('zh-CN', { hour12: false })
 }
 
+/**
+ * 加载当前用户资料。
+ */
 const loadProfile = () => {
   try {
     const saved = localStorage.getItem('current_user')
@@ -177,6 +189,9 @@ const loadProfile = () => {
   } catch { /* ignore */ }
 }
 
+/**
+ * 保存资料修改。
+ */
 const handleSave = async () => {
   saving.value = true
   try {
@@ -207,11 +222,17 @@ const handleSave = async () => {
   }
 }
 
+/**
+ * 把表单恢复成刚加载的资料。
+ */
 const handleReset = () => {
   loadProfile()
   ElMessage.info('已恢复为上次保存的内容')
 }
 
+/**
+ * 解除当前账号与钉钉的绑定。
+ */
 const handleUnbindDingTalk = async () => {
   try {
     await ElMessageBox.confirm('解绑后无法通过钉钉扫码登录和接收通知，确定解绑？', '解绑确认', {

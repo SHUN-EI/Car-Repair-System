@@ -445,6 +445,9 @@ const route = useRoute()
 const router = useRouter()
 const sidebarCollapsed = ref(false)
 
+/**
+ * 根据当前路径高亮侧栏菜单，工单、设备和知识手册等子页会归到对应父级菜单。
+ */
 const activeMenu = computed(() => {
   const path = route.path
   if (path.startsWith('/work-orders')) return '/work-orders'
@@ -459,7 +462,13 @@ const activeMenu = computed(() => {
   return path
 })
 
+/**
+ * 当前角色是否有权限看到主管派工菜单。
+ */
 const canOpenDispatch = computed(() => roleCanAccess(currentUser.role, '/supervisor/dispatch'))
+/**
+ * 当前角色是否有权限看到工单导入菜单。
+ */
 const canOpenImports = computed(() => roleCanAccess(currentUser.role, '/work-order-imports'))
 
 // 纯主管（仅 SUPERVISOR，不含 ADMIN）：菜单精简版
@@ -478,6 +487,9 @@ const currentUser = reactive({
   phone: '138-0000-0001',
 })
 
+/**
+ * 从本地缓存恢复当前登录用户信息，用于顶栏展示。
+ */
 const fetchCurrentUser = async () => {
   try {
     // 后续接入登录态后从 API 获取
@@ -507,6 +519,9 @@ const storeContext = reactive({
   storeName: '未绑定门店',
 })
 
+/**
+ * 拉取门店上下文：能否切换门店、当前店名和可选门店列表。
+ */
 const loadStoreContext = async () => {
   try {
     const ctx = await request.get('/stores/context')
@@ -534,6 +549,9 @@ const loadStoreContext = async () => {
   }
 }
 
+/**
+ * 切换当前门店时写入本地缓存并刷新页面数据。
+ */
 const onStoreChange = (value) => {
   if (value) {
     localStorage.setItem('current_store_id', String(value))
@@ -563,11 +581,17 @@ const formatNoticeTime = (dateStr) => {
   return dateStr.slice(5, 16)
 }
 
+/**
+ * 按顶栏通知页签过滤消息列表。
+ */
 const filteredNotices = computed(() => {
   if (noticeTab.value === 'all') return notices.value
   return notices.value.filter(n => n.type === noticeTab.value)
 })
 
+/**
+ * 查询未读通知数量，失败时保持静默。
+ */
 const fetchUnreadCount = async () => {
   try {
     const res = await request.get('/notifications/unread-count', { timeout: 120000 })
@@ -575,6 +599,9 @@ const fetchUnreadCount = async () => {
   } catch { /* 静默 */ }
 }
 
+/**
+ * 拉取最近通知并转换成顶栏消息列表。
+ */
 const fetchNotifications = async () => {
   try {
     const res = await request.get('/notifications/', { params: { page: 1, page_size: 20 }, timeout: 120000 })
@@ -586,6 +613,9 @@ const fetchNotifications = async () => {
   } catch { /* 静默 */ }
 }
 
+/**
+ * 把全部通知标记为已读，并清零未读数。
+ */
 const markAllRead = async () => {
   try {
     await request.post('/notifications/read-all', {}, { timeout: 120000 })
@@ -595,6 +625,9 @@ const markAllRead = async () => {
   } catch { ElMessage.error('操作失败') }
 }
 
+/**
+ * 点击一条通知时把它标为已读，再按类型跳到对应页面。
+ */
 const handleNoticeClick = async (item) => {
   try {
     if (!item.is_read) {
@@ -620,14 +653,23 @@ const openProfile = () => {
   router.push('/profile')
 }
 
+/**
+ * 打开账号安全页。
+ */
 const openSecurity = () => {
   router.push('/security')
 }
 
+/**
+ * 打开帮助页。
+ */
 const openHelp = () => {
   router.push('/help')
 }
 
+/**
+ * 确认后清除登录信息并退出到登录页。
+ */
 const handleLogout = async () => {
   try {
     await ElMessageBox.confirm('确定要退出登录吗？', '退出确认', {

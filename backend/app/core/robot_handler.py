@@ -79,6 +79,7 @@ def _send_reply(user_ids: List[str], content: str, title: str = "", msg_key: str
 # 身份识别
 # ============================================================
 def _find_user(db, payload: Dict) -> Optional[User]:
+    """按钉钉消息里的 unionId 或 senderStaffId 查找已绑定的系统用户。优先用 unionId，找不到再用工号/userid；都没有则返回 None，后续按未绑定用户处理。"""
     union_id = (payload.get("unionId") or "").strip()
     staff_id = (payload.get("senderStaffId") or "").strip()
     if union_id:

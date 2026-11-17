@@ -1,3 +1,5 @@
+"""排班与出勤占位：按日期、班次记录谁当班，也可由已批准的请假明细生成请假班次。"""
+
 from sqlalchemy import Column, Integer, String, Date, TIMESTAMP, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
@@ -5,12 +7,14 @@ import enum
 
 
 class ShiftType(str, enum.Enum):
+    """班次枚举：早班 MORNING、午班 AFTERNOON、夜班 NIGHT。"""
     MORNING = "MORNING"
     AFTERNOON = "AFTERNOON"
     NIGHT = "NIGHT"
 
 
 class DutySchedule(BaseModel):
+    """一条排班记录。schedule_type 区分正常出勤和请假等来源；若由请假生成，会记下关联的请假单和替班对象。"""
     __tablename__ = "duty_schedules"
 
     date = Column(Date, nullable=False, index=True)

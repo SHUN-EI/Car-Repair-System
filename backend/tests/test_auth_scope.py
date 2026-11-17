@@ -16,6 +16,7 @@ os.environ.setdefault("DEBUG", "true")
 
 @compiles(JSONB, "sqlite")
 def _compile_jsonb_sqlite(element, compiler, **kwargs):
+    """在 SQLite 测试引擎里把 JSONB 编译成 JSON，避免 PostgreSQL 专用类型导致建表失败。"""
     return "JSON"
 
 
@@ -30,6 +31,7 @@ from app.main import app  # noqa: E402
 
 @pytest.fixture()
 def client():
+    """准备内存 SQLite 测试客户端，建好表并写入管理员、维修员等账号和跨店数据，返回带 tokens 的 TestClient。"""
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -75,6 +77,7 @@ def client():
     }
 
     def _override():
+        """测试里覆盖 FastAPI 的数据库会话，改用内存 SQLite。"""
         session = Session()
         try:
             yield session
@@ -91,11 +94,14 @@ def client():
 
 
 def _auth(token):
+    """把 JWT 拼成 Authorization 请求头。"""
     return {"Authorization": f"Bearer {token}"}
 
 
 class TestUnauthenticatedWrites:
+    """验证写接口在未登录时返回 401。"""
     def test_create_user_requires_login(self, client):
+        """未登录创建用户应返回 401。"""
         response = client.post("/api/v1/users/", json={
             "username": "new_user",
             "password": "secret12",
@@ -104,6 +110,7 @@ class TestUnauthenticatedWrites:
         assert response.status_code == 401
 
     def test_create_knowledge_requires_login(self, client):
+        """未登录创建知识条目应返回 401。"""
         response = client.post("/api/v1/knowledge/", json={
             "title": "未登录知识",
             "content": "不该写入",
@@ -111,12 +118,15 @@ class TestUnauthenticatedWrites:
         assert response.status_code == 401
 
     def test_complete_work_order_requires_login(self, client):
+        """未登录完成工单应返回 401。"""
         response = client.post("/api/v1/work-orders/1/complete")
         assert response.status_code == 401
 
 
 class TestRoleAndStoreScope:
+    """验证角色权限和门店范围：维修员不能越权写本店外的数据。"""
     def test_technician_cannot_create_user(self, client):
+        """维修员创建用户应返回 403。"""
         response = client.post(
             "/api/v1/users/",
             json={"username": "another", "password": "secret12", "real_name": "另一个"},
@@ -125,6 +135,7 @@ class TestRoleAndStoreScope:
         assert response.status_code == 403
 
     def test_technician_cannot_create_store(self, client):
+        """维修员创建门店应返回 403。"""
         response = client.post(
             "/api/v1/stores/",
             json={"code": "S-NEW", "name": "新店"},
@@ -133,6 +144,7 @@ class TestRoleAndStoreScope:
         assert response.status_code == 403
 
     def test_technician_cannot_trigger_stock_alerts(self, client):
+        """维修员触发库存预警检查应返回 403。"""
         response = client.post(
             "/api/v1/spare-parts/check-alerts",
             headers=_auth(client.tokens["tech"]),
@@ -140,6 +152,7 @@ class TestRoleAndStoreScope:
         assert response.status_code == 403
 
     def test_technician_cannot_update_other_store_part(self, client):
+        """维修员修改其它门店配件应返回 403。"""
         response = client.put(
             "/api/v1/spare-parts/1",
             json={"part_name": "被改名"},
@@ -148,6 +161,7 @@ class TestRoleAndStoreScope:
         assert response.status_code == 403
 
     def test_technician_cannot_complete_other_store_order(self, client):
+        """维修员完成其它门店工单应返回 403。"""
         response = client.post(
             "/api/v1/work-orders/1/complete",
             headers=_auth(client.tokens["tech"]),
@@ -155,5 +169,6 @@ class TestRoleAndStoreScope:
         assert response.status_code == 403
 
     def test_device_sync_rejects_missing_key(self, client):
+        """设备同步未配置密钥时，缺少同步头应返回 503。"""
         response = client.post("/api/v1/devices/monitor/sync-status", json=[])
         assert response.status_code == 503

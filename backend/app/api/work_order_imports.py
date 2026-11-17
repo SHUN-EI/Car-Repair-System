@@ -36,6 +36,7 @@ _MANAGE_ROLES = {UserRole.ADMIN.value, UserRole.SUPERVISOR.value, UserRole.TECHN
 
 
 def _require_manage(current_user: User):
+    """校验当前用户是管理员、主管或维修员，否则不能做历史工单导入。"""
     if current_user.role not in _MANAGE_ROLES:
         raise HTTPException(status_code=403, detail="仅管理员/主管/维修员可执行历史工单导入")
 
@@ -44,6 +45,7 @@ def _require_manage(current_user: User):
 # 上传并跑 LangGraph 流水线
 # ============================================================
 class UploadResult(BaseModel):
+    """单份 PDF 导入结果：文件名、状态（待确认或失败）、草稿 ID 和说明。"""
     file_name: str
     status: str          # PENDING / ERROR
     item_id: Optional[int] = None
@@ -56,6 +58,7 @@ async def upload_pdf_workorders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """批量上传历史工单 PDF（最多 50 份），先建导入批次，再对每份文件跑导入图，生成待确认或失败的草稿记录。"""
     _require_manage(current_user)
     if not files:
         raise HTTPException(status_code=400, detail="请选择 PDF 文件")
@@ -135,6 +138,7 @@ def list_batches(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出导入批次及其成功、失败计数，仅管理人员可查看。"""
     _require_manage(current_user)
     total = db.query(WorkOrderImportBatch).count()
     items = (
@@ -170,6 +174,7 @@ def list_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出导入草稿，可按批次和状态（待确认/已入库/已拒绝/失败）过滤。"""
     _require_manage(current_user)
     query = db.query(WorkOrderImportItem)
     if batch_id:
@@ -205,6 +210,7 @@ def list_items(
 # 人工编辑 / 确认 / 拒绝
 # ============================================================
 class ItemUpdate(BaseModel):
+    """修改导入草稿抽取结果的请求体：完整覆盖 extracted_data。"""
     extracted_data: dict
 
 
@@ -215,6 +221,7 @@ def update_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """修改尚未入库的导入草稿字段。已确认入库的记录不能再改。"""
     _require_manage(current_user)
     item = db.query(WorkOrderImportItem).filter(WorkOrderImportItem.id == item_id).first()
     if not item:
@@ -242,6 +249,7 @@ def _parse_dt(value) -> Optional[datetime]:
 
 
 def _gen_wo_no(db: Session) -> str:
+    """按当天日期生成新的工单号，格式 WO-YYYYMMDD-序号，序号在当天已有最大号上加一。"""
     today_str = date.today().strftime("%Y%m%d")
     prefix = f"WO-{today_str}-"
     latest = (
@@ -260,6 +268,7 @@ def _gen_wo_no(db: Session) -> str:
 
 
 def _resolve_user(db: Session, name: Optional[str]) -> Optional[int]:
+    """按真实姓名查找用户 ID，找不到或姓名为空时返回 None。"""
     if not name:
         return None
     u = db.query(User).filter(User.real_name == str(name).strip()).first()
@@ -272,6 +281,7 @@ def confirm_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """把导入草稿确认成正式工单。已入库的直接返回已有工单；工单号冲突或缺少故障描述时拒绝。没有工单号则自动生成。"""
     _require_manage(current_user)
     item = db.query(WorkOrderImportItem).filter(WorkOrderImportItem.id == item_id).first()
     if not item:
@@ -363,6 +373,7 @@ def reject_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """拒绝一份尚未入库的导入草稿。已确认入库的记录不能拒绝。"""
     _require_manage(current_user)
     item = db.query(WorkOrderImportItem).filter(WorkOrderImportItem.id == item_id).first()
     if not item:

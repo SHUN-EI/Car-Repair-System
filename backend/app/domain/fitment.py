@@ -19,6 +19,7 @@ _PLATE_RE = re.compile(r"车牌[:：\s]*([A-Za-z0-9\u4e00-\u9fff]{5,8})")
 
 
 def _clean_str(value: Any) -> Optional[str]:
+    """把任意值转成去掉首尾空白的字符串；空值或全空白返回 None，避免把空串写进适配规则。"""
     if value is None:
         return None
     text = str(value).strip()
@@ -26,10 +27,12 @@ def _clean_str(value: Any) -> Optional[str]:
 
 
 def _norm(value: Any) -> str:
+    """做大小写无关的比较用归一化：转字符串、去首尾空白并 casefold。None 视为空串。"""
     return ("" if value is None else str(value)).strip().casefold()
 
 
 def _as_int(value: Any) -> Optional[int]:
+    """把年份等字段安全转成整数；空值、空串或无法转换时返回 None，不抛异常。"""
     if value is None or value == "":
         return None
     try:
@@ -39,6 +42,10 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def iter_rules(fitment: Any) -> List[dict]:
+    """把配件适配规则统一展开成字典列表。
+
+    单条规则可以是一个 dict，多条规则是 list[dict]；空值或其它类型返回空列表，并丢掉非字典元素。
+    """
     if not fitment:
         return []
     if isinstance(fitment, dict):
@@ -84,6 +91,10 @@ def rule_matches(
     year: Any = None,
     engine: Any = None,
 ) -> bool:
+    """判断一条适配规则是否匹配给定车辆。
+
+    规则里填写了的品牌、车系、发动机必须一致（忽略大小写）；年份若设置了起止区间，车辆年份必须落在闭区间内，缺少年份则视为不匹配。规则中未填写的条件视为不限制。
+    """
     if _norm(rule.get("brand")) and _norm(rule.get("brand")) != _norm(brand):
         return False
     if _norm(rule.get("series")) and _norm(rule.get("series")) != _norm(series):
@@ -104,6 +115,7 @@ def rule_matches(
 
 
 def part_matches(fitment: Any, **vehicle) -> bool:
+    """判断配件的全部适配规则中，是否至少有一条匹配当前车辆。没有任何规则时返回 False，避免「空规则被当成适配所有车型」。"""
     rules = iter_rules(fitment)
     if not rules:
         return False
@@ -111,6 +123,10 @@ def part_matches(fitment: Any, **vehicle) -> bool:
 
 
 def fitment_brief(fitment: Any, limit: int = 2) -> str:
+    """把适配规则压成简短中文说明，供列表或提示展示。
+
+    默认最多展示 limit 条，每条由品牌、车系、年款区间和发动机拼接；规则条件全空时写「不限车型」。超出条数时追加「等N条」。
+    """
     rules = iter_rules(fitment)
     if not rules:
         return ""
@@ -136,6 +152,7 @@ def fitment_brief(fitment: Any, limit: int = 2) -> str:
 
 
 def looks_like_fitment_question(text: str) -> bool:
+    """用预置关键词粗判用户问题是不是在问「这配件适不适合某车型」，供咨询链路决定是否走适配查询。"""
     raw = text or ""
     return any(hint in raw for hint in _QUESTION_HINTS)
 
@@ -173,6 +190,7 @@ def parse_fitment_question(text: str) -> Dict[str, Any]:
 
 
 def spec_is_empty(spec: Dict[str, Any]) -> bool:
+    """判断车型规格是否四个关键字段都空：品牌、车系、年份、发动机都没有有效值时返回 True。"""
     return not any([
         _norm(spec.get("brand")),
         _norm(spec.get("series")),
@@ -182,10 +200,12 @@ def spec_is_empty(spec: Dict[str, Any]) -> bool:
 
 
 def public_rule(rule: dict) -> dict:
+    """只保留对外可展示的适配字段（_FITMENT_KEYS），去掉内部多余键后再返回。"""
     return {key: rule.get(key) for key in _FITMENT_KEYS}
 
 
 def public_fitment(fitment: Any) -> Optional[List[dict]]:
+    """把配件适配数据整理成对外可返回的规则列表；没有任何合法规则时返回 None 而不是空列表。"""
     rules = iter_rules(fitment)
     if not rules:
         return None

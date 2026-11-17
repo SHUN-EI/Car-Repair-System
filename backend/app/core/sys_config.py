@@ -17,6 +17,7 @@ _cache: dict = {}   # {key: (value, fetched_at)}
 
 
 def _from_db(db: Session, key: str) -> Optional[str]:
+    """从 sys_configs 表读取指定键的字符串值。表不存在或查询失败时返回 None，由上层用默认值兜底，避免启动期直接报错。"""
     try:
         from app.models.sys_config import SysConfig
         row = db.query(SysConfig).filter(SysConfig.key == key).first()
@@ -28,6 +29,7 @@ def _from_db(db: Session, key: str) -> Optional[str]:
 
 
 def _coerce(raw: Optional[str], default: Any, cast=None) -> Any:
+    """把数据库里的字符串配置转成与默认值相同的类型。转换失败或无法识别的布尔写法会退回默认值；未指定 cast 时按 default 的类型自动推断。"""
     if raw is None:
         return default
     if cast is not None:
@@ -92,6 +94,7 @@ def set_value(db: Session, key: str, value: Any, description: Optional[str] = No
 
 
 def invalidate(key: Optional[str] = None) -> None:
+    """清掉配置内存缓存。传入 key 只失效一项，不传则清空全部，供后台改配置后立即生效。"""
     with _lock:
         if key:
             _cache.pop(key, None)

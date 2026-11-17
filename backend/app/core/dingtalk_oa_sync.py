@@ -321,6 +321,7 @@ def _parse_date_range(raw_val: Any) -> Tuple[Optional[date], Optional[date]]:
 
 
 def _parse_shift(raw_val: Any) -> str:
+    """把钉钉或表单里的班次原文规范成本系统的请假班次。空值视为全天；识别到上午/早晨等为早班，下午/晚上等为午班，其余回退全天。"""
     if raw_val is None:
         return LeaveShift.ALL_DAY.value
     s = str(raw_val).strip()
@@ -491,6 +492,7 @@ def _get_or_create_user_by_ddid(db: Session, ddid: str) -> Optional[User]:
 
 
 def _expand_date_range(d_from: date, d_to: date) -> List[date]:
+    """把闭区间的起止日期展开成每一天的列表，供按天拆请假明细。"""
     days: List[date] = []
     cur = d_from
     while cur <= d_to:
@@ -625,6 +627,7 @@ def _persist_leave_request(
 
 
 def _is_shift_overlap(l_shift: str, d_shift: str) -> bool:
+    """判断请假班次和排班班次是否冲突。请假为全天时与任何班次都冲突，否则只在班次相同时冲突。"""
     if l_shift == LeaveShift.ALL_DAY.value:
         return True
     return l_shift == d_shift

@@ -14,16 +14,19 @@ router = APIRouter()
 
 
 class MessageItem(BaseModel):
+    """会话里的一条消息：角色只能是 user 或 assistant，内容不能为空。"""
     role: str = Field(..., pattern="^(user|assistant)$")
     content: str = Field(..., min_length=1)
 
 
 class SummarizeRequest(BaseModel):
+    """请求压缩会话历史：会话 ID，以及至少两条待压缩消息。"""
     session_id: str = Field(..., description="会话ID")
     messages: List[MessageItem] = Field(..., min_length=2, description="待压缩的消息列表")
 
 
 class SummarizeResponse(BaseModel):
+    """会话摘要结果：摘要文本、被压缩的消息条数和耗时。"""
     session_id: str
     summary: str
     compressed_count: int

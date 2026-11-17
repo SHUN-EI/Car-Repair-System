@@ -10,6 +10,7 @@ _LINE_TYPES = {"PART", "LABOR", "PACKAGE"}
 
 
 def _norm(value: Any) -> str:
+    """做目录匹配用的归一化：转字符串、去空白并 casefold。None 视为空串。"""
     return ("" if value is None else str(value)).strip().casefold()
 
 
@@ -46,6 +47,7 @@ def parse_consult_items(text: Optional[str]) -> List[str]:
 
 
 def _money(qty: Any, unit_price: Any) -> Tuple[float, float, float]:
+    """把数量和单价规范成非负数字，并计算金额（单价与金额都四舍五入到分）。空值按 0 处理。"""
     quantity = float(qty or 0)
     price = float(unit_price or 0)
     if quantity < 0:
@@ -56,6 +58,10 @@ def _money(qty: Any, unit_price: Any) -> Tuple[float, float, float]:
 
 
 def match_catalog(name: str, rows: Optional[List[dict]]) -> Optional[dict]:
+    """在配件或工时目录里匹配一个名称/编码。
+
+    优先精确匹配编码或名称（忽略大小写）；否则取「目录名称是查询字符串子串」且名称最长的一项。没有命中返回 None。
+    """
     target = _norm(name)
     if not target or not rows:
         return None
@@ -86,11 +92,16 @@ def build_quote_lines(
     include_used_parts: bool = True,
     include_packages: bool = False,
 ) -> Tuple[List[dict], str]:
+    """按规则引擎从已用配件、问诊文本、人工建议和套餐组装报价明细，不调用大模型定价。
+
+    默认纳入工单已用配件；问诊文本会先拆成项目再对照配件/工时目录，对不上的记为单价 0 的工时行。suggestions 可带单价和类型，缺省时回退目录价。套餐仅在 include_packages 为真时写入。返回 (明细列表, 备注说明)。
+    """
     lines: List[dict] = []
     notes: List[str] = []
     prices = part_prices or {}
 
     def add(line_type: str, name: str, code: str, qty: Any, unit_price: Any, source: str, ref_id: Any = None) -> None:
+        """向当前报价明细追加一行。数量必须大于 0 且名称非空；未知 line_type 会记为 LABOR。名称和编码会截断到字段长度。"""
         quantity, price, amount = _money(qty, unit_price)
         if quantity <= 0 or not (name or "").strip():
             return

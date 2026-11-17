@@ -16,6 +16,7 @@ class ToolResult:
     metadata: Dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        """把检索工具的成功标记、数据、错误和元数据转成普通字典，便于日志和接口返回。"""
         return {
             "success": self.success,
             "data": self.data,
@@ -846,6 +847,7 @@ class RetrievalTools:
     """检索助手 Agent 的工具集"""
 
     def __init__(self, db_session_factory, vector_store, embedding_fn):
+        """保存数据库会话工厂、向量库和编码函数，并创建查询关键词提取器（白名单加模型兜底）。现网检索应优先经 rag_service 进入，本工具集仍供检索流内部调用。"""
         self.db_factory = db_session_factory
         self.vector_store = vector_store
         self.encode = embedding_fn

@@ -1,3 +1,5 @@
+"""预约表：记录门店、可选工位、客户、车辆和到店时间。状态流转规则在 app.domain.appointment_status，不写在本模型里。"""
+
 from sqlalchemy import Column, String, Text, Integer, ForeignKey, DateTime
 from app.models.base import BaseModel
 
@@ -16,4 +18,5 @@ class Appointment(BaseModel):
     remark = Column(Text, comment="备注")
 
     def __repr__(self):
+        """调试时输出预约主键、到店时间和当前状态。"""
         return f"<Appointment(id={self.id}, status='{self.status}')>"

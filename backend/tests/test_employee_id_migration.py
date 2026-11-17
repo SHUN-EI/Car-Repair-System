@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 
 
 def _load_revision():
+    """加载指定的 Alembic 迁移模块，供测试检查升级脚本。"""
     path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "2a5022bf6eca_add_device_monitor_fields.py"
     spec = importlib.util.spec_from_file_location("rev_2a5022bf6eca", path)
     module = importlib.util.module_from_spec(spec)
@@ -14,6 +15,7 @@ def _load_revision():
 
 
 def test_employee_id_is_added_when_missing():
+    """当用户表还没有 employee_id 时，迁移应把它加进去。"""
     engine = create_engine("sqlite://")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY, username VARCHAR(50))"))

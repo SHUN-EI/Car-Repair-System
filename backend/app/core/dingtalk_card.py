@@ -27,11 +27,13 @@ CARD_API = "https://api.dingtalk.com/v1.0/card/instances"
 
 
 def _get_token() -> str:
+    """向钉钉客户端要当前可用的 access_token，供互动卡片等开放接口调用。"""
     from app.core.dingtalk import dingtalk
     return dingtalk._get_access_token()
 
 
 def _headers() -> dict:
+    """构造钉钉开放接口需要的 access-token 请求头。"""
     return {"x-acs-dingtalk-access-token": _get_token()}
 
 

@@ -39,9 +39,11 @@ class MemoryService:
 
     # ---------- 短期会话：追踪维修 ----------
     def get_guided_repair_session(self, session_id: str) -> Optional[Any]:
+        """按会话 ID 读取引导维修的短期会话（Redis，逻辑键带 guided 前缀）。不存在或已过期时返回 None。"""
         return cache_service.get(f"{GUIDED_REPAIR_SESSION_PREFIX}{session_id}")
 
     def set_guided_repair_session(self, session_id: str, data: Any) -> bool:
+        """写入引导维修的短期会话，并套用引导会话 TTL（24 小时）。成功返回 True。"""
         return cache_service.set(
             f"{GUIDED_REPAIR_SESSION_PREFIX}{session_id}",
             data,
@@ -50,9 +52,11 @@ class MemoryService:
 
     # ---------- 短期会话：专家模式 ----------
     def get_expert_repair_session(self, session_id: str) -> Optional[Any]:
+        """按会话 ID 读取专家模式的短期会话（Redis）。不存在或已过期时返回 None。"""
         return cache_service.get(f"{EXPERT_REPAIR_SESSION_PREFIX}{session_id}")
 
     def set_expert_repair_session(self, session_id: str, data: Any) -> bool:
+        """写入专家模式的短期会话，并套用专家会话 TTL（24 小时）。成功返回 True。"""
         return cache_service.set(
             f"{EXPERT_REPAIR_SESSION_PREFIX}{session_id}",
             data,
@@ -61,9 +65,11 @@ class MemoryService:
 
     # ---------- 短期会话：MCP 员工 ↔ 追踪维修会话映射 ----------
     def get_mcp_staff_guided_session(self, staff_id: str) -> Optional[Any]:
+        """读取某位员工在 MCP 渠道上最近关联的引导会话 ID，便于把多轮消息续到同一会话。"""
         return cache_service.get(f"{MCP_STAFF_GUIDED_SESSION_PREFIX}{staff_id}")
 
     def set_mcp_staff_guided_session(self, staff_id: str, session_id: Any) -> bool:
+        """记录员工与引导会话 ID 的对应关系，TTL 与 MCP 引导会话一致。"""
         return cache_service.set(
             f"{MCP_STAFF_GUIDED_SESSION_PREFIX}{staff_id}",
             session_id,
@@ -71,9 +77,11 @@ class MemoryService:
         )
 
     def get_mcp_staff_guided_last(self, staff_id: str) -> Optional[Any]:
+        """读取该员工上次通过 MCP 使用引导维修的时间戳，用于判断会话是否还热。"""
         return cache_service.get(f"{MCP_STAFF_GUIDED_LAST_PREFIX}{staff_id}")
 
     def set_mcp_staff_guided_last(self, staff_id: str, timestamp: Any) -> bool:
+        """更新员工在 MCP 渠道上最近一次引导维修的时间戳，TTL 与引导会话一致。"""
         return cache_service.set(
             f"{MCP_STAFF_GUIDED_LAST_PREFIX}{staff_id}",
             timestamp,

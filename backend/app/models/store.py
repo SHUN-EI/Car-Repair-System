@@ -1,3 +1,5 @@
+"""门店和工位骨架表，是预约、工单和库存分店的归属依据。"""
+
 from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
@@ -17,6 +19,7 @@ class Store(BaseModel):
     bays = relationship("Bay", back_populates="store")
 
     def __repr__(self):
+        """调试时输出门店主键、编码和名称。"""
         return f"<Store(code='{self.code}', name='{self.name}')>"
 
 
@@ -37,4 +40,5 @@ class Bay(BaseModel):
     store = relationship("Store", back_populates="bays")
 
     def __repr__(self):
+        """调试时输出工位主键、所属门店和名称。"""
         return f"<Bay(code='{self.code}', store_id={self.store_id})>"

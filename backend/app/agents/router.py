@@ -232,6 +232,7 @@ class AgentRouter:
         return self.route(text, entry=entry, in_guide_session=in_guide_session, use_llm=use_llm)
 
     def _finalize(self, intent: str, source: str, in_guide_session: bool) -> RouteResult:
+        """根据意图、分类来源和是否已在引导会话中，生成最终路由结果。若正在引导维修又问到工单进度，主责任方仍保持咨询 Agent，只通过只读工具查工单。"""
         agent = self.agent_for_intent(intent)
         use_read = self._should_use_read_tool(intent, in_guide_session, agent)
         if use_read:
@@ -249,9 +250,11 @@ class AgentRouter:
 
     @staticmethod
     def _should_use_read_tool(intent: str, in_guide_session: bool, agent: str) -> bool:
+        """判断是否应把工单查询降级为咨询侧只读工具：仅当已在引导会话中、意图是查工单、且按意图本会路由到工单 Agent 时为真。"""
         return bool(in_guide_session and intent == "query_work_order" and agent == WORK_ORDER)
 
     def _classify_by_keywords(self, text: str) -> Optional[str]:
+        """用规则和正则做文本意图分类，作为模型分类失败时的回退。空文本视为帮助；能明确匹配写操作、查工单、待办、套餐、引导/专家、库存或排班时直接返回对应意图，否则返回 None 交给上层继续处理。"""
         text = (text or "").strip()
         if not text:
             return "help"
@@ -280,6 +283,7 @@ class AgentRouter:
 
     @staticmethod
     def _is_inventory_query(text: str) -> bool:
+        """复用回答生成器的库存问句判断。调用失败时视为不是库存查询，避免路由器自己崩溃。"""
         try:
             from app.agents.answer_generator import answer_generator
             return bool(answer_generator.is_inventory_query(text))
@@ -335,6 +339,7 @@ class AgentRouter:
 
     @staticmethod
     def _intent_from_robot_label(label: str) -> str:
+        """把钉钉机器人图里的路由标签映射回统一意图名；未知标签按故障咨询处理。"""
         mapping = {
             "help": "help",
             "create": "create_work_order",

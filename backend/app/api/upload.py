@@ -18,6 +18,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 def _safe_path(filename: str) -> str:
+    """把请求里的文件名限制在上传目录内：只允许纯文件名，拒绝路径分隔和父目录跳转，避免读到其它目录。"""
     base = os.path.basename(filename or "")
     if not base or base != filename or ".." in base:
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -57,6 +58,7 @@ async def upload_work_order_image(
 
 @router.get("/files/{filename}", summary="读取已上传附件")
 def read_uploaded_file(filename: str, current_user: User = Depends(get_current_user)):
+    """已登录用户按文件名下载上传目录中的文件。路径不合法或文件不存在时返回 404。"""
     path = _safe_path(filename)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="文件不存在")

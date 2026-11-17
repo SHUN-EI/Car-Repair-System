@@ -106,9 +106,18 @@ const statusMap = {
   DEPRECATED: '已过期',
   ARCHIVED: '已归档'
 }
+/**
+ * 把知识条目状态转成中文标签。
+ */
 const statusLabel = (s) => statusMap[s] || s
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
+/**
+ * 按条件分页加载知识列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -122,9 +131,18 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 按当前关键字和筛选重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchData() }
+/**
+ * 清空筛选并重新加载。
+ */
 const handleReset = () => { keyword.value = ''; statusFilter.value = ''; page.value = 1; fetchData() }
 
+/**
+ * 对当前知识做查重检查。
+ */
 const handleDedupCheck = async (row) => {
   row._checking = true
   try {

@@ -1,3 +1,8 @@
+"""接口层使用的 Pydantic 模型：创建/更新请求、详情响应和通用分页包装。
+
+这些类只负责字段校验与序列化，不含权限、状态机或定价规则；业务判断仍在 domain 与 API 依赖里完成。
+"""
+
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Generic, TypeVar
 from datetime import date, datetime
@@ -7,6 +12,7 @@ T = TypeVar("T")
 
 # ==================== 设备 ====================
 class DeviceCreate(BaseModel):
+    """创建设备台账的请求体。device_code 必填且需唯一；监控相关字段可选，用于接入外部系统的初始状态。"""
     device_code: str = Field(..., max_length=50)
     device_name: str = Field(..., max_length=200)
     device_type: Optional[str] = None
@@ -25,6 +31,7 @@ class DeviceCreate(BaseModel):
 
 
 class DeviceUpdate(BaseModel):
+    """更新设备台账的请求体，字段均可选，只更新传入的项。可同步运行状态、心跳和外部监控附加信息。"""
     device_name: Optional[str] = None
     device_type: Optional[str] = None
     model: Optional[str] = None
@@ -44,6 +51,7 @@ class DeviceUpdate(BaseModel):
 
 
 class DeviceResponse(BaseModel):
+    """设备详情响应，包含主数据、监控状态和时间戳。"""
     id: int
     device_code: str
     device_name: str
@@ -70,6 +78,7 @@ class DeviceResponse(BaseModel):
 
 # ==================== 工单 ====================
 class WorkOrderCreate(BaseModel):
+    """创建或保存工单时的请求体。可写工单号、设备/车辆/客户、故障现象与方案、附件和派工相关字段；真正的状态变更要走流转接口，不能靠这份请求直接跳到结束态。"""
     work_order_no: Optional[str] = Field(None, max_length=50)
     device_id: Optional[int] = None
     device_code: Optional[str] = None
@@ -109,6 +118,7 @@ class WorkOrderCreate(BaseModel):
 
 
 class WorkOrderUpdate(BaseModel):
+    """更新工单内容的请求体，字段均可选。用于补现象、根因、方案、附件和用料等，不代替状态流转。"""
     device_id: Optional[int] = None
     device_code: Optional[str] = None
     fault_code: Optional[str] = None
@@ -145,6 +155,7 @@ class WorkOrderUpdate(BaseModel):
 
 
 class WorkOrderResponse(BaseModel):
+    """工单详情响应。除表内字段外，还会带上车牌、维修员姓名、开单人工号、可流转的下一状态，以及进度日志列表。"""
     id: int
     work_order_no: str
     device_id: Optional[int]
@@ -199,6 +210,7 @@ class WorkOrderResponse(BaseModel):
 
 
 class WorkOrderTransition(BaseModel):
+    """工单状态流转请求：目标状态、来源渠道（如 WEB/钉钉）、备注、位置和附件。"""
     to_status: str
     source: Optional[str] = "WEB"
     remark: Optional[str] = None
@@ -215,6 +227,7 @@ class WorkOrderFromAppointment(BaseModel):
 
 
 class WorkOrderDispatchCreate(BaseModel):
+    """主管派工开单请求：至少要能定位设备和故障描述，并指定维修员、优先级和位置等派工信息。"""
     device_id: Optional[int] = None
     device_code: Optional[str] = None
     fault_code: Optional[str] = None
@@ -230,6 +243,7 @@ class WorkOrderDispatchCreate(BaseModel):
 
 
 class WorkOrderProgressLogResponse(BaseModel):
+    """一条工单进度日志的响应，包含流转两端状态、操作人、来源和附件。"""
     id: int
     work_order_id: int
     from_status: Optional[str] = None
@@ -287,6 +301,7 @@ class WorkOrderReviewResponse(BaseModel):
 
 # ==================== 知识条目 ====================
 class KnowledgeCreate(BaseModel):
+    """新建知识条目的请求体。可指定标题、正文、设备类型、故障码、标签和来源，默认进入草案或指定状态。"""
     title: str = Field(..., max_length=300)
     content: str
     device_type: Optional[str] = None
@@ -298,6 +313,7 @@ class KnowledgeCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
+    """更新知识条目的请求体，字段均可选，用于改内容和状态。发布/废弃另有带角色校验的专用接口。"""
     title: Optional[str] = None
     content: Optional[str] = None
     device_type: Optional[str] = None
@@ -307,6 +323,7 @@ class KnowledgeUpdate(BaseModel):
 
 
 class KnowledgeResponse(BaseModel):
+    """知识条目详情，含版本、向量库 ID、审核意见和提取元数据。"""
     id: int
     title: str
     content: str
@@ -372,6 +389,7 @@ class FitmentRule(BaseModel):
 
 
 class SparePartCreate(BaseModel):
+    """新增配件库存的请求体。part_code 必填且唯一；可带安全库存、单价、适配规则 fitment 和所属门店。"""
     part_code: str = Field(..., max_length=50)
     part_name: str = Field(..., max_length=200)
     specification: Optional[str] = None
@@ -388,6 +406,7 @@ class SparePartCreate(BaseModel):
 
 
 class SparePartUpdate(BaseModel):
+    """更新配件主数据的请求体，字段均可选。库存数量的业务增减应走出入库，而不是只改这个字段。"""
     part_name: Optional[str] = None
     specification: Optional[str] = None
     unit: Optional[str] = None
@@ -402,6 +421,7 @@ class SparePartUpdate(BaseModel):
 
 
 class SparePartResponse(BaseModel):
+    """配件详情响应。除总库存外，可能带上门店结存 store_on_hand 和适配规则。"""
     id: int
     part_code: str
     part_name: str
@@ -425,6 +445,7 @@ class SparePartResponse(BaseModel):
 
 # ==================== 用户 ====================
 class UserCreate(BaseModel):
+    """创建系统用户的请求体。用户名和密码必填，可指定角色和所属门店、工号与联系方式。"""
     username: str = Field(..., max_length=50)
     employee_id: Optional[str] = Field(None, max_length=50)
     password: str = Field(..., min_length=6, max_length=100)
@@ -436,6 +457,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    """更新用户资料的请求体，字段均可选。可用于改角色、启用状态、部门和门店绑定；一般不在这里改密码。"""
     employee_id: Optional[str] = None
     real_name: Optional[str] = None
     email: Optional[str] = None
@@ -448,6 +470,7 @@ class UserUpdate(BaseModel):
 
 
 class UserResponse(BaseModel):
+    """用户详情响应。包含角色、门店和联系方式，不返回密码哈希。"""
     id: int
     username: str
     employee_id: Optional[str] = None
@@ -465,6 +488,7 @@ class UserResponse(BaseModel):
 
 # ==================== 分类树 ====================
 class CategoryCreate(BaseModel):
+    """创建分类节点的请求体。可指定父节点、类型、排序和说明，用于设备或故障等分类树。"""
     name: str = Field(..., max_length=100)
     code: str = Field(..., max_length=50)
     parent_id: Optional[int] = None
@@ -474,6 +498,7 @@ class CategoryCreate(BaseModel):
 
 
 class CategoryUpdate(BaseModel):
+    """更新分类节点的请求体，字段均可选。"""
     name: Optional[str] = None
     parent_id: Optional[int] = None
     sort_order: Optional[int] = None
@@ -481,6 +506,7 @@ class CategoryUpdate(BaseModel):
 
 
 class CategoryResponse(BaseModel):
+    """分类节点响应，可带子节点列表，便于一次性返回树形结构。"""
     id: int
     name: str
     code: str
@@ -497,6 +523,7 @@ class CategoryResponse(BaseModel):
 
 # ==================== 排班/请假 ====================
 class DutyScheduleCreate(BaseModel):
+    """创建一条排班记录：日期、班次、人员，以及排班类型、备注或请假相关字段。"""
     date: date
     shift: Optional[str] = "ALL_DAY"
     user_id: int
@@ -507,6 +534,7 @@ class DutyScheduleCreate(BaseModel):
 
 
 class DutyScheduleResponse(BaseModel):
+    """排班记录响应，若由请假生成会带上来源请假单和替班对象。"""
     id: int
     date: date
     shift: str
@@ -570,6 +598,7 @@ class LeaveRequestQuery(BaseModel):
 
 
 class LeaveRequestDetailResponse(BaseModel):
+    """请假单中按天拆分的一条明细：具体日期和班次。"""
     id: int
     leave_request_id: int
     leave_date: date
@@ -579,6 +608,7 @@ class LeaveRequestDetailResponse(BaseModel):
 
 
 class LeaveRequestResponse(BaseModel):
+    """请假单详情，含申请人、审批人、替班人、明细，以及批准后是否在岗、是否还有未完成工单等展示字段。"""
     id: int
     requester_id: int
     requester_name: str
@@ -605,6 +635,7 @@ class LeaveRequestResponse(BaseModel):
 
 # ==================== Phase 0 汽修域骨架 ====================
 class CustomerCreate(BaseModel):
+    """创建客户档案的请求体。可关联系统用户 user_id，供车主账号自动或人工建档。"""
     name: str = Field(..., max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = None
@@ -614,6 +645,7 @@ class CustomerCreate(BaseModel):
 
 
 class CustomerUpdate(BaseModel):
+    """更新客户档案的请求体，字段均可选。"""
     name: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = None
@@ -623,6 +655,7 @@ class CustomerUpdate(BaseModel):
 
 
 class CustomerResponse(BaseModel):
+    """客户档案详情响应。"""
     id: int
     name: str
     phone: Optional[str] = None
@@ -637,6 +670,7 @@ class CustomerResponse(BaseModel):
 
 
 class StoreCreate(BaseModel):
+    """创建门店的请求体。编码、名称必填，可带地址和电话。"""
     code: str = Field(..., max_length=50)
     name: str = Field(..., max_length=200)
     address: Optional[str] = None
@@ -645,6 +679,7 @@ class StoreCreate(BaseModel):
 
 
 class StoreUpdate(BaseModel):
+    """更新门店资料的请求体，字段均可选，也可停用门店。"""
     name: Optional[str] = Field(None, max_length=200)
     address: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=20)
@@ -652,6 +687,7 @@ class StoreUpdate(BaseModel):
 
 
 class StoreResponse(BaseModel):
+    """门店详情响应。"""
     id: int
     code: str
     name: str
@@ -665,6 +701,7 @@ class StoreResponse(BaseModel):
 
 
 class BayCreate(BaseModel):
+    """创建工位的请求体，必须归属一家门店。"""
     store_id: int
     code: str = Field(..., max_length=50)
     name: str = Field(..., max_length=100)
@@ -673,6 +710,7 @@ class BayCreate(BaseModel):
 
 
 class BayUpdate(BaseModel):
+    """更新工位的请求体，字段均可选。"""
     code: Optional[str] = Field(None, max_length=50)
     name: Optional[str] = Field(None, max_length=100)
     bay_type: Optional[str] = None
@@ -680,6 +718,7 @@ class BayUpdate(BaseModel):
 
 
 class BayResponse(BaseModel):
+    """工位详情响应。"""
     id: int
     store_id: int
     code: str
@@ -693,6 +732,7 @@ class BayResponse(BaseModel):
 
 
 class VehicleCreate(BaseModel):
+    """创建车辆档案的请求体。车牌必填，可写 VIN、品牌车系年款和车主客户 ID。"""
     plate: str = Field(..., max_length=20)
     vin: Optional[str] = Field(None, max_length=17)
     make: Optional[str] = Field(None, max_length=50)
@@ -702,6 +742,7 @@ class VehicleCreate(BaseModel):
 
 
 class VehicleUpdate(BaseModel):
+    """更新车辆档案的请求体，字段均可选。"""
     plate: Optional[str] = Field(None, max_length=20)
     vin: Optional[str] = Field(None, max_length=17)
     make: Optional[str] = Field(None, max_length=50)
@@ -711,6 +752,7 @@ class VehicleUpdate(BaseModel):
 
 
 class VehicleResponse(BaseModel):
+    """车辆详情响应，会附带车主姓名 owner_name 便于展示。"""
     id: int
     plate: str
     vin: Optional[str] = None
@@ -726,6 +768,7 @@ class VehicleResponse(BaseModel):
 
 
 class AppointmentCreate(BaseModel):
+    """创建预约的请求体。必须指定门店和到店时间，工位、客户和车辆可选。"""
     store_id: int
     bay_id: Optional[int] = None
     customer_id: Optional[int] = None
@@ -735,6 +778,7 @@ class AppointmentCreate(BaseModel):
 
 
 class AppointmentUpdate(BaseModel):
+    """更新预约的请求体，字段均可选。改状态时仍应满足预约状态机，不能随意写成任意值。"""
     bay_id: Optional[int] = None
     customer_id: Optional[int] = None
     vehicle_id: Optional[int] = None
@@ -744,6 +788,7 @@ class AppointmentUpdate(BaseModel):
 
 
 class AppointmentResponse(BaseModel):
+    """预约详情响应，并带上当前状态下允许转入的下一状态。"""
     id: int
     store_id: int
     bay_id: Optional[int] = None
@@ -760,6 +805,7 @@ class AppointmentResponse(BaseModel):
 
 
 class PartSkuCreate(BaseModel):
+    """创建配件目录 SKU 的请求体，含编码、名称、品牌、单位和目录价。"""
     code: str = Field(..., max_length=50)
     name: str = Field(..., max_length=200)
     brand: Optional[str] = Field(None, max_length=100)
@@ -771,6 +817,7 @@ class PartSkuCreate(BaseModel):
 
 
 class PartSkuUpdate(BaseModel):
+    """更新配件目录 SKU 的请求体，字段均可选。"""
     name: Optional[str] = Field(None, max_length=200)
     brand: Optional[str] = Field(None, max_length=100)
     unit: Optional[str] = None
@@ -781,6 +828,7 @@ class PartSkuUpdate(BaseModel):
 
 
 class PartSkuResponse(BaseModel):
+    """配件目录 SKU 详情响应。"""
     id: int
     code: str
     name: str
@@ -797,6 +845,7 @@ class PartSkuResponse(BaseModel):
 
 
 class ServicePackageCreate(BaseModel):
+    """创建保养套餐的请求体。品牌、车系、里程和症状关键词留空表示这一维不限制。"""
     code: str = Field(..., max_length=50)
     name: str = Field(..., max_length=200)
     description: Optional[str] = None
@@ -810,6 +859,7 @@ class ServicePackageCreate(BaseModel):
 
 
 class ServicePackageUpdate(BaseModel):
+    """更新保养套餐的请求体，字段均可选。"""
     name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
     brand: Optional[str] = Field(None, max_length=50)
@@ -822,6 +872,7 @@ class ServicePackageUpdate(BaseModel):
 
 
 class ServicePackageResponse(BaseModel):
+    """保养套餐详情响应。"""
     id: int
     code: str
     name: str
@@ -840,6 +891,7 @@ class ServicePackageResponse(BaseModel):
 
 
 class ServiceSkuCreate(BaseModel):
+    """创建服务工时项目的请求体。可挂到套餐下，也可单独售卖，并带推荐用的车型和症状条件。"""
     code: str = Field(..., max_length=50)
     name: str = Field(..., max_length=200)
     labor_minutes: Optional[int] = Field(0, ge=0)
@@ -855,6 +907,7 @@ class ServiceSkuCreate(BaseModel):
 
 
 class ServiceSkuUpdate(BaseModel):
+    """更新服务工时项目的请求体，字段均可选。"""
     name: Optional[str] = Field(None, max_length=200)
     labor_minutes: Optional[int] = Field(None, ge=0)
     base_price: Optional[float] = Field(None, ge=0)
@@ -869,6 +922,7 @@ class ServiceSkuUpdate(BaseModel):
 
 
 class ServiceSkuResponse(BaseModel):
+    """服务工时项目详情响应。"""
     id: int
     code: str
     name: str
@@ -889,6 +943,7 @@ class ServiceSkuResponse(BaseModel):
 
 
 class ServiceRecommendRequest(BaseModel):
+    """套餐/项目推荐的查询条件：可用车辆 ID 或车牌，补品牌、车系、里程和症状文本。"""
     vehicle_id: Optional[int] = None
     plate: Optional[str] = None
     brand: Optional[str] = None
@@ -898,6 +953,7 @@ class ServiceRecommendRequest(BaseModel):
 
 
 class QuoteSuggestionIn(BaseModel):
+    """生成报价时传入的一条建议项目：名称、编码、数量、单价、类型和引用 ID，缺省单价时由规则引擎回退目录价。"""
     name: str = Field(..., max_length=200)
     code: Optional[str] = Field(None, max_length=50)
     qty: float = Field(1, gt=0)
@@ -907,6 +963,7 @@ class QuoteSuggestionIn(BaseModel):
 
 
 class QuoteDraftRequest(BaseModel):
+    """生成草案报价的请求。可挂工单或车辆，并传入问诊文本、建议项目、里程和症状；开关控制是否纳入已用配件和套餐。"""
     work_order_id: Optional[int] = None
     vehicle_id: Optional[int] = None
     consult_text: Optional[str] = None
@@ -918,6 +975,7 @@ class QuoteDraftRequest(BaseModel):
 
 
 class QuoteLineCreate(BaseModel):
+    """向草案报价追加一条人工明细的请求。"""
     name: str = Field(..., max_length=200)
     code: Optional[str] = Field(None, max_length=50)
     qty: float = Field(1, gt=0)
@@ -927,6 +985,7 @@ class QuoteLineCreate(BaseModel):
 
 
 class QuoteLineResponse(BaseModel):
+    """一条报价明细的响应，含行号、类型、数量、单价、金额和来源。"""
     id: int
     line_no: int
     line_type: str
@@ -942,6 +1001,7 @@ class QuoteLineResponse(BaseModel):
 
 
 class QuoteResponse(BaseModel):
+    """报价单详情响应，含状态中文名、客户是否已确认、合计、明细和允许的下一状态。"""
     id: int
     quote_no: str
     work_order_id: Optional[int] = None
@@ -965,18 +1025,22 @@ class QuoteResponse(BaseModel):
 
 
 class QuoteActionResponse(QuoteResponse):
+    """报价确认、拒绝或取消等操作后的返回：在报价详情之外多带 notify，说明是否已尝试通知相关人员。"""
     notify: Optional[dict] = None
 
 
 class CustomerConfirmRequest(BaseModel):
+    """客户确认报价的请求。on_behalf 为真表示由店员代为确认，而不是车主本人操作。"""
     on_behalf: bool = False
 
 
 class PaymentIntentCreate(BaseModel):
+    """为指定报价创建支付意向的请求。只生成占位记录，不会调用真实支付渠道。"""
     quote_id: int
 
 
 class PaymentIntentResponse(BaseModel):
+    """支付意向详情。reused 表示是否复用了已有意向，而不是新开一笔。"""
     id: int
     intent_no: str
     quote_id: Optional[int] = None
@@ -996,6 +1060,7 @@ class PaymentIntentResponse(BaseModel):
 
 # ==================== 通用 ====================
 class PaginatedResponse(BaseModel, Generic[T]):
+    """通用分页包装：总数、当前页数据、页码和每页大小。条目类型由泛型参数 T 决定。"""
     total: int
     items: List[T]
     page: int = 1

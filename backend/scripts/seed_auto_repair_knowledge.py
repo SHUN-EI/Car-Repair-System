@@ -24,6 +24,7 @@ from app.models.manual_code import ManualCodeEntry
 
 
 def seed(db) -> dict:
+    """把内置的汽修问诊样例写入数据库。知识按标题、手册码按错误码跳过已存在的记录，保证可重复执行。返回新建数量和知识 ID 列表。"""
     knowledge_ids = []
     created_knowledge = 0
     created_manuals = 0
@@ -75,6 +76,7 @@ def seed(db) -> dict:
 
 
 def sync_vectors() -> None:
+    """在推理服务可用时，调用向量同步脚本把刚写入的已发布知识导入 Milvus；服务不可用则只提示稍后手动同步。"""
     from app.core.config import settings
     from app.rag.rag_service import is_server_available
 
@@ -87,6 +89,7 @@ def sync_vectors() -> None:
 
 
 def main():
+    """命令行入口：写入样例知识。带 --sync 时会在写入后再同步向量，需要推理服务和 Milvus 已启动。"""
     parser = argparse.ArgumentParser(description="写入汽修问诊样例")
     parser.add_argument("--sync", action="store_true", help="写入后调用 sync_vectors（需要推理服务和 Milvus）")
     args = parser.parse_args()

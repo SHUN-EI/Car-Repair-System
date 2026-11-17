@@ -241,6 +241,9 @@ import dayjs from 'dayjs'
 
 const router = useRouter()
 
+/**
+ * 把分类或类型树压平，供筛选使用。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -259,17 +262,26 @@ const currentUser = (() => {
 })()
 const isAdmin = currentUser.role === 'ADMIN'
 const isSupervisor = currentUser.role === 'SUPERVISOR' || isAdmin
+/**
+ * 判断工单是否由当前用户创建。
+ */
 const isCreatedByMe = (row) => {
   if (row.created_by_employee_id && currentUser.employee_id) {
     return row.created_by_employee_id === currentUser.employee_id
   }
   return !!row.created_by && row.created_by === currentUser.id
 }
+/**
+ * 判断当前用户是否是这张工单的承修人。
+ */
 const isAssignedTech = (row) => {
   const tid = row.technician_id || row.assigned_technician_id
   if (!tid) return false
   return tid === currentUser.id
 }
+/**
+ * 判断当前用户能否操作这张工单的进度。
+ */
 const canOperateProgress = (row) => isAssignedTech(row)
 const transitionLoading = ref({})
 
@@ -294,15 +306,33 @@ const ACTION_LABEL = {
   COMPLETED: '质检通过',
   CLOSED: '结案交车',
 }
+/**
+ * 判断工单是否走汽修车道。
+ */
 const isAutoLane = (row) => !!(row.vehicle_id || row.appointment_id || row.store_id || AUTO_ONLY.includes(row.status))
+/**
+ * 给出汽修车道的下一步建议动作。
+ */
 const autoNext = (row) => {
   const next = AUTO_NEXT[row.status]
   if (!next) return ''
   return (row.allowed_transitions || []).includes(next) ? next : ''
 }
+/**
+ * 把流转动作转成按钮文案。
+ */
 const actionLabel = (status) => ACTION_LABEL[status] || statusLabel(status)
+/**
+ * 判断该动作是否需要主管确认。
+ */
 const needsSupervisor = (status) => status === 'APPROVED' || status === 'CLOSED'
+/**
+ * 判断当前用户能否取消这张工单。
+ */
 const canCancel = (row) => (row.allowed_transitions || []).includes('CANCELLED')
+/**
+ * 判断当前是否允许给这张工单发料。
+ */
 const canIssue = (row) => ['INTAKE', 'DIAGNOSING', 'QUOTING', 'APPROVED', 'IN_PROGRESS', 'QC'].includes(row.status)
 
 const intakeVisible = ref(false)
@@ -322,9 +352,18 @@ const issueSaving = ref(false)
 const issueForm = ref({ work_order_id: null, part_code: '', qty: 1 })
 const partOptions = ref([])
 
+/**
+ * 把关联车辆格式化成展示文案。
+ */
 const vehicleLabel = (item) => [item.plate, item.make, item.model].filter(Boolean).join(' ')
+/**
+ * 把关联预约格式化成展示文案。
+ */
 const appointmentLabel = (item) => `#${item.id} ${item.scheduled_at || ''} ${item.remark || ''}`.trim()
 
+/**
+ * 加载工位列表，供接车使用。
+ */
 const loadBays = async (storeId) => {
   bayOptions.value = []
   if (!storeId) return
@@ -332,6 +371,9 @@ const loadBays = async (storeId) => {
   bayOptions.value = res.items || []
 }
 
+/**
+ * 打开接车办理对话框。
+ */
 const openIntake = async () => {
   intakeForm.value = { appointment_id: null, store_id: null, bay_id: null, vehicle_id: null, fault_description: '' }
   intakeVisible.value = true
@@ -346,6 +388,9 @@ const openIntake = async () => {
   appointmentOptions.value = [...(appointments.items || []), ...(confirmed.items || [])]
 }
 
+/**
+ * 选择预约后，把车辆和时段带入接车表单。
+ */
 const onAppointmentPick = (id) => {
   const row = appointmentOptions.value.find(item => item.id === id)
   if (!row) return
@@ -356,6 +401,9 @@ const onAppointmentPick = (id) => {
   loadBays(row.store_id)
 }
 
+/**
+ * 提交接车，生成或更新工单。
+ */
 const submitIntake = async () => {
   intakeSaving.value = true
   try {
@@ -390,6 +438,9 @@ const submitIntake = async () => {
   }
 }
 
+/**
+ * 打开把工单关联到车辆或预约的对话框。
+ */
 const openBind = async (row) => {
   bindForm.value = { work_order_id: row.id, technician_id: row.technician_id || null, bay_id: row.bay_id || null, store_id: row.store_id || null }
   bindVisible.value = true
@@ -401,6 +452,9 @@ const openBind = async (row) => {
   bindBays.value = bayRes.items || []
 }
 
+/**
+ * 提交工单与车辆或预约的绑定。
+ */
 const submitBind = async () => {
   if (!bindForm.value.technician_id) {
     ElMessage.warning('请选择技师')
@@ -421,6 +475,9 @@ const submitBind = async () => {
   }
 }
 
+/**
+ * 打开发料对话框。
+ */
 const openIssue = async (row) => {
   issueForm.value = { work_order_id: row.id, part_code: '', qty: 1 }
   issueVisible.value = true
@@ -430,6 +487,9 @@ const openIssue = async (row) => {
   }
 }
 
+/**
+ * 提交工单发料。
+ */
 const submitIssue = async () => {
   if (!issueForm.value.part_code) {
     ElMessage.warning('请选择备件')
@@ -445,6 +505,9 @@ const submitIssue = async () => {
   }
 }
 
+/**
+ * 执行工单状态流转。
+ */
 const handleTransition = async (row, toStatus, source = 'TECH_PROGRESS') => {
   try {
     transitionLoading.value[`${row.id}_${toStatus}`] = true
@@ -461,6 +524,9 @@ const handleTransition = async (row, toStatus, source = 'TECH_PROGRESS') => {
   }
 }
 
+/**
+ * 提交完成维修。
+ */
 const handleFinishRepair = async (row) => {
   await handleTransition(row, 'ARCHIVING')
   router.push(`/work-orders/${row.id}?edit=1`)
@@ -497,12 +563,24 @@ const statusMap = {
   CANCELLED: '已取消',
 }
 
+/**
+ * 把工单状态转成中文标签。
+ */
 const statusLabel = (s) => statusMap[s] || s
+/**
+ * 把流转动作转成说明文案。
+ */
 const transitionText = (row) => (row.allowed_transitions || []).map(s => statusLabel(s)).join('、')
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
 const STORAGE_KEY = 'workorders_filter'
 
+/**
+ * 按筛选条件加载工单列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -524,6 +602,9 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 记住当前列表筛选条件。
+ */
 const saveFilter = () => {
   const data = {}
   if (keyword.value) data.keyword = keyword.value
@@ -537,7 +618,13 @@ const saveFilter = () => {
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data))
 }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchData() }
+/**
+ * 清空筛选并重新加载。
+ */
 const handleReset = () => {
   keyword.value = ''
   statusFilter.value = ''
@@ -548,6 +635,9 @@ const handleReset = () => {
   fetchData()
 }
 
+/**
+ * 删除工单。
+ */
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm('确定删除该工单？', '删除确认', { type: 'warning' })

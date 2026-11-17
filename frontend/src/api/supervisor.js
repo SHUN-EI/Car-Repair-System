@@ -1,5 +1,8 @@
 import request from './index'
 
+/**
+ * 查询当天的排班列表，可带查询参数。
+ */
 export const listDutyToday = (params) => {
   return request({
     url: '/duty-schedules/today',
@@ -8,6 +11,9 @@ export const listDutyToday = (params) => {
   })
 }
 
+/**
+ * 获取班次元数据，例如班次名称和时间段。
+ */
 export const getShiftMeta = () => {
   return request({
     url: '/duty-schedules/shift-meta',
@@ -15,6 +21,9 @@ export const getShiftMeta = () => {
   })
 }
 
+/**
+ * 批量创建排班记录。
+ */
 export const createDutyBatch = (data) => {
   return request({
     url: '/duty-schedules/batch',
@@ -23,6 +32,9 @@ export const createDutyBatch = (data) => {
   })
 }
 
+/**
+ * 列出角色为维修员的用户，用于排班选人。
+ */
 export const listTechnicians = (params) => {
   return request({
     url: '/users',
@@ -31,6 +43,9 @@ export const listTechnicians = (params) => {
   })
 }
 
+/**
+ * 按条件分页查询排班记录。
+ */
 export const scheduleList = (params) => {
   return request({
     url: '/duty-schedules',
@@ -39,6 +54,9 @@ export const scheduleList = (params) => {
   })
 }
 
+/**
+ * 新建一条排班。
+ */
 export const scheduleCreate = (data) => {
   return request({
     url: '/duty-schedules',
@@ -47,6 +65,9 @@ export const scheduleCreate = (data) => {
   })
 }
 
+/**
+ * 按编号删除一条排班。
+ */
 export const scheduleDelete = (id) => {
   return request({
     url: `/duty-schedules/${id}`,
@@ -54,6 +75,9 @@ export const scheduleDelete = (id) => {
   })
 }
 
+/**
+ * 按编号列表批量删除排班。
+ */
 export const scheduleBatchDelete = (ids) => {
   return request({
     url: '/duty-schedules/batch',
@@ -62,6 +86,9 @@ export const scheduleBatchDelete = (ids) => {
   })
 }
 
+/**
+ * 批量登记请假。
+ */
 export const leaveBatchCreate = (data) => {
   return request({
     url: '/duty-schedules/leave/batch',
@@ -70,6 +97,9 @@ export const leaveBatchCreate = (data) => {
   })
 }
 
+/**
+ * 查询指定日期的请假汇总。
+ */
 export const leaveSummary = (date) => {
   return request({
     url: '/duty-schedules/leave/summary',
@@ -80,6 +110,9 @@ export const leaveSummary = (date) => {
 
 export const leaveSummaryByDate = leaveSummary
 
+/**
+ * 对指定工单发起状态流转。
+ */
 export const workOrderTransition = (workOrderId, data) => {
   return request({
     url: `/work-orders/${workOrderId}/transition`,
@@ -180,6 +213,9 @@ export const listWeekScheduleMatrix = (params) => {
   })
 }
 
+/**
+ * 批量创建排班的兼容导出，实际仍请求同一批量接口。
+ */
 export const batchCreateDutySchedules = (data) => {
   return request({
     url: '/duty-schedules/batch',

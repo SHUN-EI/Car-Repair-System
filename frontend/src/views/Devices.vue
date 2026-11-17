@@ -176,14 +176,26 @@ const statCards = [
   { key: 'unknown', label: '状态未知', icon: '?', bg: '#F9FAFB', color: '#9CA3AF' },
 ]
 
+/**
+ * 按故障标签返回展示用的标签类型。
+ */
 const faultTagType = (lvl) => {
   const m = { CRITICAL: 'danger', ERROR: 'danger', WARNING: 'warning', INFO: 'info' }
   return m[(lvl || 'WARNING').toUpperCase()] || 'warning'
 }
 
+/**
+ * 格式化日期。
+ */
 const formatDate = (d) => d ? dayjs(d).format('YYYY-MM-DD') : '-'
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('MM-DD HH:mm') : '-'
 
+/**
+ * 把设备类型树压平，供筛选下拉使用。
+ */
 const flattenTree = (nodes, result = []) => {
   for (const node of nodes) {
     result.push({ label: node.name, value: node.name })
@@ -192,6 +204,9 @@ const flattenTree = (nodes, result = []) => {
   return result
 }
 
+/**
+ * 加载设备类型分类。
+ */
 const fetchDeviceTypes = async () => {
   try {
     const res = await request.get('/categories/', { params: { category_type: 'DEVICE_TYPE', page_size: 1000 } })
@@ -199,6 +214,9 @@ const fetchDeviceTypes = async () => {
   } catch { /* empty */ }
 }
 
+/**
+ * 加载设备监控页的统计数字。
+ */
 const fetchStats = async () => {
   try {
     const res = await request.get('/devices/monitor/stats', { params: typeFilter.value ? { device_type: typeFilter.value } : {} })
@@ -206,6 +224,9 @@ const fetchStats = async () => {
   } catch { /* ignore */ }
 }
 
+/**
+ * 按筛选条件分页查询设备列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -221,15 +242,27 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 同时刷新统计和列表。
+ */
 const fetchAll = () => { fetchStats(); fetchData() }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchAll() }
+/**
+ * 清空筛选条件并重新加载。
+ */
 const handleReset = () => {
   keyword.value = ''; typeFilter.value = ''; statusFilter.value = ''; hasFaultFilter.value = null
   page.value = 1
   fetchAll()
 }
 
+/**
+ * 点击统计卡片时，按对应状态过滤列表。
+ */
 const handleStatClick = (s) => {
   if (s.key === 'total' || s.key === 'unknown') {
     statusFilter.value = s.key === 'total' ? '' : 'UNKNOWN'
@@ -243,6 +276,9 @@ const handleStatClick = (s) => {
   fetchData()
 }
 
+/**
+ * 确认后删除设备。
+ */
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(`确定删除设备「${row.device_name}」？`, '删除确认', { type: 'warning' })
@@ -252,6 +288,9 @@ const handleDelete = async (row) => {
   } catch { /* cancelled */ }
 }
 
+/**
+ * 清除设备上的故障标记。
+ */
 const handleClearFaults = async (row) => {
   try {
     await ElMessageBox.confirm(`清理「${row.device_name}」的故障标签？状态将重置为未知。`, '清理确认', { type: 'warning' })
@@ -261,6 +300,9 @@ const handleClearFaults = async (row) => {
   } catch { /* cancelled */ }
 }
 
+/**
+ * 开或关列表自动刷新。
+ */
 const handleToggleRefresh = () => { autoRefresh.value = !autoRefresh.value }
 
 let timer = null

@@ -243,12 +243,27 @@ const aiDialog = reactive({ visible: false, parsing: false, text: '' })
 const importDialog = reactive({ visible: false, importing: false, file: null, result: null })
 
 const currentUser = JSON.parse(localStorage.getItem('current_user') || '{}')
+/**
+ * 当前用户是否为管理员，用于控制手册码的管理操作。
+ */
 const isAdmin = computed(() => currentUser.role === 'ADMIN')
 
+/**
+ * 按手册码严重级别返回标签颜色。
+ */
 const sevTagType = (s) => ({ EX: 'danger', OH: 'warning', INFO: 'info' }[s] || 'info')
+/**
+ * 把严重级别转成中文标签。
+ */
 const sevLabel = (s) => ({ EX: 'EX 急停', OH: 'OH 停机', INFO: 'INFO 提示' }[s] || s)
+/**
+ * 格式化时间。
+ */
 const formatTime = (t) => t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'
 
+/**
+ * 返回一份空白的手册码表单。
+ */
 function emptyForm() {
   return {
     manual_name: '', device_type: '', error_code: '', title: '',
@@ -258,6 +273,9 @@ function emptyForm() {
   }
 }
 
+/**
+ * 按条件加载手册码列表。
+ */
 const fetchData = async () => {
   loading.value = true
   try {
@@ -272,6 +290,9 @@ const fetchData = async () => {
   finally { loading.value = false }
 }
 
+/**
+ * 加载设备类型供筛选和表单使用。
+ */
 const loadDeviceTypes = async () => {
   try {
     const res = await request.get('/manual-codes/', { params: { page: 1, page_size: 100 } })
@@ -280,17 +301,35 @@ const loadDeviceTypes = async () => {
   } catch { /* handled */ }
 }
 
+/**
+ * 按当前条件重新查询。
+ */
 const handleSearch = () => { page.value = 1; fetchData() }
+/**
+ * 清空筛选并重新加载。
+ */
 const handleReset = () => { keyword.value = ''; deviceTypeFilter.value = ''; page.value = 1; fetchData() }
 
+/**
+ * 打开手册码详情。
+ */
 const showDetail = (row) => {
   detailDialog.item = row
   detailDialog.visible = true
 }
 
+/**
+ * 在表单中追加一条触发条件。
+ */
 const addCondition = () => editDialog.form.conditions.push({ signal: '', cause: '', steps: '' })
+/**
+ * 删除一条触发条件。
+ */
 const removeCondition = (i) => editDialog.form.conditions.splice(i, 1)
 
+/**
+ * 打开新增手册码对话框。
+ */
 const openCreate = () => {
   editDialog.form = emptyForm()
   editDialog.isEdit = false
@@ -298,6 +337,9 @@ const openCreate = () => {
   editDialog.visible = true
 }
 
+/**
+ * 打开编辑手册码对话框并回填数据。
+ */
 const openEdit = (row) => {
   editDialog.editingId = row.id
   editDialog.form = {
@@ -313,6 +355,9 @@ const openEdit = (row) => {
   editDialog.visible = true
 }
 
+/**
+ * 新增或保存手册码条目。
+ */
 const saveEntry = async () => {
   const f = editDialog.form
   if (!f.manual_name || !f.error_code || !f.title || !f.description) {
@@ -336,6 +381,9 @@ const saveEntry = async () => {
   } finally { editDialog.saving = false }
 }
 
+/**
+ * 用 AI 从文本中解析手册码并预填表单。
+ */
 const runAiParse = async () => {
   if (!aiDialog.text.trim()) { ElMessage.warning('请粘贴手册原文'); return }
   aiDialog.parsing = true
@@ -365,14 +413,23 @@ const runAiParse = async () => {
   } finally { aiDialog.parsing = false }
 }
 
+/**
+ * 打开批量导入对话框。
+ */
 const openImportDialog = () => {
   importDialog.file = null
   importDialog.result = null
   importDialog.visible = true
 }
 
+/**
+ * 选择导入文件后记下待处理文件。
+ */
 const onImportFileChange = (uploadFile) => { importDialog.file = uploadFile.raw }
 
+/**
+ * 提交手册码批量导入。
+ */
 const runImport = async () => {
   if (!importDialog.file) { ElMessage.warning('请选择 JSON 文件'); return }
   importDialog.importing = true
@@ -390,6 +447,9 @@ const runImport = async () => {
   } finally { importDialog.importing = false }
 }
 
+/**
+ * 删除一条手册码。
+ */
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(

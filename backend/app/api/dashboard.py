@@ -19,6 +19,7 @@ router = APIRouter()
 
 
 def _wo_to_dict(w: WorkOrder) -> dict:
+    """把工单模型按表字段转成普通字典，供看板接口序列化。"""
     return {c.name: getattr(w, c.name) for c in w.__table__.columns}
 
 

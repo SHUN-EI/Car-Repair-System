@@ -1,3 +1,5 @@
+"""门店分库存和库存流水。总库存仍在 spare_parts.stock_quantity，出入库必须同时记流水。"""
+
 from sqlalchemy import Column, ForeignKey, Integer, String, Text, UniqueConstraint
 
 from app.models.base import BaseModel
@@ -16,6 +18,7 @@ class StorePartStock(BaseModel):
     quantity = Column(Integer, nullable=False, default=0, comment="本店结存")
 
     def __repr__(self):
+        """调试时输出某店某配件的结存主键和数量。"""
         return f"<StorePartStock(store_id={self.store_id}, spare_part_id={self.spare_part_id}, quantity={self.quantity})>"
 
 
@@ -37,4 +40,5 @@ class StockMovement(BaseModel):
     note = Column(Text, nullable=True)
 
     def __repr__(self):
+        """调试时输出流水主键、变动类型、数量和变动后结存。"""
         return f"<StockMovement(part_code='{self.part_code}', qty_delta={self.qty_delta})>"

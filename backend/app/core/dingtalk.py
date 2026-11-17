@@ -66,6 +66,7 @@ class DingTalkClient:
     }
 
     def __init__(self):
+        """初始化钉钉客户端。若配置了 DINGTALK_API_TOKEN 则直接使用且视为长期有效；mock 模式只跟配置走，运行中不会被改成 mock。"""
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0
         # mock_mode 全局只由 settings 决定，**不允许运行时自动切 True**
@@ -91,17 +92,21 @@ class DingTalkClient:
 
     @property
     def app_key(self) -> str:
+        """返回配置中的钉钉 AppKey。"""
         return settings.DINGTALK_APP_KEY
 
     @property
     def app_secret(self) -> str:
+        """返回配置中的钉钉 AppSecret。"""
         return settings.DINGTALK_APP_SECRET
 
     @property
     def agent_id(self) -> str:
+        """返回配置中的钉钉微应用 AgentId，发工作通知时使用。"""
         return settings.DINGTALK_AGENT_ID
 
     def _get_access_token(self) -> str:
+        """返回可用的 access_token。未过期则复用；否则用 AppKey/Secret 向钉钉换新票，并提前 5 分钟过期以免临界失效。认证失败会抛出异常。"""
         now = time.time()
         if self._access_token and now < self._token_expires_at:
             return self._access_token
@@ -120,10 +125,12 @@ class DingTalkClient:
         return self._access_token
 
     def _get_headers(self) -> dict:
+        """构造钉钉新版开放接口所需的 access-token 请求头。"""
         token = self._get_access_token()
         return {"x-acs-dingtalk-access-token": token}
 
     def _mock_identity_by_code(self, code: str) -> Dict:
+        """在 mock 或临时降级时，把免登/扫码的 code 映射到内置测试身份（工人或几位维修员）。用于本地联调，不会在生产 mock 关闭时作为正式身份源。"""
         worker_codes = ["w_001", "worker", "worker01", "zhang", "1", "worker_test"]
         if code.lower() in [c.lower() for c in worker_codes]:
             user = self.MOCK_USERS["mock_worker_001"].copy()
@@ -167,6 +174,7 @@ class DingTalkClient:
     # 免登 code → 用户 identity（H5 微应用内使用）
     # ============================================================
     def get_user_by_code(self, code: str) -> Dict:
+        """用免登 code 换取钉钉用户基本信息。mock 模式直接走测试身份；取 token 失败时仅本次降级为 mock，不改全局开关。成功则调用通讯录「当前用户」接口。"""
         if self.mock_mode:
             user = self._mock_identity_by_code(code)
             logger.info(f"[DingTalk][Mock] 免登: code={code} → {user['name']}")
@@ -227,6 +235,7 @@ class DingTalkClient:
     # OAuth2 扫码登录
     # ============================================================
     def get_user_by_scan_code(self, code: str) -> Dict:
+        """用扫码登录的授权码换取用户信息。mock 模式走测试身份；真实环境优先新版 OAuth2 userAccessToken，再查用户资料，失败时再尝试其它兼容流程。"""
         if self.mock_mode:
             user = self._mock_identity_by_code(code)
             logger.info(f"[DingTalk][Mock] 扫码登录: code={code} → {user['name']}")
@@ -371,6 +380,7 @@ class DingTalkClient:
     # 获取用户详情
     # ============================================================
     def get_user_detail(self, userid: str) -> Dict:
+        """按钉钉 userid 查询姓名、手机、部门等详情。mock 模式返回内置用户；取 token 失败时返回空字段并标记 _mock，保留调用方已有的真实昵称，不再编造假名。"""
         if self.mock_mode:
             if userid in self.MOCK_USERS:
                 user = self.MOCK_USERS[userid]
@@ -421,6 +431,7 @@ class DingTalkClient:
             return {"_mock": True, "userid": userid, "name": "", "mobile": "", "dept_name": "", "title": ""}
 
     def _get_user_detail_old(self, userid: str) -> Dict:
+        """用旧版 topapi/v2/user/get 查询用户详情，作为新版通讯录接口失败时的兼容路径。"""
         token = self._get_access_token()
         resp = requests.post(
             f"{self.BASE_URL}/topapi/v2/user/get",
@@ -444,6 +455,7 @@ class DingTalkClient:
     # 发送工作通知
     # ============================================================
     def send_work_notice(self, userid: str, title: str, content: str, url: str = "") -> bool:
+        """向指定钉钉用户发送工作通知（卡片消息）。mock 模式只打日志视为成功；没有 token 或接口报错时返回 False，不抛给调用方。"""
         if self.mock_mode:
             logger.info(f"[DingTalk][Mock] 发送通知给 {userid}: {title}")
             return True
@@ -481,6 +493,7 @@ class DingTalkClient:
             return False
 
     def send_approval_notice(self, userid: str, work_order_no: str, device: str, description: str) -> bool:
+        """向主管或相关人员发送「新工单待处理」通知，复用工作通知通道。"""
         content = f"""## 新工单待处理
         - **工单编号**: {work_order_no}
         - **设备**: {device}
@@ -489,6 +502,7 @@ class DingTalkClient:
         return self.send_work_notice(userid, f"新工单: {work_order_no}", content)
 
     def send_dispatch_notice(self, userid: str, work_order_no: str, device: str) -> bool:
+        """向被指派维修员发送派工通知，提醒尽快到现场处理。"""
         content = f"""## 您有新任务
         - **工单编号**: {work_order_no}
         - **设备**: {device}
@@ -719,6 +733,7 @@ class DingTalkClient:
         return any(results)
 
     def _get_admin_userids(self) -> List[str]:
+        """列出钉钉通讯录中标记为管理员的 userid。mock 模式返回内置管理员；查询失败时返回空列表。"""
         if self.mock_mode:
             return ["mock_admin_001"]
         try:

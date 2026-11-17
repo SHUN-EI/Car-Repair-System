@@ -12,6 +12,7 @@ from app.models.base import BaseModel
 
 
 class WorkOrderImportBatch(BaseModel):
+    """历史工单 PDF 批量导入的批次。记录批次号、整体状态和导入过程摘要。"""
     __tablename__ = "work_order_import_batches"
 
     batch_no = Column(String(50), unique=True, nullable=False, index=True)
@@ -29,6 +30,7 @@ class WorkOrderImportBatch(BaseModel):
 
 
 class WorkOrderImportItem(BaseModel):
+    """批次中的一条抽取草稿：对应单个 PDF 或单张工单的识别结果，确认后才生成正式工单。"""
     __tablename__ = "work_order_import_items"
 
     batch_id = Column(Integer, ForeignKey("work_order_import_batches.id", ondelete="CASCADE"),

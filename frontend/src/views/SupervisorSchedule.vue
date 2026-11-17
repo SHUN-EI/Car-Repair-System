@@ -632,6 +632,9 @@ const formRef = ref(null)
 const dutyLoading = ref(false)
 const creating = ref(false)
 
+/**
+ * 今天的中文日期，用于排班页标题。
+ */
 const todayStr = computed(() => dayjs().format('YYYY年MM月DD日 dddd'))
 
 const form = reactive({
@@ -663,6 +666,9 @@ const shiftMeta = reactive({
   ALL_DAY:   { name: '全天', time_range: '—' },
 })
 
+/**
+ * 加载班次元数据，用于排班表表头。
+ */
 const fetchShiftMeta = async () => {
   try {
     const arr = await getShiftMeta()
@@ -679,6 +685,9 @@ const fetchShiftMeta = async () => {
   } catch (_) { /* 加载失败就回落到前端默认值 */ }
 }
 
+/**
+ * 加载当天或当前视图的排班数据。
+ */
 const fetchDutyToday = async () => {
   dutyLoading.value = true
   try {
@@ -698,6 +707,9 @@ const fetchDutyToday = async () => {
 
 const technicians = ref([])
 
+/**
+ * 加载可排班的维修人员列表。
+ */
 const fetchTechnicians = async () => {
   try {
     const res = await listTechnicians()
@@ -707,6 +719,9 @@ const fetchTechnicians = async () => {
   }
 }
 
+/**
+ * 提交批量排班。
+ */
 const handleCreateBatch = async () => {
   try {
     await formRef.value.validate()
@@ -741,12 +756,18 @@ const activeTab = ref('calendar')
 
 const today = dayjs().format('YYYY-MM-DD')
 
+/**
+ * 把班次代码转成中文名称。
+ */
 const shiftText = (s) => {
   const meta = s && shiftMeta[s]
   if (meta) return meta.name
   return s || '-'
 }
 
+/**
+ * 把请假类型转成中文。
+ */
 const leaveTypeText = (t) => {
   const map = {
     ANNUAL: '年假',
@@ -807,6 +828,9 @@ const getCell = (user, date) => user.days?.[date]
 
 // 班次标签文字（早绿/中橙/晚紫/请假红，与今日值日配色一致）
 const shiftLabel = (s) => ({ MORNING: '早', AFTERNOON: '中', NIGHT: '晚' }[s] || s)
+/**
+ * 返回班次在格子上的颜色。
+ */
 const shiftColor = (s) => ({ MORNING: '#00B42A', AFTERNOON: '#FF7D00', NIGHT: '#722ED1' }[s] || '#86909C')
 
 // 单元格标签数组：支持一人同天多班次（逗号拼接/数组）并列显示，可叠加请假标签
@@ -884,6 +908,9 @@ const onCellClick = (user, date, event) => {
   cellMenu.cells = getCellShifts(user, date)
 }
 
+/**
+ * 关闭排班格子的右键或点击菜单。
+ */
 const closeCellMenu = () => {
   cellMenu.visible = false
 }
@@ -949,6 +976,9 @@ const batchForm = reactive({
   dateRange: [today, today]
 })
 
+/**
+ * 打开批量排班对话框。
+ */
 const openBatchDialog = () => {
   // 默认日期范围设为当前查询周
   batchForm.dateRange = [weekStartDate.value, dayjs(weekStartDate.value).add(6, 'day').format('YYYY-MM-DD')]
@@ -1084,6 +1114,9 @@ const substituteCandidates = ref([])
 
 // 轮询：每 30 秒刷新一次待审批数量和列表（若在审批Tab则刷新列表，否则只刷新右上角计数）
 let _pollTimer = null
+/**
+ * 开始轮询待审批请假数量。
+ */
 const startPoll = () => {
   stopPoll()
   _pollTimer = setInterval(() => {
@@ -1094,6 +1127,9 @@ const startPoll = () => {
     }
   }, 30000)
 }
+/**
+ * 停止待审批轮询。
+ */
 const stopPoll = () => {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null }
 }
@@ -1104,6 +1140,9 @@ let _lastLeaveTotal = -1
 const scheduleChangeTip = ref('')
 const _dutyTipDismissed = ref(false)
 
+/**
+ * 检测排班是否有变化，有则刷新视图。
+ */
 const detectScheduleChange = async () => {
   try {
     // 只在 approval 或 calendar tab 检测
@@ -1122,6 +1161,9 @@ const detectScheduleChange = async () => {
   } catch {}
 }
 
+/**
+ * 只刷新待审批请假的数量徽标。
+ */
 const loadPendingCountOnly = async () => {
   try {
     const r = await leaveList({ page: 1, page_size: 1, status: 'PENDING' })
@@ -1129,6 +1171,9 @@ const loadPendingCountOnly = async () => {
   } catch {}
 }
 
+/**
+ * 加载请假审批列表。
+ */
 const loadApprovalList = async (page = 1, silent = false) => {
   approvalQuery.page = page
   approvalLoading.value = !silent ? true : approvalLoading.value
@@ -1165,14 +1210,26 @@ const leaveTypeTag = (t) => ({
   MARRIAGE: 'info', MATERNITY: '', FUNERAL: 'info', OTHER: 'info',
 }[t] || 'info')
 
+/**
+ * 把请假状态转成中文。
+ */
 const leaveStatusText = (s) => ({
   PENDING: '待审批', APPROVED: '已批准', REJECTED: '已拒绝', CANCELLED: '已撤销',
 }[s] || s || '-')
+/**
+ * 按请假状态返回标签样式。
+ */
 const leaveStatusTag = (s) => ({
   PENDING: 'warning', APPROVED: 'success', REJECTED: 'danger', CANCELLED: 'info',
 }[s] || 'info')
 
+/**
+ * 格式化日期。
+ */
 const formatDate = (d) => d ? dayjs(d).format('YYYY-MM-DD ddd') : '-'
+/**
+ * 格式化日期时间。
+ */
 const formatDateTime = (d) => d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-'
 
 // ---------------- 详情 + 批准/拒绝 ----------------
@@ -1211,9 +1268,18 @@ const showLeaveDetail = async (row) => {
   } catch {}
 }
 
+/**
+ * 打开同意请假的确认。
+ */
 const openApprove = (row) => showLeaveDetail(row)
+/**
+ * 打开驳回请假的输入框。
+ */
 const openReject = (row) => showLeaveDetail(row)
 
+/**
+ * 提交驳回请假。
+ */
 const confirmReject = async () => {
   if (!approveForm.approver_comment || approveForm.approver_comment.trim().length < 2) {
     ElMessage.warning('拒绝理由必填（至少 2 个字符）')
@@ -1230,6 +1296,9 @@ const confirmReject = async () => {
   }
 }
 
+/**
+ * 提交同意请假。
+ */
 const confirmApprove = async () => {
   if (approvalNeedSubstitute.value && !approveForm.substitute_user_id) {
     ElMessage.warning('在岗人数不足，请指定顶岗人再批准')

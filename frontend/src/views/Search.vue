@@ -191,6 +191,9 @@ const hints = [
   '传送带打滑跑偏，维修步骤',
 ]
 
+/**
+ * 把检索策略标识转成页面上的中文说明。
+ */
 const strategyLabel = (s) => {
   const map = {
     vector_search: '向量检索',
@@ -201,11 +204,17 @@ const strategyLabel = (s) => {
   return map[s] || s
 }
 
+/**
+ * 把知识来源类型转成中文标签。
+ */
 const sourceLabel = (s) => {
   const map = { vector: '语义匹配', bm25: '关键词', hybrid: '混合', agent: '智能检索' }
   return map[s] || s
 }
 
+/**
+ * 把对话区滚到最新一条消息。
+ */
 const scrollToBottom = async () => {
   await nextTick()
   if (chatContainer.value) {
@@ -213,6 +222,9 @@ const scrollToBottom = async () => {
   }
 }
 
+/**
+ * 发送问题并处理问答或流式回答。
+ */
 const handleSend = async () => {
   const text = inputText.value.trim()
   if (!text || isSearching.value) return
@@ -289,11 +301,17 @@ const handleSend = async () => {
   }
 }
 
+/**
+ * 打开某条检索结果的详情。
+ */
 const openDetail = (item) => {
   detailItem.value = item
   detailVisible.value = true
 }
 
+/**
+ * 把快捷问句填进输入框并直接发送。
+ */
 const quickSend = (text) => {
   inputText.value = text
   handleSend()

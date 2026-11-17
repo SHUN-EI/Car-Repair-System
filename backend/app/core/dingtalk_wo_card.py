@@ -91,6 +91,7 @@ _AUTO_BUTTONS = {
 
 
 def _is_auto_lane(wo) -> bool:
+    """根据工单状态和车辆/预约/门店字段，判断这条工单是否走汽修车道，从而决定卡片上的下一步按钮。"""
     from app.domain.work_order_status import is_auto_repair_lane
     return is_auto_repair_lane(
         status=getattr(wo, "status", None),
@@ -101,6 +102,7 @@ def _is_auto_lane(wo) -> bool:
 
 
 def _next_button(wo):
+    """按当前状态返回卡片上应展示的下一步按钮。汽修车道优先用专用按钮表，否则用工业维修的下一状态按钮。"""
     status = wo.status.value if getattr(wo, "status", None) else None
     if _is_auto_lane(wo) and status in _AUTO_BUTTONS:
         return _AUTO_BUTTONS[status]
@@ -108,6 +110,7 @@ def _next_button(wo):
 
 
 def _status_cn(status: Optional[str]) -> str:
+    """把工单状态枚举值翻译成卡片上的中文进度文案，未知状态原样返回。"""
     return {
         "DRAFT": "草稿",
         "SUBMITTED": "待派工",
@@ -131,6 +134,7 @@ def _status_cn(status: Optional[str]) -> str:
 
 
 def _device_text(wo) -> str:
+    """取出工单关联设备的名称或编码，供卡片标题区展示；没有设备时退回工单上的 device_code。"""
     device = ""
     try:
         if getattr(wo, "device", None):
@@ -141,6 +145,7 @@ def _device_text(wo) -> str:
 
 
 def _card_markdown(wo, public_url: str = "") -> str:
+    """生成工单进度卡片的 Markdown 正文：单号、设备、故障描述、当前进度，以及派工人和进入系统的链接。"""
     sup = ""
     try:
         from app.models.user import User
@@ -164,11 +169,13 @@ def _card_markdown(wo, public_url: str = "") -> str:
 
 
 def _get_work_order(db: Session, out_track_id: str):
+    """用卡片上的 outTrackId（工单号）查找工单，找不到返回 None。"""
     from app.models.work_order import WorkOrder
     return db.query(WorkOrder).filter(WorkOrder.work_order_no == out_track_id).first()
 
 
 def _get_user_by_dtuserid(db: Session, dt_userid: str):
+    """按钉钉 userid 查找已绑定的系统用户。"""
     from app.models.user import User
     return db.query(User).filter(User.dingtalk_userid == dt_userid).first()
 
@@ -198,6 +205,7 @@ def _notify_supervisor(db: Session, wo, action_cn: str, technician_name: str) ->
 def _refresh_card_async(wo_id: int, out_track_id: str, extra_markdown: str = "") -> None:
     """后台线程按工单最新状态刷新卡片"""
     def _worker():
+        """在后台线程里打开独立数据库会话，按工单 ID 重新拉取数据并刷新钉钉卡片。失败只记日志，不回抛到主请求。"""
         db = SessionLocal()
         try:
             from app.models.work_order import WorkOrder
@@ -214,6 +222,7 @@ def _refresh_card_async(wo_id: int, out_track_id: str, extra_markdown: str = "")
 def _notify_supervisor_async(wo_id: int, action_cn: str, technician_name: str) -> None:
     """后台线程给主管发送钉钉进度通知"""
     def _worker():
+        """在后台线程里打开独立会话，把维修员刚完成的动作通知主管。失败只记日志。"""
         db = SessionLocal()
         try:
             from app.models.work_order import WorkOrder
@@ -316,6 +325,10 @@ def handle_card_callback(payload: Dict) -> Optional[str]:
 
 
 def _dispatch_action(out_track_id: str, user_id: str, action: str) -> Optional[str]:
+    """处理维修员在工单卡片上点击的按钮，返回要回复给该用户的文案。
+
+    先按工单号和钉钉账号识别工单与操作者；未绑定或不是被指派人员（管理员除外）时直接拒绝。确认录入按钮只引导回系统填报，不改状态。汽修车道上的「完成维修」会改走质检，避免跳过 QC 进入工业待归档；工业车道的完成维修则把工单转到待归档并引导回系统归档。其它进度按钮按状态机流转，成功后异步刷新卡片并（在汽修车道）通知主管。
+    """
     db = SessionLocal()
     try:
         wo = _get_work_order(db, out_track_id)

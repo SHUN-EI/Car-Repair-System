@@ -1,3 +1,5 @@
+"""报价单与明细。草案可由工单领料或问诊建议生成，价格来自目录和规则引擎，不由大模型定价。"""
+
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -33,10 +35,12 @@ class Quote(BaseModel):
     )
 
     def __repr__(self):
+        """调试时输出报价主键、单号、状态和合计金额。"""
         return f"<Quote(quote_no='{self.quote_no}', status='{self.status}')>"
 
 
 class QuoteLine(BaseModel):
+    """报价明细行：类型可以是配件、工时或套餐，记录数量、单价、金额和来源（工单/问诊/人工/套餐）。"""
     __tablename__ = "quote_lines"
 
     quote_id = Column(Integer, ForeignKey("quotes.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -53,4 +57,5 @@ class QuoteLine(BaseModel):
     quote = relationship("Quote", back_populates="lines")
 
     def __repr__(self):
+        """调试时输出明细主键、行号、名称和金额。"""
         return f"<QuoteLine(name='{self.name}', amount={self.amount})>"

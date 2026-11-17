@@ -64,6 +64,7 @@ ACTIVE_STATUS = (
 
 
 def _status_cn(status) -> str:
+    """把工单状态转成中文标签，供 MCP 查询结果展示。"""
     raw = status.value if hasattr(status, "value") else str(status)
     return STATUS_CN.get(raw, raw)
 

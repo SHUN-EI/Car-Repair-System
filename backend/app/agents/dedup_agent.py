@@ -59,10 +59,12 @@ class DedupAgent:
 ```"""
 
     def __init__(self):
+        """初始化知识去重判定器，对话模型延迟到首次判定时再创建。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造低温、非流式对话模型。超时 30 秒，超时时应走保守策略（不判为重复），避免误合并知识。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.1,

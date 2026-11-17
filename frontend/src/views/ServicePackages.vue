@@ -105,15 +105,33 @@ const skuDialog = ref(false)
 const packageForm = ref({})
 const skuForm = ref({})
 
+/**
+ * 把套餐适用的里程范围格式化成展示文案。
+ */
 const mileageText = (row) => {
   if (row.mileage_from == null && row.mileage_to == null) return '不限'
   return `${row.mileage_from ?? 0} - ${row.mileage_to ?? '不限'}`
 }
+/**
+ * 取得套餐显示名称。
+ */
 const packageName = (id) => packages.value.find(item => item.id === id)?.name || '-'
+/**
+ * 把关键字字符串拆成数组。
+ */
 const splitKeywords = (text) => (text || '').split(/[,，]/).map(item => item.trim()).filter(Boolean)
+/**
+ * 把关键字数组拼回字符串。
+ */
 const joinKeywords = (list) => (list || []).join(',')
+/**
+ * 把输入转成数字，空值则返回空。
+ */
 const numberOrNull = (value) => (value === '' || value == null ? null : Number(value))
 
+/**
+ * 加载保养套餐和配件明细。
+ */
 const load = async () => {
   loading.value = true
   try {
@@ -128,6 +146,9 @@ const load = async () => {
   }
 }
 
+/**
+ * 打开新增或编辑套餐对话框。
+ */
 const openPackage = (row) => {
   packageForm.value = row ? {
     ...row,
@@ -137,6 +158,9 @@ const openPackage = (row) => {
   } : { code: '', name: '', brand: '', series: '', mileage_from: '', mileage_to: '', keywords: '', list_price: 0, description: '' }
   packageDialog.value = true
 }
+/**
+ * 保存套餐主信息。
+ */
 const savePackage = async () => {
   const payload = {
     code: packageForm.value.code,
@@ -156,6 +180,9 @@ const savePackage = async () => {
   packageDialog.value = false
   load()
 }
+/**
+ * 删除一个套餐。
+ */
 const removePackage = async (row) => {
   await ElMessageBox.confirm(`删除套餐 ${row.name}？`, '确认')
   await request.delete(`/service-packages/${row.id}`)
@@ -163,6 +190,9 @@ const removePackage = async (row) => {
   load()
 }
 
+/**
+ * 打开套餐内配件明细的编辑框。
+ */
 const openSku = (row) => {
   skuForm.value = row ? {
     ...row,
@@ -170,6 +200,9 @@ const openSku = (row) => {
   } : { code: '', name: '', category: '保养', labor_minutes: 30, base_price: 0, package_id: null, brand: '', series: '', keywords: '' }
   skuDialog.value = true
 }
+/**
+ * 保存套餐中的一条配件明细。
+ */
 const saveSku = async () => {
   const payload = {
     code: skuForm.value.code,
@@ -189,6 +222,9 @@ const saveSku = async () => {
   skuDialog.value = false
   load()
 }
+/**
+ * 从套餐中删除一条配件明细。
+ */
 const removeSku = async (row) => {
   await ElMessageBox.confirm(`删除项目 ${row.name}？`, '确认')
   await request.delete(`/service-skus/${row.id}`)

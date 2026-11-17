@@ -14,6 +14,10 @@ BUSY_APPOINTMENT_STATUSES = ("PENDING", "CONFIRMED")
 
 
 def slot_starts(day: date) -> List[datetime]:
+    """生成指定自然日内、营业时段里每个整点的预约开始时间。
+
+    起止小时由 SLOT_OPEN_HOUR / SLOT_CLOSE_HOUR 决定（结束小时不含）。返回的时间分钟、秒、微秒均为 0。
+    """
     return [
         datetime(day.year, day.month, day.day, hour, 0, 0)
         for hour in range(SLOT_OPEN_HOUR, SLOT_CLOSE_HOUR)
@@ -21,10 +25,12 @@ def slot_starts(day: date) -> List[datetime]:
 
 
 def normalize_slot(value: datetime) -> datetime:
+    """把预约时间归一到整点（去掉分、秒、微秒），便于用同一把钥匙判断工位占用冲突。"""
     return value.replace(minute=0, second=0, microsecond=0)
 
 
 def is_bookable_slot(value: datetime) -> bool:
+    """判断时间是否可预约：必须是营业小时内的整点；空值或带分秒的时间返回 False。"""
     if value is None:
         return False
     if value.minute != 0 or value.second != 0 or value.microsecond != 0:
@@ -55,12 +61,14 @@ def build_slot_grid(
 
 
 def busy_key(bay_id: Optional[int], scheduled_at: Optional[datetime]) -> Optional[Tuple[int, datetime]]:
+    """用工位 ID 和归一化后的预约时间组成占用键。任一参数缺失时返回 None，表示无法参与冲突判断。"""
     if bay_id is None or scheduled_at is None:
         return None
     return bay_id, normalize_slot(scheduled_at)
 
 
 def group_slots_by_time(slots: List[dict]) -> Dict[str, List[dict]]:
+    """按字典里的 start 字段，把工位时段列表归组成「同一开始时间 → 多条工位记录」，供前端按时间展示。"""
     grouped: Dict[str, List[dict]] = {}
     for row in slots:
         grouped.setdefault(row["start"], []).append(row)

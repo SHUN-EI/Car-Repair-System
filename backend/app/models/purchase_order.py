@@ -1,3 +1,5 @@
+"""备件采购单及明细。入库收货后才增加库存，取消不会回写入库。"""
+
 from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -24,10 +26,12 @@ class PurchaseOrder(BaseModel):
     )
 
     def __repr__(self):
+        """调试时输出采购单主键、单号和状态。"""
         return f"<PurchaseOrder(po_no='{self.po_no}', status='{self.status}')>"
 
 
 class PurchaseOrderLine(BaseModel):
+    """采购单中的一行：配件、数量、单价，以及收货时实际入库数量。"""
     __tablename__ = "purchase_order_lines"
 
     purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -41,4 +45,5 @@ class PurchaseOrderLine(BaseModel):
     order = relationship("PurchaseOrder", back_populates="lines")
 
     def __repr__(self):
+        """调试时输出采购明细主键、配件和数量。"""
         return f"<PurchaseOrderLine(part_code='{self.part_code}', qty_ordered={self.qty_ordered})>"

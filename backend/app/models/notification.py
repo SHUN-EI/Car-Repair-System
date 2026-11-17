@@ -1,3 +1,5 @@
+"""站内通知：按接收用户存储标题、正文和已读状态，可选关联工单。"""
+
 from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel

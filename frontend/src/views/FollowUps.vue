@@ -64,8 +64,14 @@ const rows = ref([])
 const dialog = ref(false)
 const form = ref({ work_order_id: '', kind: 'RATING', scheduled_at: '', note: '' })
 const labels = { SCHEDULED: '待发送', SENT: '已发送', CANCELLED: '已取消', SKIPPED: '已跳过' }
+/**
+ * 把回访状态码转成中文标签。
+ */
 const statusLabel = (value) => labels[value] || value
 
+/**
+ * 加载回访任务列表。
+ */
 const load = async () => {
   loading.value = true
   try {
@@ -76,11 +82,17 @@ const load = async () => {
   }
 }
 
+/**
+ * 打开新建回访对话框。
+ */
 const openCreate = () => {
   form.value = { work_order_id: '', kind: 'RATING', scheduled_at: '', note: '' }
   dialog.value = true
 }
 
+/**
+ * 保存新建的回访任务。
+ */
 const save = async () => {
   await request.post('/follow-ups/', {
     work_order_id: Number(form.value.work_order_id),
@@ -93,6 +105,9 @@ const save = async () => {
   load()
 }
 
+/**
+ * 把到期回访发出去。
+ */
 const dispatchDue = async () => {
   dispatching.value = true
   try {
@@ -104,6 +119,9 @@ const dispatchDue = async () => {
   }
 }
 
+/**
+ * 取消一条回访任务。
+ */
 const cancel = async (row) => {
   await ElMessageBox.confirm('取消这条未发送的提醒？', '确认')
   await request.post(`/follow-ups/${row.id}/cancel`)

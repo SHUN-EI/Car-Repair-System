@@ -1,3 +1,5 @@
+"""配件库存接口：按门店范围查询和维护配件、导入进货、查看库存预警，以及按工单扣料。"""
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ router = APIRouter()
 
 
 def _sp_to_dict(s: SparePart) -> dict:
+    """把配件转成接口字典，并把适配规格规范成统一结构；规范失败时保留原值。"""
     data = {c.name: getattr(s, c.name) for c in s.__table__.columns}
     if data.get("fitment") is not None:
         try:
@@ -32,6 +35,7 @@ def _sp_to_dict(s: SparePart) -> dict:
 
 
 def _requested_store(store_id: Optional[int], x_store_id: Optional[str]) -> Optional[int]:
+    """从查询参数或请求头 X-Store-Id 取出要筛选的门店 ID。"""
     if store_id:
         return store_id
     if x_store_id and str(x_store_id).strip().isdigit():
@@ -40,6 +44,7 @@ def _requested_store(store_id: Optional[int], x_store_id: Optional[str]) -> Opti
 
 
 def _part_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+    """解析当前用户的门店范围，不合法时转成 403。"""
     try:
         return resolve_store_scope(user, _requested_store(store_id, x_store_id))
     except StoreScopeError as exc:
@@ -47,6 +52,7 @@ def _part_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional
 
 
 def _scope_part_query(query, db: Session, scope):
+    """按门店范围收窄配件查询：legacy 只看未挂门店的配件，指定门店则包含本店档案和本店库存行。"""
     if scope.mode == "legacy":
         return query.filter(SparePart.store_id.is_(None))
     if scope.mode == "store":
@@ -56,6 +62,7 @@ def _scope_part_query(query, db: Session, scope):
 
 
 def _stock_map(db: Session, part_ids, store_id: Optional[int]):
+    """批量查出指定门店下这些配件的门店库存行，便于列表里展示本店在库数量。"""
     if not part_ids or not store_id:
         return {}
     rows = (
@@ -67,6 +74,7 @@ def _stock_map(db: Session, part_ids, store_id: Optional[int]):
 
 
 def _present_part(part: SparePart, scope, stock_row=None) -> dict:
+    """组装配件返回：在指定门店模式下，优先用门店库存数量覆盖展示库存。"""
     data = _sp_to_dict(part)
     data["store_on_hand"] = stock_row.quantity if stock_row is not None else None
     if scope.mode == "store":
@@ -79,6 +87,7 @@ def _present_part(part: SparePart, scope, stock_row=None) -> dict:
 
 
 def _part_visible(part: SparePart, scope, stock_row) -> bool:
+    """判断配件对当前范围是否可见：全部门店都可见；legacy 只看未挂门店的；指定门店则看本店档案或本店库存行。"""
     if scope.mode == "all":
         return True
     if scope.mode == "legacy":
@@ -87,6 +96,7 @@ def _part_visible(part: SparePart, scope, stock_row) -> bool:
 
 
 def _fitment_payload(data):
+    """把请求体转成入库字段，并规范适配规格；规格不合法时返回 400。"""
     payload = data.model_dump()
     if "fitment" in payload:
         try:
@@ -98,6 +108,7 @@ def _fitment_payload(data):
 
 # ==================== 进货单导入 Schema ====================
 class PurchaseItem(BaseModel):
+    """批量进货中的一行：编码和数量必填，可同时带上名称、规格、价格和安全库存。"""
     part_code: str = Field(..., max_length=50)
     part_name: Optional[str] = None
     specification: Optional[str] = None
@@ -111,11 +122,13 @@ class PurchaseItem(BaseModel):
 
 
 class PurchaseImportRequest(BaseModel):
+    """批量进货请求：1 到 200 行，可选目标门店。"""
     items: List[PurchaseItem] = Field(..., min_length=1, max_length=200)
     store_id: Optional[int] = None
 
 
 class PurchaseImportResult(BaseModel):
+    """批量进货结果：新建、更新、跳过的数量和每行明细。"""
     total: int
     created: int = 0
     updated: int = 0
@@ -137,6 +150,7 @@ def list_spare_parts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按门店范围分页列出配件，可按设备类型、关键词以及低库存/缺货状态过滤。"""
     scope = _part_scope(current_user, store_id, x_store_id)
     query = _scope_part_query(db.query(SparePart), db, scope)
     if device_type:
@@ -225,6 +239,7 @@ def check_stock_alerts(
     scope = _part_scope(current_user, None, x_store_id)
 
     def _filter(query):
+        """在库存预警查询上套上当前用户的门店范围。"""
         return _scope_part_query(query, db, scope)
 
     from app.core.stock_alert import check_and_notify_stock_alerts
@@ -295,6 +310,7 @@ def get_spare_part(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """按 ID 获取配件详情。超出可见范围按 404 处理。管理员看全量时结果会缓存。"""
     scope = _part_scope(current_user)
     cache_key = f"spare_part:{part_id}"
     if scope.mode == "all":
@@ -327,6 +343,7 @@ def create_spare_part(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """新建配件档案。编码必须唯一，并落到当前用户可写门店。创建后清掉库存预警缓存。"""
     existing = db.query(SparePart).filter(SparePart.part_code == data.part_code).first()
     if existing:
         raise HTTPException(status_code=400, detail="备件编码已存在")
@@ -353,6 +370,7 @@ def update_spare_part(
     current_user: User = Depends(get_current_user),
     x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
 ):
+    """更新配件资料。只能改本门店可见的配件，且只写入请求里真正提交的字段。改门店时仍须落在可写范围内。"""
     part = db.query(SparePart).filter(SparePart.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="备件不存在")
@@ -387,6 +405,7 @@ def delete_spare_part(
     current_user: User = Depends(get_current_user),
     x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
 ):
+    """删除本门店可见的配件，并清掉详情和库存预警缓存。"""
     part = db.query(SparePart).filter(SparePart.id == part_id).first()
     if not part:
         raise HTTPException(status_code=404, detail="备件不存在")
@@ -404,6 +423,7 @@ def delete_spare_part(
 # ==================== 进货单批量导入 ====================
 
 class SparePartIssueRequest(BaseModel):
+    """按工单扣料的请求：工单 ID、配件编码和扣减数量。"""
     work_order_id: int
     part_code: str
     qty: int

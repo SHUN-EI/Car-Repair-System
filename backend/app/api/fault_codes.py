@@ -17,10 +17,12 @@ router = APIRouter(prefix="/fault-codes", tags=["故障码映射"])
 # ==================== 请求/响应模型 ====================
 
 class FaultCodeCreateRequest(BaseModel):
+    """手工创建故障码的请求体：故障描述必填，设备类型可选，用于自动匹配编码前缀。"""
     fault_description: str = Field(..., min_length=2, max_length=500, description="故障描述")
     device_type: Optional[str] = Field(None, description="设备类型，用于自动匹配前缀")
 
 class FaultCodeCreateResponse(BaseModel):
+    """创建故障码的返回：编码、描述、来源，以及是否新建、是否与已有编码重复的提示。"""
     id: int
     fault_code: str
     fault_description: str
@@ -45,6 +47,7 @@ DEFAULT_PREFIX = "99"  # 未知设备类型默认前缀
 # ==================== API 端点 ====================
 
 def _to_dict(item) -> dict:
+    """把故障码记录转成接口返回字典，时间为 ISO 格式。"""
     return {
         "id": item.id,
         "fault_code": item.fault_code,

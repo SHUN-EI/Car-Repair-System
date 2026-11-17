@@ -569,6 +569,9 @@ const router = useRouter()
 
 // ============ 模式切换 ============
 const isRegister = ref(false)
+/**
+ * 在登录和注册表单之间切换。
+ */
 const toggleRegister = () => {
   isRegister.value = !isRegister.value
   if (isRegister.value) {
@@ -597,6 +600,9 @@ const regType = ref('phone')
 const regFormRef = ref(null)
 const regForm = reactive({ name: '', phone: '', code: '', password: '', confirmPassword: '' })
 
+/**
+ * 校验注册时两次输入的密码是否一致。
+ */
 const validateRegConfirm = (rule, value, callback) => {
   if (value !== regForm.password) callback(new Error('两次输入的密码不一致'))
   else callback()
@@ -631,6 +637,9 @@ let dtRefreshTimer = null
 
 const dtQrRegFormRef = ref(null)
 const dtQrRegForm = reactive({ password: '', confirmPassword: '' })
+/**
+ * 校验钉钉扫码注册或绑定时的确认密码。
+ */
 const validateDtQrConfirm = (rule, value, callback) => {
   if (value !== dtQrRegForm.password) callback(new Error('两次输入的密码不一致'))
   else callback()
@@ -653,6 +662,9 @@ const dtBindInfo = ref(null)
 const dtBindForm = reactive({ username: '', password: '', real_name: '', confirmPassword: '' })
 const dtBindSubmitting = ref(false)
 
+/**
+ * 校验钉钉账号绑定表单中的确认密码。
+ */
 const validateDtBindConfirm = (rule, value, callback) => {
   if (dtBindMode.value === 'new' && value !== dtBindForm.password) callback(new Error('两次输入的密码不一致'))
   else callback()
@@ -667,12 +679,18 @@ const dtBindRules = {
   confirmPassword: [{ validator: validateDtBindConfirm, trigger: 'blur' }],
 }
 
+/**
+ * 清理钉钉扫码登录的轮询和超时定时器。
+ */
 const cleanupScanTimers = (opts = {}) => {
   const { full = false } = opts
   if (dtPollTimer) { clearInterval(dtPollTimer); dtPollTimer = null }
   if (full && dtRefreshTimer) { clearInterval(dtRefreshTimer); dtRefreshTimer = null }
 }
 
+/**
+ * 初始化钉钉扫码登录，展示二维码并开始轮询。
+ */
 const initDingTalkScan = (forRegister = false) => {
   // 完整清理：清所有定时器 + 重置状态，然后启动新二维码
   cleanupScanTimers({ full: true })
@@ -717,6 +735,9 @@ const initDingTalkScan = (forRegister = false) => {
     })
 }
 
+/**
+ * 轮询钉钉扫码状态，扫码成功后继续登录或绑定。
+ */
 const pollDingTalkStatus = async () => {
   if (!dtScanState.value) return
   try {
@@ -740,6 +761,9 @@ const pollDingTalkStatus = async () => {
   }
 }
 
+/**
+ * 扫码通过后确认登录，必要时进入绑定流程。
+ */
 const confirmDingTalkLogin = async () => {
   if (dtScanStatus.value !== 'scanned') return
   dtConfirming.value = true
@@ -796,6 +820,9 @@ const submitDingTalkBind = async () => {
   }
 }
 
+/**
+ * 关闭钉钉绑定对话框并清理状态。
+ */
 const closeDingTalkBind = () => {
   dtNeedBind.value = false
   // 重置扫码状态，允许重新扫码
@@ -816,6 +843,9 @@ watch(dtScanStatus, (val) => {
 // ============ 验证码 ============
 let countdownTimer = null
 
+/**
+ * 发送短信验证码，并开始倒计时。
+ */
 const sendCode = async (scene) => {
   const phone = scene === 'reset_password' ? resetForm.phone
     : scene === 'register' ? regForm.phone
@@ -846,6 +876,9 @@ const sendCode = async (scene) => {
   }, 1000)
 }
 
+/**
+ * 把登录令牌和用户信息写入本地，并按角色跳转首页。
+ */
 const saveLoginUser = (user) => {
   const data = {
     id: user.id,
@@ -900,6 +933,9 @@ const handleCodeLogin = async () => {
   }
 }
 
+/**
+ * 使用账号密码登录。
+ */
 const handlePwdLogin = async () => {
   if (!pwdForm.username || !pwdForm.password) {
     ElMessage.warning('请输入用户名/手机号和密码')
@@ -930,6 +966,9 @@ const showResetPassword = () => {
   resetVisible.value = true
 }
 
+/**
+ * 用短信验证码重置密码。
+ */
 const handleResetPassword = async () => {
   if (!resetForm.phone || !resetForm.code || !resetForm.new_password) {
     ElMessage.warning('请填写完整信息')
@@ -978,6 +1017,9 @@ const handleRegister = async () => {
   }
 }
 
+/**
+ * 通过钉钉扫码完成注册或绑定后的提交。
+ */
 const handleDingTalkQrRegister = async () => {
   if (!dtScanUser.value) {
     ElMessage.warning('请先完成钉钉扫码')

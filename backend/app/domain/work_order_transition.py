@@ -34,6 +34,7 @@ _status_value = status_value
 
 
 def _parse_store_header(store_id: Optional[int], x_store_id: Optional[str]) -> Optional[int]:
+    """从查询参数或 X-Store-Id 请求头解析出门店 ID。优先用显式 store_id；头里不是纯数字时忽略。"""
     if store_id:
         return store_id
     if x_store_id and str(x_store_id).strip().isdigit():
@@ -42,6 +43,7 @@ def _parse_store_header(store_id: Optional[int], x_store_id: Optional[str]) -> O
 
 
 def _work_order_scope(current_user: User, store_id: Optional[int], x_store_id: Optional[str]):
+    """解析当前用户可访问的工单门店范围。范围解析失败时改抛 HTTP 403，避免把内部异常直接透出。"""
     try:
         return resolve_store_scope(current_user, _parse_store_header(store_id, x_store_id))
     except StoreScopeError as exc:
@@ -49,6 +51,7 @@ def _work_order_scope(current_user: User, store_id: Optional[int], x_store_id: O
 
 
 def _lane_of(work_order: WorkOrder) -> bool:
+    """根据工单当前状态以及车辆、预约、门店字段，判断这条工单是否走汽修车道（与工业维修车道共用同一套状态枚举）。"""
     return is_auto_repair_lane(
         status=work_order.status,
         vehicle_id=work_order.vehicle_id,
@@ -57,6 +60,7 @@ def _lane_of(work_order: WorkOrder) -> bool:
     )
 
 def _complete_linked_appointment(db: Session, appointment_id: int) -> None:
+    """工单结案时，若关联预约仍是 CONFIRMED，则把它改成 COMPLETED。找不到预约或状态已不是已确认时不做改动。"""
     from app.models.appointment import Appointment
     row = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if row and row.status == "CONFIRMED":
@@ -72,6 +76,7 @@ WORKLOAD_DECREASE_STATUSES = {
 
 
 def _is_allowed_transition(from_status: str, to_status: str) -> bool:
+    """判断工单状态迁移是否在合法边集合中，供流转主流程在改状态前做校验。"""
     return to_status in _allowed_transitions(from_status)
 
 
@@ -88,6 +93,7 @@ def _attach_transitions(payload, status) -> None:
 
 
 def _vehicle_plate_map(db: Session, vehicle_ids) -> Dict[int, str]:
+    """按车辆 ID 批量查出车牌，返回 id→车牌 映射。ID 集合为空时直接返回空字典，避免无意义查询。"""
     if not vehicle_ids:
         return {}
     from app.models.vehicle import Vehicle
@@ -96,6 +102,7 @@ def _vehicle_plate_map(db: Session, vehicle_ids) -> Dict[int, str]:
 
 
 def _attach_vehicle_plate(resp, db: Session) -> None:
+    """给工单响应对象补上车辆车牌。没有 vehicle_id 时直接返回。"""
     if not getattr(resp, "vehicle_id", None):
         return
     plates = _vehicle_plate_map(db, {resp.vehicle_id})
@@ -114,6 +121,7 @@ def _add_progress_log(
     location: Optional[str] = None,
     attachments: Any = None,
 ) -> WorkOrderProgressLog:
+    """写入一条工单进度日志（原状态、新状态、操作人、来源、备注、位置和附件），flush 后返回该记录，由调用方提交事务。"""
     log = WorkOrderProgressLog(
         work_order_id=work_order_id,
         from_status=from_status,
@@ -131,6 +139,7 @@ def _add_progress_log(
 
 
 def _update_workload(db: Session, technician_id: Optional[int], delta: int):
+    """按增量调整技师账号上的当前负荷计数，并保证结果不小于 0。技师 ID 为空或增量为 0 时不访问数据库。"""
     if not technician_id or delta == 0:
         return
     tech = db.query(User).filter(User.id == technician_id).first()
@@ -141,6 +150,10 @@ def _update_workload(db: Session, technician_id: Optional[int], delta: int):
 
 
 def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, current_user: User):
+    """执行工单状态流转，并写进度日志、调整技师负荷、触发通知与回访排期。
+
+    先校验目标状态是否在枚举和合法迁移表中；工单不存在或不在当前用户门店范围内时统一返回 404。目标与当前状态相同则直接返回，不写日志。随后按目标状态做角色校验：接单/到店/检查/维修中/待归档仅被指派维修员或管理员；退回可由维修员、主管或管理员；派工、确认报价、结案仅主管或管理员；接车/诊断/报价/质检还可由开单人操作；取消可由被指派维修员、主管、管理员或开单人。转入 ARCHIVED 必须走带完成度校验的归档接口，此处直接拒绝。转入 COMPLETED 时优先调用工单完成内部逻辑，失败则仅改状态。结案且存在预约时，把已确认预约标为完成，并在成功提交后尝试排期交车回访。非钉钉卡片来源的流转会异步刷新技师进度卡，汽修车道还会通知主管；有客户或车辆时尝试给车主发进度通知。通知、卡片或回访失败只记日志，不影响已经提交的状态变更。
+    """
     try:
         to_status_val = data.to_status.upper()
         to_status_enum = WorkOrderStatus(to_status_val)
@@ -322,6 +335,7 @@ def _do_transition(work_order_id: int, data: WorkOrderTransition, db: Session, c
     return _build_work_order_response(work_order, db)
 
 def _build_work_order_response(work_order: WorkOrder, db: Session) -> WorkOrderResponse:
+    """把工单模型转成接口响应：补开单人工号、维修员姓名、可流转的下一状态、车牌，以及格式化后的进度日志列表。"""
     resp = WorkOrderResponse.model_validate(work_order)
     if work_order.created_by:
         creator = db.query(User).filter(User.id == work_order.created_by).first()

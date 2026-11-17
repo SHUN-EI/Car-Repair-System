@@ -28,10 +28,12 @@ SESSION_CALLERS = (
 
 
 def _parse(path: Path) -> ast.AST:
+    """把源文件解析成 AST，供静态检查使用。"""
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _imported_modules(tree: ast.AST) -> set[str]:
+    """解析文件中导入的模块名。"""
     mods: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -43,6 +45,7 @@ def _imported_modules(tree: ast.AST) -> set[str]:
 
 
 def _const_value(node: ast.AST):
+    """从赋值节点取出常量值。"""
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
@@ -53,6 +56,7 @@ def _const_value(node: ast.AST):
 
 
 def _module_assignments(tree: ast.AST) -> dict[str, object]:
+    """收集模块级赋值，便于检查键名和 TTL 常量。"""
     values: dict[str, object] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
@@ -64,6 +68,7 @@ def _module_assignments(tree: ast.AST) -> dict[str, object]:
 
 
 def test_memory_service_key_and_ttl_constants():
+    """记忆服务应定义引导/专家会话等键前缀和 TTL 常量。"""
     path = APP / "memory" / "memory_service.py"
     assert path.is_file(), "缺少 app.memory.memory_service"
     tree = _parse(path)
@@ -88,6 +93,7 @@ def test_memory_service_key_and_ttl_constants():
 
 
 def test_session_callers_use_memory_facade_not_cache_service():
+    """会话读写应走 memory 门面，而不是直接操作 cache_service。"""
     violations = []
     for path in SESSION_CALLERS:
         tree = _parse(path)
@@ -122,6 +128,7 @@ def test_session_callers_use_memory_facade_not_cache_service():
 
 
 def test_consult_guide_summarize_goes_through_memory_facade():
+    """咨询 Agent 的会话摘要应通过记忆门面写入。"""
     path = APP / "agents" / "consult_guide_agent.py"
     tree = _parse(path)
     # summarize 方法体内应调用 memory_service.summarize，而不直接实例化 SessionSummarizer

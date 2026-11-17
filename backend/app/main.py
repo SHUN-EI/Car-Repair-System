@@ -1,3 +1,5 @@
+"""FastAPI 应用入口：组装路由、中间件、静态资源和生命周期，并在启动时检查密钥、对话模型和推理服务是否就绪。"""
+
 import sys
 import os
 import uuid
@@ -77,6 +79,10 @@ _mcp_public_app = public_http_app()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """应用启动与关闭时的生命周期钩子。
+
+    启动时校验生产环境密钥，打印数据库、Redis 和当前对话模型模式；再探测编码/重排推理服务，不可用只打警告，检索会降级为关键词检索，不阻止进程起来。随后进入内部 MCP 与公开 MCP 的生命周期。关闭时再打一条退出日志。
+    """
     logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     from app.core.config import assert_production_secrets
     assert_production_secrets()

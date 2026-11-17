@@ -73,7 +73,12 @@ const router = createRouter({
   ]
 })
 
-// 全局导航守卫：未登录跳转登录页
+/**
+ * 全局路由守卫。
+ * 未登录且目标页需要鉴权时跳到登录页；
+ * 车主访问技师移动端入口时改到预约页；
+ * 角色不在页面允许列表里时，车主回预约页，其他人回驾驶舱。
+ */
 router.beforeEach((to, from, next) => {
   const raw = localStorage.getItem('current_user')
   let role = ''
@@ -97,6 +102,9 @@ router.beforeEach((to, from, next) => {
   next()
 })
 
+/**
+ * 判断某个角色能否进入指定路径。没有配置 meta.roles 的页面默认放行，否则角色必须在允许列表里。
+ */
 export function roleCanAccess(role, path) {
   const record = router.resolve(path)
   const required = record.meta && record.meta.roles

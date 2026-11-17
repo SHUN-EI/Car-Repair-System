@@ -55,6 +55,7 @@ _STATUS_CN = {
 
 
 def _status_cn(status) -> str:
+    """把工单状态转成中文标签，未知状态返回原始值。"""
     raw = status.value if hasattr(status, "value") else str(status)
     return _STATUS_CN.get(raw, raw)
 
@@ -85,42 +86,51 @@ class WorkOrderAgent:
 
     # ---------- 工单理解 ----------
     def analyze_ticket(self, work_order_data: Dict[str, Any]):
+        """把工单内容交给工单理解 Agent，做现象、根因和方案等字段的标准化分析。只读，不改工单状态。"""
         from app.agents.ticket_agent import ticket_agent
         return ticket_agent.analyze(work_order_data)
 
     # ---------- 导入 DAG（确认前只写草稿） ----------
     def import_pdf(self, pdf_path: str, file_name: str, batch_id: int) -> dict:
+        """把一份历史工单 PDF 交给导入图，抽取为批次中的一条草稿。"""
         from app.agents.work_order_importer import invoke_import_pdf
         return invoke_import_pdf(pdf_path, file_name, batch_id)
 
     # ---------- 知识沉淀 ----------
     def extract_knowledge(self, work_order_data: Dict):
+        """从工单内容提取知识条目候选，不在这里直接发布。"""
         from app.agents.knowledge_extractor import knowledge_extractor
         return knowledge_extractor.extract(work_order_data)
 
     def check_dedup(self, new_item: dict, existing_item: dict, title_similarity: float = 0.0):
+        """把新提取的知识与已有条目做去重判定，可传入标题相似度作为参考。"""
         from app.agents.dedup_agent import dedup_agent
         return dedup_agent.check(new_item, existing_item, title_similarity=title_similarity)
 
     # ---------- 配件关联（工单录入时使用） ----------
     def query_inventory(self, *args, **kwargs):
+        """只读查询库存，转交给库存工具。本方法不是写操作。"""
         from app.agents.inventory_tools import query_inventory
         return query_inventory(*args, **kwargs)
 
     def list_compatible_parts(self, *args, **kwargs):
+        """按车型规格列出适配配件，转交给库存工具。"""
         from app.agents.inventory_tools import list_compatible_parts
         return list_compatible_parts(*args, **kwargs)
 
     def resolve_fitment_spec(self, *args, **kwargs):
+        """从车牌、车辆 ID 或对话文本解析出用于适配查询的车型规格。"""
         from app.agents.inventory_tools import resolve_fitment_spec
         return resolve_fitment_spec(*args, **kwargs)
 
     # ---------- 套餐 / 报价（规则引擎，LLM 不得改价格） ----------
     def recommend_packages(self, db, **kwargs) -> dict:
+        """按车辆和症状推荐保养套餐或服务项目，价格仍来自目录规则，不由模型定价。"""
         from app.agents.service_tools import recommend_service_packages
         return recommend_service_packages(db, **kwargs)
 
     def format_recommendation(self, result: dict) -> str:
+        """把套餐推荐结果格式化成可读中文。"""
         from app.agents.service_tools import format_recommendation
         return format_recommendation(result)
 
@@ -135,6 +145,7 @@ class WorkOrderAgent:
         return self.create_draft_quote(db, **kwargs)
 
     def apply_package(self, db, **kwargs) -> dict:
+        """声明这是写操作后，再执行套餐推荐/应用。真正落库由传入的业务层完成；这里先走 claim_write 守门。"""
         self.claim_write("apply_package")
         return self.recommend_packages(db, **kwargs)
 
@@ -221,18 +232,21 @@ class WorkOrderAgent:
 
     # ---------- 写操作入口（具体校验/落库由 API 或 persist 回调执行，避免重复实现状态机） ----------
     def create_work_order(self, work_order_data: Optional[Dict] = None, *, persist=None):
+        """声明写权限后创建工单。若调用方传入 persist 回调，则由回调负责真正插入数据库；否则只返回已接受的动作描述。"""
         self.claim_write("create_work_order")
         if persist is not None:
             return persist(work_order_data or {})
         return {"accepted": True, "action": "create_work_order", "data": work_order_data or {}}
 
     def transition_status(self, work_order_id: Any = None, *, persist=None, **kwargs):
+        """声明写权限后做状态流转。真正改库由 persist 回调执行，本方法不直接改状态机。"""
         self.claim_write("transition_status")
         if persist is not None:
             return persist()
         return {"accepted": True, "action": "transition_status", "work_order_id": work_order_id, **kwargs}
 
     def approve_work_order(self, work_order_id: Any = None, *, persist=None, **kwargs):
+        """声明写权限后审批工单。真正改库由 persist 回调执行。"""
         self.claim_write("approve_work_order")
         if persist is not None:
             return persist()
@@ -259,6 +273,7 @@ class WorkOrderAgent:
         }
 
     def deduct_spare_parts(self, *, persist=None, **kwargs):
+        """声明写权限后扣减配件。真正改库存由 persist 回调执行，避免 Agent 绕过库存流水。"""
         self.claim_write("deduct_spare_parts")
         if persist is not None:
             return persist()

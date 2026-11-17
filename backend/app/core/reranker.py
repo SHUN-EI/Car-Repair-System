@@ -29,6 +29,7 @@ _cooldown_until = 0.0
 
 
 def _in_cooldown() -> bool:
+    """判断重排服务是否仍在失败冷却期内。冷却未结束时调用方应跳过远程重排，避免连续打到已宕掉的推理服务。"""
     return time.time() < _cooldown_until
 
 

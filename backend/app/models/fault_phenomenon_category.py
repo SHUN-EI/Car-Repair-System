@@ -4,6 +4,7 @@ from app.models.base import BaseModel
 
 
 class FaultPhenomenonCategory(BaseModel):
+    """故障现象的级联分类。parent_id 为空表示大类，子类挂在大类之下，供工单现象字段选用。"""
     __tablename__ = "fault_phenomenon_categories"
 
     parent_id = Column(Integer, nullable=True, comment="父级ID，NULL=大类")

@@ -127,6 +127,7 @@ class ExpertRepairAgent:
 }"""
 
     def __init__(self):
+        """初始化专家模式状态机，对话模型延迟加载；会话存在 Redis 中，不走 LangGraph。"""
         self._llm: Optional[object] = None
 
     @property
@@ -145,6 +146,7 @@ class ExpertRepairAgent:
     # ============ 会话存取 ============
 
     def _load_session(self, session_id: str) -> Optional[Dict]:
+        """按会话 ID 从短期记忆读取专家模式会话。读写失败只记警告并视为会话不存在。"""
         try:
             return memory_service.get_expert_repair_session(session_id)
         except Exception as e:
@@ -152,6 +154,7 @@ class ExpertRepairAgent:
             return None
 
     def _save_session(self, session_id: str, data: Dict):
+        """必要时压缩过长历史后，把专家模式会话写回短期记忆。保存失败只记警告，不中断当前回复。"""
         try:
             self._maybe_compress_history(data)
             memory_service.set_expert_repair_session(session_id, data)
@@ -270,6 +273,10 @@ class ExpertRepairAgent:
     # ============ 后续轮：反馈解读 + 下一步方向 ============
 
     def next_step(self, session_id: str, message: str) -> ExpertStepResult:
+        """根据维修员最新反馈推进专家模式一轮。
+
+        会话不存在或过期时提示重新开始。超过最大 30 轮则结束并给出过程摘要。否则用初始问题加当前反馈检索知识，拼上首轮分析、历史摘要和最近原文，再生成下一步分析和可选操作。
+        """
         session = self._load_session(session_id)
         if not session:
             return ExpertStepResult(
@@ -404,6 +411,7 @@ class ExpertRepairAgent:
             return []
 
     def _build_final_summary(self, session: Dict) -> str:
+        """在达到最大轮数时，把初始问题和已排查过程整理成给资深工程师接手的文字摘要。"""
         lines = [f"**初始问题**: {session.get('initial_question', '')}", ""]
         lines.append("**已排查过程**:")
         for i, h in enumerate(session.get("chat_history", [])):

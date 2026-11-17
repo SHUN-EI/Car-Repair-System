@@ -1,3 +1,5 @@
+"""知识条目接口：分页列表、向量检索、手工创建，以及从工单抽取和去重审核相关能力。"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -21,6 +23,7 @@ router = APIRouter()
 
 
 def _k_to_dict(k: KnowledgeItem) -> dict:
+    """把知识条目按表字段转成普通字典，供列表接口返回。"""
     return {c.name: getattr(k, c.name) for c in k.__table__.columns}
 
 
@@ -36,6 +39,7 @@ def list_knowledge_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """分页列出知识条目，可按状态、设备类型和标题/正文关键词过滤。需登录。"""
     query = db.query(KnowledgeItem)
     if status:
         query = query.filter(KnowledgeItem.status == status)
@@ -64,6 +68,7 @@ def search_knowledge(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """用向量检索知识条目，可附带设备类型和故障码过滤。检索失败时返回空结果和错误信息，不把异常抛给调用方。"""
     try:
         from app.rag.rag_service import search_knowledge_vectors
         results = search_knowledge_vectors(
@@ -80,6 +85,7 @@ def search_knowledge(
 
 @router.get("/{knowledge_id}", response_model=KnowledgeResponse, summary="获取知识条目详情")
 def get_knowledge_item(knowledge_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """按 ID 获取知识条目，不存在返回 404。"""
     item = db.query(KnowledgeItem).filter(KnowledgeItem.id == knowledge_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="知识条目不存在")
@@ -88,6 +94,7 @@ def get_knowledge_item(knowledge_id: int, db: Session = Depends(get_db), current
 
 @router.post("/", response_model=KnowledgeResponse, summary="创建知识条目")
 def create_knowledge_item(data: KnowledgeCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """手工创建一条知识条目并落库。本接口仅要求登录，发布和作废另有审核接口。"""
     item = KnowledgeItem(**data.model_dump())
     db.add(item)
     db.commit()
@@ -279,6 +286,7 @@ def check_duplicate(knowledge_id: int, db: Session = Depends(get_db), current_us
 # ==================== 内部函数 ====================
 
 def _extracted_to_dict(extracted) -> dict:
+    """把从工单抽取出来的知识候选转成接口返回字典。"""
     return {
         "title": extracted.title,
         "content": extracted.content,

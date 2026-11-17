@@ -35,10 +35,12 @@ class SessionSummarizer:
 ---"""
 
     def __init__(self):
+        """初始化会话摘要器，对话模型延迟加载。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造对话模型，温度 0.3，限制最大生成长度，用于把多轮对话压成短摘要。"""
         if not self._llm:
             self._llm = make_chat_llm(
                 temperature=0.3,

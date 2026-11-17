@@ -30,6 +30,7 @@ class TestExtractErrorCodes:
         "参数 1829 需要调整",
     ])
     def test_log_noise_returns_empty(self, text):
+        """纯日志噪声文本不应抽出错误码。"""
         assert extract_error_codes(text, whitelist=_SEED_WHITELIST) == []
 
     """混合码 → 自由匹配"""
@@ -41,24 +42,30 @@ class TestExtractErrorCodes:
         ("2026-08-14 10:32:15 SV0436 X AXIS: EXCESS CURRENT", ["SV0436"]),
     ])
     def test_mixed_codes_free_match(self, text, expected):
+        """对字母数字混合错误码应按自由匹配规则抽出。"""
         assert extract_error_codes(text, whitelist=_SEED_WHITELIST) == expected
 
     """纯数字码 → 白名单过滤"""
 
     def test_numeric_code_in_whitelist(self):
+        """白名单里的纯数字错误码应被识别。"""
         assert extract_error_codes("6401", whitelist=_SEED_WHITELIST) == ["6401"]
 
     def test_numeric_code_not_in_whitelist(self):
+        """不在白名单的纯数字不应被当成错误码。"""
         assert extract_error_codes("0401", whitelist=_SEED_WHITELIST) == []
 
     def test_mixed_code_does_not_duplicate_numeric_part(self):
         # ALM-6401 只出 ALM6401，不再单独抠出 6401
+        """混合码被识别后，不应再把其中的数字部分当成另一条错误码。"""
         assert extract_error_codes("ALM-6401", whitelist=_SEED_WHITELIST) == ["ALM6401"]
 
     def test_empty_query(self):
+        """空查询应返回空列表。"""
         assert extract_error_codes("", whitelist=_SEED_WHITELIST) == []
 
     def test_hyphen_form_matches_canonical_and_underscore_codes_stay(self):
+        """带连字符的写法应能对上规范码，下划线形式的码仍保留。"""
         from app.core.manual_text import normalize_error_code
         assert normalize_error_code(" alm-6401 ") == "ALM6401"
         assert normalize_error_code("ALM_01") == "ALM_01"

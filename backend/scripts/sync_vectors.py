@@ -37,6 +37,7 @@ def check_inference_server():
 
 
 def main():
+    """把 PostgreSQL 中所有已发布知识重新导入 Milvus。同一 knowledge_id 会先删旧向量再插入，可安全重跑。空内容跳过，失败条数单独统计。"""
     check_inference_server()
     store_name = settings.MILVUS_COLLECTION
 

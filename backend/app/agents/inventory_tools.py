@@ -162,6 +162,7 @@ def resolve_fitment_spec(
 
 
 def format_compatible_text(spec: dict, parts) -> str:
+    """把车型规格和适配配件列表格式化成可读中文。没有任何配件时提示检查年款或先维护适配规则。"""
     from app.domain.fitment import fitment_brief
 
     head = " ".join(

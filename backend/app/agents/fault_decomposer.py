@@ -32,10 +32,12 @@ class FaultDecomposer:
     """复合故障问题拆解器：规则预检 + LLM 拆解 + 保守兜底"""
 
     def __init__(self):
+        """初始化故障拆解器，对话模型延迟到首次拆解时再创建。"""
         self._llm: Optional[ChatOpenAI] = None
 
     @property
     def llm(self) -> ChatOpenAI:
+        """惰性构造低温、非流式模型。超时较短（本地模式会按下限抬升），超时则把原问题当成单一故障直接放行。"""
         if self._llm is None:
             self._llm = make_chat_llm(
                 temperature=0.1,

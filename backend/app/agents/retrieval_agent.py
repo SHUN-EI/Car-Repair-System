@@ -70,6 +70,7 @@ class RetrievalAssistantAgent:
     MIN_SCORE_FOR_QUALITY = settings.AGENT_QUALITY_HIGH_SCORE       # "高分"判定线：单条分数 ≥0.6 算高分
 
     def __init__(self, tools: RetrievalTools):
+        """保存检索工具集，对话模型延迟到首次 ReAct 调用时再创建。"""
         self.tools = tools            # 检索工具集（vector/bm25/conditional/graph/rewrite）
         self._llm: Optional[ChatOpenAI] = None  # LLM 懒加载（首次调用才创建）
 

@@ -1,3 +1,5 @@
+"""支付意向占位表：只记录要对某张报价收取的金额和状态，不调用真实支付渠道。"""
+
 from sqlalchemy import Column, Float, ForeignKey, Integer, String
 
 from app.models.base import BaseModel
@@ -18,4 +20,5 @@ class PaymentIntent(BaseModel):
     note = Column(String(200), nullable=False, default="占位订单，未接入清算")
 
     def __repr__(self):
+        """调试时输出支付意向主键、单号和状态。"""
         return f"<PaymentIntent(intent_no='{self.intent_no}', status='{self.status}')>"
