@@ -1,8 +1,8 @@
 # 汽修系统双 Agent 精简技术方案
 
 - **仓库**：[SHUN-EI/Car-Repair-System](https://github.com/SHUN-EI/Car-Repair-System)
-- **依据版本**：当前 `main`（PR #6 已合并，提交 `c605c6f6`；落地前再核对最新 HEAD）
-- **编写日期**：2026-11-12（Asia/Shanghai）
+- **依据版本**：对照当前工作区代码（2026-11-18 已按本方案收口问答分流与钉钉图）
+- **编写日期**：2026-11-12（Asia/Shanghai）；2026-11-18 同步图与路由落地状态
 - **目标**：把第一类 Agent 精简为恰好 2 个——**咨询/引导 Agent**、**工单 Agent**
 - **原则**：严格按现网代码梳理能力，不编造功能或量化指标；渠道不是 Agent；现有 HTTP 路径尽量兼容；本方案不顺手修复 PR #6 合并后仍遗留的隔离/鉴权问题
 
@@ -27,7 +27,7 @@
 
 | 模块 | 现网角色（摘自模块说明） | 精简后归属 |
 | --- | --- | --- |
-| `qa_graph.py` | 智能问答 LangGraph：主图意图路由到闲聊 / 库存 / 故障问答子图；由 `POST /api/v1/search/answer/stream` 调用 | **咨询/引导 Agent**（问答主图保留） |
+| `qa_graph.py` | 智能问答入口：`AgentRouter.qa_kind` 分流闲聊 / 库存（函数）与故障检索子图；由 `POST /api/v1/search/answer/stream` 调用 | **咨询/引导 Agent**（只保留故障检索子图） |
 | `retrieval_agent.py` | 知识检索助手：向量 + 关键词 + RRF，有上限的 ReAct 循环，不足则改写重试 | **咨询/引导 Agent** 内部检索循环 |
 | `guided_repair_agent.py` | 追踪维修引导：逐步排查，Redis 会话，返回结构化选项 | **咨询/引导 Agent**（多轮不上图） |
 | `expert_repair_agent.py` | 专家模式多轮：首轮拆解与并行分析之后的会话（TTL 24h、最多 30 步，超长历史由摘要压缩） | **咨询/引导 Agent**（多轮不上图） |
@@ -35,7 +35,7 @@
 | `session_summarizer.py` | 压缩长对话历史 | 咨询/引导 Agent 内部能力 |
 | `query_extractor.py` | 查询关键词：白名单优先，LLM 兜底 | 共享检索能力（两 Agent 只读复用） |
 | `answer_generator.py` | 分析型回答生成器，模块自身标明「功能工具模块，非 Agent」 | 共享生成能力 |
-| `retrieval_flow.py` / `tools.py` | 公共检索编排与检索工具集（双库 + RRF + 粗筛/精排），供问答图、钉钉/MCP、专家模式、历史检索端点复用 | **共享检索层**，不属于任一 Agent 独占 |
+| `retrieval_flow.py` / `tools.py` | 公共检索编排与检索工具集（双库 + RRF + 粗筛/精排），供故障检索子图、钉钉/MCP、专家模式、历史检索端点复用 | **共享检索层**，不属于任一 Agent 独占 |
 | `ticket_agent.py` | 工单理解：标准化 / 分类 / 校验，置信度仅供人工审核参考 | **工单 Agent** |
 | `work_order_importer.py` | 历史工单 PDF 导入 LangGraph：parse → extract → validate → save_draft，人工确认后才写生产库 | **工单 Agent** |
 | `knowledge_extractor.py` | 从已审核工单提炼知识条目 | **工单 Agent**（工单→知识沉淀） |
@@ -43,18 +43,19 @@
 | `inventory_tools.py` | 库存/适配查询，说明用于工单录入时关联备件 | **工单 Agent** 工具；咨询侧库存问询只读调用 |
 | `service_tools.py` | 保养套餐推荐，规则在 `domain.service_recommend`，供 API 与 MCP 共用 | **工单 Agent** 工具（规则引擎，不交给 LLM 定价） |
 | `manual_structurizer.py` | 手册错误码原文结构化，只出结构化结果、不落库，供人工核对 | **知识录入辅助工具**，不是第三 Agent |
-| `robot_graph.py` | 钉钉机器人主图：help / create / todo / inventory / repair / duty + 工单查询子图 | **渠道适配器 + 路由**，不再作为独立 Agent |
+| `robot_graph.py` | 钉钉渠道适配器：`AgentRouter.classify` 后按 `channel_action` 函数分发，不再编译主图 | **渠道适配器 + 路由**，不是独立 Agent |
+| `intent_classifier.py` | 钉钉等自然语言渠道共用的 LLM 意图分类器，只给 `AgentRouter` 做兜底 | 路由器内部能力，不是 Agent |
 
 ### 2.2 现网主要入口
 
 | 入口 | 路径或位置 | 现网行为 |
 | --- | --- | --- |
-| 智能问答 SSE | `POST /api/v1/search/answer/stream` | `qa_graph`：thinking →（suggest_expert）→ references → 流式 answer → done |
+| 智能问答 SSE | `POST /api/v1/search/answer/stream` | `invoke_qa` + `qa_kind`：thinking →（suggest_expert）→ references → 流式 answer → done |
 | 专家模式 | `POST /api/v1/search/answer/expert`、`/answer/expert/step` | 首轮拆解 + 并行检索分析，后续轮走 `ExpertRepairAgent` |
 | 追踪维修 | `POST /api/v1/search/guided-repair/start`、`/{session_id}/step`、`/chat` | `GuidedRepairAgent` Redis 状态机 |
 | 历史检索端点 | `GET /quick`、`POST /hybrid`、`/agent`、`/manual-lookup` | 复用 `retrieval_flow` |
 | 会话摘要 | `POST /api/v1/session/summarize` | 压缩对话历史 |
-| 钉钉机器人 | `POST /api/v1/dingtalk/robot/callback` 等 | `RobotGraph` 混合咨询与工单动作；技术完成等走工单状态机 |
+| 钉钉机器人 | `POST /api/v1/dingtalk/robot/callback` 等 | `AgentRouter` 分类后由 `robot_graph` 函数分发；处理函数仍可能直调 MCP 工具 |
 | 工单导入 | `backend/app/api/work_order_imports.py` | 调用导入 DAG，待人工确认 |
 | 工单域 HTTP | `work_orders.py` 及报价、派工、配件等路由 | 工单生命周期，当前主要是 API/领域服务，尚未收口到单一 Agent 门面 |
 | MCP | `backend/app/mcp/`（FastMCP） | 检索问答、库存查询等工具；公开入口与写工具默认关闭 |
@@ -64,7 +65,7 @@
 
 - 检索：BAAI/bge-m3（1024 维）+ BAAI/bge-reranker-v2-m3；四路混合检索（知识向量、关键词 ILIKE + `pg_trgm`、手册精确与语义）；RRF `k=60`；粗筛与质量阀；Reranker 不可用时回退规则重排。质量阀门阈值仍按原 Qwen3-Reranker 标定，尚未重标。
 - 对话模型：LangChain `ChatOpenAI` 经 `make_chat_llm()`，由 `CHAT_LLM_MODE` 在云端百炼 `qwen-plus` 与本机 vLLM `Qwen2.5-7B-Instruct` 之间切换。
-- 编排原则（现网已采用）：**固定拓扑上图、多轮不上图**。问答主图、导入 DAG 可用 LangGraph；追踪维修 / 专家多轮保持 Redis 状态机（TTL 24h、最多 30 步），不要把运行时才确定的会话状态硬塞进图。
+- 编排原则（现网已采用）：**固定拓扑上图、多轮不上图**。故障检索子图和导入 DAG 用 LangGraph；闲聊、库存和钉钉渠道动作用函数分发；追踪维修 / 专家多轮保持 Redis 状态机（TTL 24h、最多 30 步），不要把运行时才确定的会话状态硬塞进图。
 - 报价与套餐：确定性规则引擎，与生成模型解耦；后训练不替代定价。
 - 工单导入与知识沉淀：必须经人工确认 / 审核后再入生产库或向量库。
 - 鉴权、门店范围、MCP 默认关闭公开入口与写工具：本方案不回退已落地的约束。
@@ -87,7 +88,7 @@ flowchart TB
   R[意图路由器 AgentRouter]
 
   subgraph consult [咨询 / 引导 Agent]
-    QA[问答主图 qa_graph]
+    QA[问答入口 qa_graph]
     GR[追踪维修 Redis 状态机]
     EX[专家模式 Redis 状态机]
     REACT[有上限的检索 ReAct]
@@ -137,7 +138,7 @@ flowchart TB
 
 | 能力 | 复用现网实现 | 说明 |
 | --- | --- | --- |
-| 智能问答 | `qa_graph`（闲聊 / 库存查询 / 故障问答） | 保持现有 SSE 事件协议 |
+| 智能问答 | `qa_graph`（`qa_kind` 分流：闲聊 / 库存函数，故障检索子图） | 保持现有 SSE 事件协议；不自动转接工单进度 |
 | 混合检索与质量阀 | `retrieval_flow`、`tools`、`retrieval_agent` | 不改阈值与融合公式 |
 | 追踪维修 | `guided_repair_agent` | Redis 会话，结构化选项 |
 | 专家模式 | `fault_decomposer` + 并行检索 + `expert_repair_agent` | 首轮分析 + 多轮引导 |
@@ -162,7 +163,7 @@ flowchart TB
 
 | 用户意图或入口 | 主 Agent | 备注 |
 | --- | --- | --- |
-| 故障咨询、手册/案例问答、闲聊、功能介绍 | 咨询/引导 | `qa_graph` 已有三类子图 |
+| 故障咨询、手册/案例问答、闲聊、功能介绍 | 咨询/引导 | `qa_kind` 分成闲聊 / 库存 / 故障 |
 | 库存「查一下有没有某配件」 | 咨询/引导 | 只读；写出入库仍归工单/进销存 API |
 | 追踪维修、专家模式多轮 | 咨询/引导 | 不上图，走 Redis 状态机 |
 | 查询工单进度、内容 | 工单；或咨询调用只读工具 | 以是否处于引导会话决定入口，写操作仍禁止走咨询 |
@@ -191,7 +192,7 @@ backend/app/agents/
 改造要点：
 
 1. **门面只做编排委托**，核心算法仍留在现有模块，避免行为漂移。
-2. `robot_graph.py` 降为钉钉适配器：分类后调用 `AgentRouter`，删除「钉钉自己是一个 Agent」的产品含义；图可以暂时保留，但文档与导出名称不再把它列为第三 Agent。
+2. `robot_graph.py` 已降为钉钉适配器：分类走 `AgentRouter`，按 `channel_action` 函数分发，不再编译主图；文档与导出名称不把它列为第三 Agent。
 3. MCP `backend/app/mcp/tools.py` 改为调用两个门面，而不是直接散落调用内部实现（允许过渡期内部转调）。
 4. 现有 HTTP 路径全部保留，由对应门面承接。`/answer/stream`、`/guided-repair/*`、`/answer/expert*` 进入咨询/引导；工单与导入 API 进入工单 Agent。
 5. 前端：`search` / `ai-assistant` 的文案与模式切换收敛为「咨询/引导」和「工单」两个入口；不要再展示检索 Agent、钉钉 Agent、导入 Agent 等并列角色。页面路由可先保留，以免打断书签。

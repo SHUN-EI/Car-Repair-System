@@ -34,8 +34,8 @@
 | 维修知识库 RAG 检索 | 双库多路（知识向量/BM25 + 手册精确/手册向量）+ RRF 融合 + 两级模型精排（Qwen3-Embedding-4B 召回 / Qwen3-Reranker-0.6B 重排）+ 错误码置顶 |
 | AI 分析型问答 | DeepSeek LLM + 流式 SSE + 五段式结构化回答 + 回答层护栏（无案例/低分如实说未检索到） |
 | 工单智能理解 | LLM 标准化/分类/校验三步走 + 提交时 AI 回填缺失字段 |
-| 引导式追踪维修 | LangGraph 对话状态机 + Redis 会话 |
-| 钉钉企业集成 | OAuth + Stream 长连接 + 机器人 LangGraph 路由 |
+| 引导式追踪维修 | Redis 多轮对话状态机 |
+| 钉钉企业集成 | OAuth + Stream 长连接 + AgentRouter 分类与函数分发 |
 | 专家模式 | 多故障拆解（规则预检 + LLM）+ 子查询管道优先 + ReAct 救援 + 分组流式回答 |
 | 工单→知识沉淀闭环 | 完成工单自动抽取 → 三层去重 → 发布 → 同步 Milvus（数据飞轮） |
 | MCP 集成 | fastmcp 将检索/工单/库存能力暴露为标准 MCP 工具（Streamable HTTP） |
@@ -68,7 +68,7 @@
 | **LangChain** | 1.3.13 | LLM 调用统一封装，Prompt 模板，Message 抽象 |
 | **langchain-openai** | 1.2.2 | OpenAI 兼容适配层，DeepSeek API 走这个通道 |
 | **langchain-community** | 0.4.2 | 社区集成（工具、向量库适配等） |
-| **LangGraph** | 1.2.6 | StateGraph 状态机，适合钉钉意图路由和引导式维修的多步对话 |
+| **LangGraph** | 1.2.6 | 只用于有固定多步拓扑的场景：故障检索子图、工单导入 DAG |
 | **DeepSeek** | deepseek-v4-flash | 国产 LLM，性价比高，中文维修场景效果好 |
 | **Qwen3-Embedding-4B**（召回） | 本地 Embedding | 阿里通义千问出品，4096 维 dense，多语言/长文本（32K 上下文），**独立推理服务化**（8010，OpenAI 兼容）；仅取 dense 向量（已 L2 归一化） |
 | **Qwen3-Reranker-0.6B**（精排） | 本地 Reranker | cross-encoder：问题×候选联合编码打分，精排阶段替代规则重排，BEIR ~71% |
@@ -120,14 +120,14 @@
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  Agent 层（核心智能）                                      │   │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐   │   │
-│  │  │ QA_GRAPH    │  │ AnswerAgent  │  │ GuidedRepair   │   │   │
-│  │  │ 主图+3子图   │  │ (流式五段式)  │  │ Agent(LangGraph)│   │   │
-│  │  │ (故障子图三  │  │              │  │ 对话状态机      │   │   │
-│  │  │  节点流水线) │  │              │  │                │   │   │
+│  │  │ invoke_qa    │  │ AnswerAgent  │  │ GuidedRepair   │   │   │
+│  │  │ qa_kind 分流 │  │ (流式五段式)  │  │ Redis 状态机   │   │   │
+│  │  │ 故障子图流水线│  │              │  │                │   │   │
+│  │  │              │  │              │  │                │   │   │
 │  │  └─────────────┘  └──────────────┘  └────────────────┘   │   │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐   │   │
-│  │  │ TicketAgent │  │ RobotGraph   │  │ FaultDecomposer│   │   │
-│  │  │ (工单理解)   │  │ (钉钉路由)    │  │ (专家模式拆解)  │   │   │
+│  │  │ TicketAgent │  │ robot_graph  │  │ FaultDecomposer│   │   │
+│  │  │ (工单理解)   │  │ (函数分发)    │  │ (专家模式拆解)  │   │   │
 │  │  └─────────────┘  └──────────────┘  └────────────────┘   │   │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐   │   │
 │  │  │ ExpertRepair│  │ DedupAgent   │  │ RetrievalAsst  │   │   │
@@ -178,7 +178,7 @@
 ```
 
 **检索链路在架构中的位置（与 4.1 对应）**：
-- **入口复用**：智能问答（QA_GRAPH）、专家模式（FaultDecomposer → 子查询管道优先 + ReAct 救援）、钉钉机器人（RobotGraph）、MCP 工具——四者都走 `retrieval_flow.py` 这一套检索编排（召回 → 融合 → 过滤重排），差异只在 Agent 分工
+- **入口复用**：智能问答（`invoke_qa` / 故障检索子图）、专家模式（FaultDecomposer → 子查询管道优先 + ReAct 救援）、钉钉机器人（AgentRouter + 函数分发）、MCP 工具——四者都走 `retrieval_flow.py` 这一套检索编排（召回 → 融合 → 过滤重排），差异只在入口分工
 - **双库四路召回**：知识库（Milvus 向量 + PG BM25）总是走；问题含错误码时增开手册库（PG 精确 `manual_code_entries` + Milvus 向量 `log_code`），最多四路（见 4.1.5）
 - **双路索引对称**：Milvus 双集合共用 IVF_FLAT + COSINE（nlist=1024/nprobe=16，见 4.1.8）；PG 的 `knowledge_items.title/content` 建 pg_trgm GIN 索引加速 BM25 的 `ILIKE %词%`（见 4.1.6）
 
@@ -792,36 +792,33 @@ async def achat(self, session_id, message, device_type):
 
 ---
 
-### 4.6 钉钉机器人 LangGraph — `app/agents/robot_graph.py`
+### 4.6 钉钉机器人渠道适配器 — `app/agents/robot_graph.py`
 
-#### 4.6.1 主图 + 子图结构
+#### 4.6.1 函数分发，不再编译主图
 
 ```
-主图 RobotGraph:
-    router (占位节点)
+AgentRouter.classify(entry="dingtalk")
         │
-        ▼ 条件边 route_intent
-    ┌───┬───────┬───────┬───────────┬───────┬───────┬────────┐
-    │   │       │       │           │       │       │        │
-   help create  todo  workorder  inventory  duty  repair   none
+        ▼ channel_action
+    help / create / todo / workorder / inventory / duty / repair / none
                     │
-                    ▼ 子图（WoQueryGraph）
-                  normalize → query
+                    workorder_node：提取并规范化工单号 → query
 ```
 
-#### 4.6.2 意图路由三层策略
+分类只做一次。`repair` 时先发「思考中」提示，再把同一份 `RouteResult` 交给 `invoke_robot`。`none` 只返回未识别说明；短备件名库存兜底在 `AgentRouter` 的钉钉路径上。
 
-1. **(1) 快速通道**（零成本不经 LLM）：匹配"帮助/菜单/录入工单/WO-XXX 工单号"
-2. **(2) LLM 分类**：处理 todo/duty/inventory/repair 等自然语言
-3. **(3) 规则兜底**：LLM 失败时降级为关键词匹配
+#### 4.6.2 意图路由策略
 
-#### 4.6.3 工单查询子图
+1. **(1) 关键词与库存规则**（零成本不经 LLM）：帮助/菜单/录入工单/工单号/库存问句等
+2. **(2) 钉钉短备件名兜底**：如「保险丝」，仅 `entry="dingtalk"` 时按库存处理
+3. **(3) LLM 分类**：关键词未命中时，由 `intent_classifier.classify_intent_llm` 兜底
+4. **(4) 规则回退**：LLM 失败时用关键词和设备词降级
 
-`WoQueryGraph` 作为主图的一个节点复用：
-- `normalize` 节点：正则提取工单号，规范化为 `WO-YYYYMMDD-XXX`
-- `query` 节点：调 `tools.query_work_order(no)` 查询并格式化
+#### 4.6.3 工单查询
 
-**为什么用子图**：工单查询是独立的两步流程，封装成子图后主图节点更聚焦，便于复用和扩展。
+`workorder_node` 是普通函数，不再封装成子图：
+- 先用正则提取工单号，并规范化
+- 再调 `tools.query_work_order(no)` 查询并格式化
 
 ---
 
@@ -1270,11 +1267,11 @@ Faiss 不选是因为它是库不是服务，没有持久化、没有高可用�
 
 ### Q10：为什么用 LangGraph 而不是直接 if-else？
 
-**A**：钉钉机器人意图路由早期是 if-else，后来改成 LangGraph StateGraph。优势：
-1. **(1) 结构化**：每个意图是独立节点，条件边显式声明，比嵌套 if-else 清晰
-2. **(2) 可扩展**：新增意图只需要加节点 + 加条件边，不动路由函数
-3. **(3) 子图复用**：工单查询是两步流程（normalize + query），封装成子图后可作为主图节点复用
-4. **(4) 可观测**：LangGraph 自带状态追踪，能看到每个节点的输入输出
+**A**：现网原则是**固定拓扑上图，多轮和直线步骤不上图**。会编译的图只剩两张：
+1. **(1) 故障检索子图**：预检 → 检索 → 过滤，步骤固定、值得用图表达
+2. **(2) 工单导入 DAG**：解析 / 抽取失败有明确失败边，适合 LangGraph
+3. **(3) 不再为分发而建图**：闲聊、库存和钉钉渠道动作没有分支拓扑，已改回函数分发，避免单节点或两节点子图增加阅读成本
+4. **(4) 多轮不上图**：追踪维修和专家模式状态在 Redis，硬上图要自接 checkpoint，与现有会话重复
 
 ---
 
@@ -1615,7 +1612,7 @@ WebSocket 适合双向实时通信（如聊天室），AI 问答场景用 SSE �
 1. **(1) **两级模型精排的混合检索**：双库多路召回 + RRF 融合 + Qwen3-Embedding-4B/Qwen3-Reranker 模型精排（规则重排降级兜底），准确率显著高于单路
 2. **(2) **查询清洗算法**：自研的中文 span 拆分 + 前后缀剥离 + 中间高置信词替换，专门解决中文干扰词问题
 3. **(3) **专家模式拆解并行 + 管道优先/ReAct 救援**：FaultDecomposer 规则预检 + LLM 拆解复合故障 → 各单故障子查询并行检索（管道召回优先，阀门不达标才上 ReAct 补召回）→ 分组流式回答，从源头避免复合提问的语义稀释与串味，同时把 ReAct 成本留给复杂问题
-4. **(4) **LangGraph 主图 + 子图**：智能问答主图意图路由（库存 > 聊天 > 故障）+ 3 个功能子图（CHAT/INVENTORY/FAULT），故障子图三节点流水线（预检→召回→过滤），结构与钉钉 RobotGraph 同构
+4. **(4) **固定拓扑上图**：智能问答由 `AgentRouter.qa_kind` 分流（库存 / 闲聊 / 故障），只把故障检索编译成三节点子图（预检→召回→过滤）；钉钉渠道改为函数分发，导入 DAG 仍保留失败边
 5. **(5) **回答层确定性护栏**：空案例 / 最高分低于阈值 → 不调 LLM 直接如实回答"未检索到"，多故障分组无案例小节显式说明；曾有验证 Agent（Gate+Judge+存在性核对+重搜），实测四条结论后移除——防编造职责收敛为零 LLM 确定性护栏，链路更短、行为可预测（见 Q23）
 6. **(6) **模型服务化与降级链路**：Qwen3-Embedding-4B + Qwen3-Reranker 独立推理服务（OpenAI 兼容、可复用），服务不可用自动降级（召回→BM25-only / 精排→规则重排），恢复自动回弹——**降级不降可用性**
 7. **(7) **流式 SSE 五段式回答**：结构化输出 + 实时流式 + 案例来源严格保真
@@ -1672,10 +1669,11 @@ WebSocket 适合双向实时通信（如聊天室），AI 问答场景用 SSE �
 
 > 项目具备**静态工作流**和**专家模式流水线**两种能力：
 >
-> **静态工作流（LangGraph）**：
-> - 智能问答主图意图路由（库存 > 聊天 > 故障）+ 3 个子图（CHAT/INVENTORY/FAULT）
-> - 钉钉机器人的 LangGraph 意图路由（与智能问答同构）
-> - 引导式维修的对话状态机
+> **静态工作流**：
+> - 智能问答：`qa_kind` 分流（库存 / 闲聊函数 + 故障检索子图）
+> - 钉钉机器人：`AgentRouter` 分类后的函数分发
+> - 导入 DAG：parse → extract → validate，失败则 save_error
+> - 引导式维修：Redis 对话状态机（不上图）
 > - 工单理解 Agent 的"标准化 → 分类 → 校验"三步走
 >
 > 这些是**固定节点 + 固定边**的图，编译时就确定了。
@@ -1705,8 +1703,8 @@ WebSocket 适合双向实时通信（如聊天室），AI 问答场景用 SSE �
 | 问答 Agent | `backend/app/agents/answer_generator.py` |
 | 引导式维修 | `backend/app/agents/guided_repair_agent.py` |
 | 工单理解 | `backend/app/agents/ticket_agent.py` |
-| 钉钉路由图 | `backend/app/agents/robot_graph.py` |
-| 智能问答 LangGraph 图 | `backend/app/agents/qa_graph.py`（主图 + 聊天/库存/故障子图） |
+| 钉钉渠道适配器 | `backend/app/agents/robot_graph.py`（函数分发） |
+| 智能问答入口 | `backend/app/agents/qa_graph.py`（`qa_kind` + 故障检索子图） |
 | **公共检索编排层** | `backend/app/agents/retrieval_flow.py`（问答/专家/钉钉/追踪维修共用） |
 | **回答层护栏** | `backend/app/agents/answer_generator.py`（空案例/低分如实回答，零 LLM） |
 | **故障拆解器** | `backend/app/agents/fault_decomposer.py`（专家模式拆解，`_MAX_SUB_QUERIES=4`） |

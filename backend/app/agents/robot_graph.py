@@ -1,11 +1,11 @@
-"""钉钉机器人渠道适配器：LangGraph 图与子图实现。
+"""钉钉机器人渠道适配器：按 AgentRouter 的 channel_action 分发到处理函数。
 
-本模块不是第一类 Agent。分类统一走 AgentRouter（consult | work_order），
-再映射到渠道节点：维修/帮助/库存咨询 → 咨询/引导；建单/待办/查单 → 工单 Agent。
+本模块不是第一类 Agent，也不再编译 LangGraph。分类统一走 AgentRouter
+（consult | work_order），再映射到渠道处理：维修/帮助/库存咨询 → 咨询/引导；
+建单提示/待办/查单 → 工单相关处理。
 
-架构：
-- 主图（RobotGraph）：router 条件路由 → help / create / todo / inventory / repair 等节点
-- 子图（WoQueryGraph）：工单查询（工单号提取规范化 → 查询并格式化），作为主图节点复用
+工单查询是「提取工单号再查询」的普通函数。库存短词和设备词兜底已收口到
+AgentRouter，none 分支只返回未识别说明。
 """
 from __future__ import annotations
 
@@ -13,25 +13,22 @@ import re
 from typing import Optional, TypedDict
 
 from loguru import logger
-from langgraph.graph import StateGraph, END
 
 from app.mcp import tools
 
-# ============================================================
-# 状态定义
-# ============================================================
+
 class RobotState(TypedDict, total=False):
-    """钉钉机器人主图状态：用户原文、钉钉和企业用户身份、最终回复，以及工单查询子图要用的工单号。"""
+    """钉钉机器人一次请求的状态：用户原文、钉钉和企业用户身份、最终回复，以及工单查询要用的工单号。"""
     text: str                 # 用户消息原文
     staff_id: str             # 钉钉企业 userId（senderStaffId）
     user_id: Optional[int]    # 系统用户 id（未匹配则为 None）
     user_dt_userid: str       # 系统用户的钉钉绑定 userId
     reply: str                # 最终回复
-    wo_no: str                # 工单号（供工单查询子图使用）
+    wo_no: str                # 工单号（供工单查询使用）
 
 
 class WoSubState(TypedDict, total=False):
-    """工单查询子图的状态：用户原文、解析出的工单号和回复文本。"""
+    """工单查询用的局部状态：用户原文、解析出的工单号和回复文本。"""
     text: str
     wo_no: str
     reply: str
@@ -50,71 +47,23 @@ HELP_TEXT = (
 
 _CREATE_WO_TEXT = "工单录入暂不支持在钉钉操作，请登录系统在『维修报表』中新建工单。"
 
-
-# ============================================================
-# 意图路由（LLM 分类为主，正则快速通道 + 失败兜底）
-# ============================================================
-_INTENT_HINTS = {
-    "help": "查看帮助/功能菜单",
-    "create": "录入工单/报修",
-    "todo": "查询我的待办/名下工单/任务",
-    "workorder": "按工单号查询工单",
-    "inventory": "查询备件库存",
-    "duty": "查询排班/值班表",
-    "repair": "设备故障排查求助/引导维修",
-    "none": "与上述功能均无关的内容（闲聊、其他领域的问题等）",
-}
-
-_INTENT_PROMPT = """你是维修助手的意图分类器。根据用户消息从以下意图中选择一个，只输出意图名本身，不要解释：
-{choices}
-
-规则：
-- 只有当消息确实涉及某个功能时才返回对应意图名；
-- 如果消息与所有功能都无关（如闲聊、开玩笑、非维修领域问题），必须返回 none；
-- 只有消息明确描述了具体设备或故障现象（如 注塑机、电机、PLC、温度过高、不运转、报警 等）时才返回 repair；
-- 描述模糊、无法对应到具体设备或故障时返回 none；
-- 不要臆测，不确定时返回 none。
-
-用户消息：{text}"""
-
-_llm_classifier = None
+_NONE_TEXT = (
+    "抱歉，我暂时没有这个功能。\n"
+    "我是维修助手，可以帮您：\n"
+    "1. 输入工单号查询工单状态\n"
+    "2. 发送「我的待办」查看名下待处理工单\n"
+    "3. 发送「排班」/「我的排班」查询排班\n"
+    "4. 发送「查备件库存」查询库存\n"
+    "5. 发送设备名称或故障现象，我会引导您一步步排查\n"
+    "发送「帮助」可查看完整功能说明。"
+)
 
 
-def _get_llm_classifier():
-    """懒加载意图分类器（与 guided_repair_agent 同一套对话模型配置）"""
-    global _llm_classifier
-    if _llm_classifier is None:
-        from app.core.chat_llm import make_chat_llm
-        _llm_classifier = make_chat_llm(
-            temperature=0,
-            timeout=15,
-        )
-    return _llm_classifier
-
-
-def _classify_intent_llm(text: str) -> str:
-    """用 LLM 做意图分类，失败或结果未知返回空串"""
-    try:
-        from langchain_core.messages import HumanMessage
-        choices = "\n".join(f"- {k}：{v}" for k, v in _INTENT_HINTS.items())
-        resp = _get_llm_classifier().invoke([
-            HumanMessage(content=_INTENT_PROMPT.format(choices=choices, text=text)),
-        ])
-        label = (resp.content or "").strip().lower()
-        for k in _INTENT_HINTS:
-            if k in label:
-                return k
-        logger.warning(f"[RobotGraph] LLM 意图分类返回未知结果: {label!r}")
-    except Exception as e:
-        logger.warning(f"[RobotGraph] LLM 意图分类失败，回退规则: {e}")
-    return ""
-
-
-def route_intent(state: RobotState) -> str:
-    """钉钉适配器分发：意图分类只走 AgentRouter，避免与产品路由双分发。"""
+def route_intent(state: RobotState, route=None) -> str:
+    """把 AgentRouter 的分类结果映射为渠道动作名。可传入已算好的 RouteResult，避免重复分类。"""
     from app.agents.router import agent_router
     text = (state.get("text") or "").strip()
-    result = agent_router.classify(text, entry="dingtalk")
+    result = route or agent_router.classify(text, entry="dingtalk")
     action = result.channel_action or ("help" if not text else "repair")
     allowed = {"help", "create", "todo", "workorder", "inventory", "duty", "repair", "none"}
     if action not in allowed:
@@ -128,42 +77,8 @@ def help_node(state: RobotState) -> dict:
 
 
 def none_node(state: RobotState) -> dict:
-    """LLM 与规则路由均判为 none 的输入。
-    策略：最后再做一次"像不像维修领域里备件查询/设备名"的保守兜底——
-    用户说的是备件名（短词+命中部件词）→ 引导走库存；
-    命中设备词 → 信任用户在问维修相关，交给 repair 节点里的维修意图阀门做最终裁定；
-    其余真正无关的，才明确回复无该功能并引导查看帮助。
-    """
-    text = (state.get("text") or "").strip()
-    # 备件名兜底：看起来像单独的一个部件名（短、字符像中文/字母连写，不整句）
-    try:
-        from app.agents.answer_generator import answer_generator
-        if answer_generator.is_inventory_query(text):
-            return inventory_node(state)
-        terms = answer_generator._extract_part_keywords(text)
-        if terms and 1 <= len(text) <= 12 and not any(c in text for c in "？?！!，,。.、~～"):
-            # 像备件/部件名的短输入，直接调库存查询（没库存会说没找到，比说"我没这功能"友好）
-            return inventory_node(state)
-    except Exception as e:
-        logger.warning(f"[RobotGraph] none_node 库存兜底异常: {e}")
-    # 设备兜底：命中设备词就走 repair（维修意图阀门是最后一道关，阀门判无关就统一说无关）
-    try:
-        from app.agents.tools import get_device_terms
-        dev_terms = get_device_terms()
-        if any(t in text for t in dev_terms if t and len(t) >= 2):
-            return repair_node(state)
-    except Exception as e:
-        logger.warning(f"[RobotGraph] none_node 设备兜底异常: {e}")
-    return {"reply": (
-        "抱歉，我暂时没有这个功能。\n"
-        "我是维修助手，可以帮您：\n"
-        "1. 输入工单号查询工单状态\n"
-        "2. 发送「我的待办」查看名下待处理工单\n"
-        "3. 发送「排班」/「我的排班」查询排班\n"
-        "4. 发送「查备件库存」查询库存\n"
-        "5. 发送设备名称或故障现象，我会引导您一步步排查\n"
-        "发送「帮助」可查看完整功能说明。"
-    )}
+    """分类结果为 none 时的说明。库存短词和设备词兜底已在 AgentRouter 完成，这里不再二次分流。"""
+    return {"reply": _NONE_TEXT}
 
 
 def create_node(state: RobotState) -> dict:
@@ -206,8 +121,8 @@ def repair_node(state: RobotState) -> dict:
         )}
     # related 或 check：必走 repair_intent_check 跑检索判定
     try:
-        tools = make_tools()
-        chk = repair_intent_check(text, tools, top_k=5)
+        retrieval_tools = make_tools()
+        chk = repair_intent_check(text, retrieval_tools, top_k=5)
     except Exception as e:
         # 检索服务异常时信任 fast_check 放行（宁放行不误拦）
         logger.warning(f"[RobotGraph] 维修意图阀门检索异常，降级放行: {e}")
@@ -222,11 +137,8 @@ def repair_node(state: RobotState) -> dict:
     return {"reply": guided_repair_track(state.get("staff_id") or "", text)}
 
 
-# ============================================================
-# 工单查询子图（normalize → query）
-# ============================================================
 def wo_normalize_node(state: WoSubState) -> dict:
-    """从用户消息中提取工单号并规范化"""
+    """从用户消息中提取工单号并规范化。"""
     text = state.get("text") or ""
     m = re.search(r"WO[-_ ]?[\d-]{6,}", text, re.IGNORECASE) or re.search(r"\d{6,}", text)
     if not m:
@@ -238,68 +150,50 @@ def wo_normalize_node(state: WoSubState) -> dict:
 
 
 def wo_query_node(state: WoSubState) -> dict:
-    """按规范化后的工单号查询并格式化回复"""
+    """按规范化后的工单号查询并格式化回复。"""
     no = state.get("wo_no") or ""
     if not no:
         return {"reply": state.get("reply") or "请输入工单号，例如：WO-20260804-002"}
     return {"reply": tools.query_work_order(no)}
 
 
-_wo_subgraph = StateGraph(WoSubState)
-_wo_subgraph.add_node("normalize", wo_normalize_node)
-_wo_subgraph.add_node("query", wo_query_node)
-_wo_subgraph.set_entry_point("normalize")
-_wo_subgraph.add_edge("normalize", "query")
-_wo_subgraph.add_edge("query", END)
-WO_SUBGRAPH = _wo_subgraph.compile()
+def workorder_node(state: RobotState) -> dict:
+    """提取并规范化工单号，再查询并格式化回复。不再使用独立子图。"""
+    extracted = wo_normalize_node(state)
+    merged = {**state, **extracted}
+    return {**extracted, **wo_query_node(merged)}
 
 
-# ============================================================
-# 主图构建
-# ============================================================
-def build_robot_graph():
-    """编译钉钉机器人 LangGraph：入口路由后分到帮助、开单引导、待办、工单查询子图、库存、排班、引导维修或未识别，各分支结束后直接结束。"""
-    graph = StateGraph(RobotState)
-    graph.add_node("router", lambda s: {})  # 占位节点，实际分发由条件边完成
-    graph.add_node("help", help_node)
-    graph.add_node("create", create_node)
-    graph.add_node("todo", todo_node)
-    graph.add_node("inventory", inventory_node)
-    graph.add_node("duty", duty_node)
-    graph.add_node("repair", repair_node)
-    graph.add_node("none", none_node)
-    graph.add_node("workorder", WO_SUBGRAPH)  # 子图作为主图节点
-
-    graph.set_entry_point("router")
-    graph.add_conditional_edges(
-        "router",
-        route_intent,
-        {
-            "help": "help",
-            "create": "create",
-            "todo": "todo",
-            "workorder": "workorder",
-            "inventory": "inventory",
-            "duty": "duty",
-            "repair": "repair",
-            "none": "none",
-        },
-    )
-    for node in ("help", "create", "todo", "workorder", "inventory", "duty", "repair", "none"):
-        graph.add_edge(node, END)
-    return graph.compile()
+_ROBOT_HANDLERS = {
+    "help": help_node,
+    "create": create_node,
+    "todo": todo_node,
+    "workorder": workorder_node,
+    "inventory": inventory_node,
+    "duty": duty_node,
+    "repair": repair_node,
+    "none": none_node,
+}
 
 
-ROBOT_GRAPH = build_robot_graph()
+def invoke_robot(
+    text: str,
+    staff_id: str = "",
+    user_id: Optional[int] = None,
+    user_dt_userid: str = "",
+    route=None,
+) -> str:
+    """钉钉机器人消息入口：按 AgentRouter 分发到处理函数，返回最终回复。
 
-
-def invoke_robot(text: str, staff_id: str = "", user_id: Optional[int] = None, user_dt_userid: str = "") -> str:
-    """钉钉机器人消息入口：执行 LangGraph 图，返回最终回复"""
-    result = ROBOT_GRAPH.invoke({
+    若调用方已经分类过，传入 route=RouteResult，避免再跑一遍 LLM 分类。
+    """
+    state: RobotState = {
         "text": text or "",
         "staff_id": staff_id or "",
         "user_id": user_id,
         "user_dt_userid": user_dt_userid or "",
-    })
-    reply = (result or {}).get("reply") or ""
-    return reply or HELP_TEXT
+    }
+    action = route_intent(state, route=route)
+    handler = _ROBOT_HANDLERS[action]
+    result = handler(state)
+    return (result or {}).get("reply") or ""

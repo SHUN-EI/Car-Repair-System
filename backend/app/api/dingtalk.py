@@ -1185,7 +1185,7 @@ def _dispatch_text_command(sender_userid: str, text: str, db: Session) -> List[s
         reason = (m.group(2) or "").strip() or "主管拒绝，请联系主管咨询"
         return _cmd_reject_leave(u, lr_id, reason, db)
 
-    # ---------- 未知指令：统一走 Robot LangGraph 意图路由 ----------
+    # ---------- 未知指令：统一走钉钉渠道适配器（AgentRouter 分发） ----------
     # 覆盖工单查询 / 待办 / 备件库存 / 排班 / 维修引导 等（请假指令已在上文匹配返回）
     from app.agents.robot_graph import invoke_robot
     # staff_id=sender_userid（钉钉 dt_userid）；user_id/u_dt_userid 给工具侧查询绑定关系

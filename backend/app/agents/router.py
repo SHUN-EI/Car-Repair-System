@@ -215,8 +215,12 @@ class AgentRouter:
         if keyword is not None:
             return self._finalize(keyword, "keyword", in_guide_session)
 
-        # 库存只读：复用问答侧已有判定，避免与 qa_graph 口径漂移
+        # 库存只读：复用回答生成器已有判定，与问答入口 qa_kind 共用同一套规则
         if self._is_inventory_query(text or ""):
+            return self._finalize("inventory_read", "keyword", in_guide_session)
+
+        # 钉钉未命中其它规则时：短备件名按库存查询（从原 none_node 兜底收口到此）
+        if (use_llm or entry == "dingtalk") and self._looks_like_short_part_name(text or ""):
             return self._finalize("inventory_read", "keyword", in_guide_session)
 
         if use_llm or entry == "dingtalk":
@@ -230,6 +234,27 @@ class AgentRouter:
         """钉钉 / 自然语言渠道的分类入口，与 route() 同一套规则。"""
         use_llm = entry == "dingtalk"
         return self.route(text, entry=entry, in_guide_session=in_guide_session, use_llm=use_llm)
+
+    def qa_kind(self, text: str) -> str:
+        """问答入口分流：inventory / chat / fault。
+
+        使用本路由器的关键词与库存判定，而不走独立的 route_qa_intent。
+        不使用 entry='answer/stream'（那会把所有问题钉成故障咨询，无法再分库存和闲聊）。
+        不启用 LLM，与原问答图一致。本入口不会把「查工单进度」改派到工单 Agent，
+        工单类意图仍按是否技术问题分为闲聊或故障检索。
+        """
+        result = self.route(text or "", use_llm=False)
+        if result.intent == "inventory_read":
+            return "inventory"
+        if result.intent in ("help", "chitchat", "feature_intro"):
+            return "chat"
+        try:
+            from app.agents.answer_generator import answer_generator
+            if not answer_generator._is_technical_query(text or ""):
+                return "chat"
+        except Exception:
+            pass
+        return "fault"
 
     def _finalize(self, intent: str, source: str, in_guide_session: bool) -> RouteResult:
         """根据意图、分类来源和是否已在引导会话中，生成最终路由结果。若正在引导维修又问到工单进度，主责任方仍保持咨询 Agent，只通过只读工具查工单。"""
@@ -290,8 +315,24 @@ class AgentRouter:
         except Exception:
             return False
 
+    @staticmethod
+    def _looks_like_short_part_name(text: str) -> bool:
+        """钉钉渠道的保守兜底：短词且能抽出备件词时，按库存查询。
+
+        规则与原 robot_graph.none_node 一致：长度 1~12、不含常见标点，且
+        answer_generator._extract_part_keywords 能抽出词语。
+        """
+        text = (text or "").strip()
+        if not (1 <= len(text) <= 12) or any(c in text for c in "？?！!，,。.、~～"):
+            return False
+        try:
+            from app.agents.answer_generator import answer_generator
+            return bool(answer_generator._extract_part_keywords(text))
+        except Exception:
+            return False
+
     def _classify_with_llm_fallback(self, text: str) -> Optional[str]:
-        """复用钉钉适配器已有的 LLM 分类，作为关键词未命中时的兜底；映射回统一意图。
+        """用共享 LLM 分类器做关键词未命中时的兜底，并映射回统一意图。
 
         LLM 与关键词规则都集中在本路由器，渠道不再单独维护互斥分类器。
         """
@@ -310,8 +351,8 @@ class AgentRouter:
             dev_terms = []
         label = ""
         try:
-            from app.agents.robot_graph import _classify_intent_llm
-            label = _classify_intent_llm(text) or ""
+            from app.agents.intent_classifier import classify_intent_llm
+            label = classify_intent_llm(text) or ""
         except Exception:
             label = ""
         if label == "none":

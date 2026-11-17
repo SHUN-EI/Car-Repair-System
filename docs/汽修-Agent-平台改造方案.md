@@ -70,7 +70,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 车主端 H5 ──┐
 门店端 PC ──┼── FastAPI (/api/v1 + SSE + /mcp)
 技师端 ─────┘         │
-                      ├── Agent 编排 (qa_graph / guided / expert / retrieval_flow)
+                      ├── Agent 编排 (invoke_qa / qa_kind / guided / expert / retrieval_flow)
                       │         ├── 检索与知识 (bge-m3 + Qwen3-Reranker-0.6B + RRF)
                       │         └── DeepSeek 生成
                       ├── PG（pgvector + tsvector）+ Redis

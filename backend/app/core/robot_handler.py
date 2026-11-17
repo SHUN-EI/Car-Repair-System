@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import requests
 from typing import Optional, Dict, List
@@ -27,6 +26,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.user import User
 from app.agents.robot_graph import invoke_robot, HELP_TEXT
+from app.agents.router import agent_router
 
 # 机器人编码：默认 = 应用 AppKey（用户确认 RobotCode=dingqqvdduyaaefhwg6z），可被 .env 覆盖
 ROBOT_CODE = getattr(settings, "DINGTALK_ROBOT_CODE", "") or settings.DINGTALK_APP_KEY
@@ -131,36 +131,17 @@ def _auto_bind(db, sender_staff_id: str) -> Optional[User]:
 
 
 # ============================================================
-# 意图路由（LangGraph 图与子图实现，见 app/agents/robot_graph.py）
+# 意图路由（由 AgentRouter 分类，robot_graph 按 channel_action 分发到处理函数）
 # ============================================================
-def _is_knowledge_query(text: str) -> bool:
-    """判断消息是否为知识检索类（非帮助/待办/工单号/库存/录入）"""
-    text = (text or "").strip()
-    if not text:
-        return False
-    if any(k in text for k in ("帮助", "菜单", "功能", "help", "hello", "你好")):
-        return False
-    if any(k in text for k in ("我的待办", "我的工单", "待办", "代办", "任务")):
-        return False
-    if any(k in text for k in ("录入工单", "新增工单", "创建工单", "工单录入", "报修")):
-        return False
-    if any(k in text for k in ("库存", "备件", "零件", "配件", "备品", "还有多少", "还剩多少", "查库存", "剩下", "够不够", "缺不缺")):
-        return False
-    if any(k in text for k in ("排班", "值班", "班表", "班次")):
-        return False
-    if re.search(r"WO[-_ ]?[\d-]{6,}", text, re.IGNORECASE) or re.search(r"\d{6,}", text):
-        return False
-    return True
-
-
-def _route(db, payload: Dict, user: Optional[User], text: str) -> str:
-    """意图路由：委托 LangGraph 图与子图完成"""
+def _route(db, payload: Dict, user: Optional[User], text: str, route=None) -> str:
+    """委托钉钉适配器按已分类结果（或现场分类）生成回复。"""
     staff_id = (payload.get("senderStaffId") or "").strip()
     return invoke_robot(
         text=text,
         staff_id=staff_id,
         user_id=user.id if user else None,
         user_dt_userid=(user.dingtalk_userid or "") if user else "",
+        route=route,
     )
 
 
@@ -211,10 +192,11 @@ def handle_robot_message(payload: Dict) -> None:
                 _send_reply([sender_staff_id] if sender_staff_id else [], HELP_TEXT)
                 return
             print(f"[ROBOT-USER-OK] staff={sender_staff_id} sysUser.id={user.id} sysUser={user.username}", flush=True)
-            # 知识检索类消息：LLM 生成较慢，先发"正在思考中"占位提示
-            if _is_knowledge_query(text) and sender_staff_id:
+            # 只分类一次：追踪维修较慢时先发思考中提示，并把同一结果传给分发器
+            route = agent_router.classify(text, entry="dingtalk")
+            if route.channel_action == "repair" and sender_staff_id:
                 _send_reply([sender_staff_id], "思考中，请稍候…", title="维修助手")
-            reply = _route(db, payload, user, text)
+            reply = _route(db, payload, user, text, route=route)
             _send_reply([sender_staff_id] if sender_staff_id else [], reply, title="维修助手")
             _dt = int((_t.time() - _t0) * 1000)
             _preview = (reply or "").replace("\n", " | ")[:150]

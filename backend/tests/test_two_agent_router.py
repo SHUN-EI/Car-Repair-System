@@ -117,14 +117,14 @@ class TestConsultFacadeCannotWrite:
         assert text == "只读进度"
 
     def test_consult_invoke_qa_delegates(self, monkeypatch):
-        """咨询门面的问答调用应转给问答图。"""
+        """咨询门面的问答调用应转给问答入口 invoke_qa。"""
         import sys
         import types
 
         fake = types.ModuleType("app.agents.qa_graph")
 
         def invoke_qa(question, device_type=None, fault_code=None, top_k=10):
-            """假的问答调用，用于确认咨询门面会转给问答图。"""
+            """假的问答调用，用于确认咨询门面会转给问答入口。"""
             return {"kind": "fault", "payload": {"cases": []}, "question": question}
 
         fake.invoke_qa = invoke_qa
@@ -194,3 +194,67 @@ class TestSingletonRouter:
         """模块导出的 agent_router 单例与类的路由结果一致。"""
         result = agent_router.route("查一下备件库存")
         assert result.agent == CONSULT
+
+class TestUnifiedQaKindAndGraphShape:
+    """问答分流收口到 AgentRouter 后，图只保留故障检索与 PDF 导入。"""
+
+    def setup_method(self):
+        """每个用例前准备路由器。"""
+        self.router = AgentRouter()
+
+    def test_qa_kind_inventory_chat_and_fault(self):
+        """库存问句走 inventory，问候与非技术残留走 chat，技术故障走 fault。"""
+        assert self.router.qa_kind("查一下保险丝的库存") == "inventory"
+        assert self.router.qa_kind("你好") == "chat"
+        assert self.router.qa_kind("谢谢") == "chat"
+        assert self.router.qa_kind("注塑机温度过高") == "fault"
+
+    def test_qa_kind_does_not_hand_work_order_progress_to_work_order_agent(self):
+        """HTTP 问答入口仍不自动改派工单进度，只在闲聊或故障检索中分流。"""
+        kind = self.router.qa_kind("查询工单 WO-20260804-002 的进度")
+        assert kind in ("chat", "fault")
+
+    def test_short_part_name_is_inventory_only_on_dingtalk_path(self):
+        """短备件名仅在钉钉路径按库存处理；问答入口仍按故障检索，行为与改前一致。"""
+        dingtalk = self.router.classify("保险丝", entry="dingtalk")
+        assert dingtalk.intent == "inventory_read"
+        assert dingtalk.channel_action == "inventory"
+        assert self.router.qa_kind("保险丝") == "fault"
+        hello = self.router.classify("你好", entry="dingtalk")
+        assert hello.channel_action == "help"
+
+    def test_qa_graph_keeps_only_fault_subgraph(self):
+        """qa_graph 不再编译闲聊/库存子图和问答主图。"""
+        from pathlib import Path
+        import ast
+
+        src = Path(__file__).resolve().parents[1].joinpath("app/agents/qa_graph.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        assigned = {n.targets[0].id for n in ast.walk(tree) if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}
+        assert "FAULT_SUBGRAPH" in assigned
+        assert "CHAT_SUBGRAPH" not in assigned
+        assert "INVENTORY_SUBGRAPH" not in assigned
+        assert "QA_GRAPH" not in assigned
+        assert "def invoke_qa" in src
+
+    def test_robot_graph_has_no_langgraph(self):
+        """钉钉适配器改为函数分发，源码中不再编译 StateGraph。"""
+        from pathlib import Path
+        import ast
+
+        src = Path(__file__).resolve().parents[1].joinpath("app/agents/robot_graph.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        imported = set()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("langgraph"):
+                imported.add(n.module)
+            if isinstance(n, ast.Import):
+                for alias in n.names:
+                    if alias.name.startswith("langgraph"):
+                        imported.add(alias.name)
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        assert not imported
+        assert "StateGraph" not in names
+        assert "ROBOT_GRAPH" not in names
+        assert "WO_SUBGRAPH" not in names
+        assert "def invoke_robot" in src

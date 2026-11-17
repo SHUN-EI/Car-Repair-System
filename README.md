@@ -18,8 +18,8 @@
 | 设备台账与监控 | 设备档案、运行状态、心跳、故障标签、外部监控系统同步接口 |
 | 知识库 RAG | PostgreSQL 内 pgvector 向量 + tsvector 关键词双路召回，RRF 名次融合，两级模型精排 |
 | 设备手册错误码库 | 说明书错误码结构化入库，精确匹配 + 语义双路检索，权威方案置顶 |
-| AI 智能问答 | LangGraph 主图意图路由（库存 > 聊天 > 故障），SSE 流式回答 |
-| 追踪维修 | LangGraph 多轮对话状态机，按“分析 + 操作”逐步引导排查 |
+| AI 智能问答 | AgentRouter 分流（库存 / 闲聊 / 故障），故障走检索子图，SSE 流式回答 |
+| 追踪维修 | Redis 多轮对话状态机，按“分析 + 操作”逐步引导排查 |
 | 专家模式 | 复合故障拆解，管道优先检索 + 阀门判定后再触发 ReAct 救援 |
 | 知识审核与去重 | DRAFT/UNDER_REVIEW/PUBLISHED/DEPRECATED/ARCHIVED 状态，LLM 去重检测 |
 | 备件库存 | 备件台账、安全库存、库存预警、进货单批量导入 |
@@ -106,26 +106,26 @@
 - **全链路降级**：推理服务不可用 → 关键词-only（tsvector）；Reranker 不可用 → 规则重排；严格过滤为空 → 回答层如实说未检索到；任何单点故障都不导致“无回答”
 - **检索本地 + 生成可切换**：检索模型仍走本机 `8010` 推理服务；对话生成由 `CHAT_LLM_MODE` 在云端百炼（`qwen-plus`）和本机 vLLM（`Qwen2.5-7B-Instruct`，默认 `:8001`）之间切换
 
-### 3.6 LangGraph 图编排
+### 3.6 LangGraph 图编排与函数分发
 
-项目共有 **3 张 LangGraph 图**（主图+子图嵌套），另有追踪维修/专家模式是普通多轮状态机（不用图，见下）：
+项目现网会编译的 LangGraph 图只有 **2 张**：故障检索子图，以及历史工单导入 DAG。闲聊、库存和钉钉渠道动作是函数分发。追踪维修/专家模式仍是普通多轮状态机（不用图，见下）。
 
-**① 智能问答主图（`qa_graph.py`）**——条件边意图路由 + 故障子图三节点流水线：
+**① 智能问答入口（`qa_graph.py`）**——`AgentRouter.qa_kind` 分流 + 故障子图三节点流水线：
 
 ```text
-router ──条件边──┬─→ chat 子图（问候/闲聊，零检索）          → END
-（占位节点）      ├─→ inventory 子图（备件库存查询）        → END
-                  └─→ fault 子图：
-                      compound_check（复合故障预检，零 LLM）
-                        → retrieve（四路召回+RRF）
-                        → filter（粗筛+精排+严格过滤+置顶） → END
+AgentRouter.qa_kind ──┬─→ chat_node（问候/闲聊，零检索，普通函数）
+                      ├─→ inventory_node（备件库存查询，普通函数）
+                      └─→ FAULT_SUBGRAPH：
+                          compound_check（复合故障预检，零 LLM）
+                            → retrieve（四路召回+RRF）
+                            → filter（粗筛+精排+严格过滤+置顶）
 ```
 
-要点：路由用 `add_conditional_edges` 而非 LLM 分类；子图可独立 compile 复用。
+要点：问答分流不启用 LLM，也不传入 `entry="answer/stream"`；工单进度不会在这条 HTTP 路径上自动转给工单 Agent。
 
-**② 钉钉机器人图（`robot_graph.py`）**——同一套“占位 router + 条件边分发”模式，9 个意图分支：help / create（建单）/ todo（待办）/ inventory / duty（排班）/ repair（追踪维修）/ none / workorder 子图（工单号归一化 → 查详情）。
+**② 钉钉机器人适配器（`robot_graph.py`）**——不再编译主图。`AgentRouter.classify(..., entry="dingtalk")` 后按 `channel_action` 分发到处理函数：help / create（提示去系统开单）/ todo / inventory / duty / repair / none / workorder_node（提取并规范化工单号再查询）。分类只做一次，「思考中」提示仅在 `repair` 时发出。
 
-**③ 历史工单导入流水线（`work_order_importer.py`）**——带失败分支的 DAG：
+**③ 历史工单导入流水线（`work_order_importer.py`）**——带失败分支的 DAG，仍是编译图：
 
 ```text
 parse（PDF 解析）─失败→ save_error
@@ -135,14 +135,14 @@ extract（LLM 抽取）─失败→ save_error
 validate（字段校验）→ save_draft（存草稿待人工确认）→ END
 ```
 
-**哪些模块没有用图，以及为什么**（`agents/` 共 17 个模块，只有 3 个上图，其余按原因分四类）：
+**哪些模块没有用图，以及为什么**（问答闲聊/库存和钉钉适配器已改为函数分发；会编译的图只剩故障检索子图和导入 DAG。其余按原因分四类）：
 
 | 类别 | 模块 | 不上图的原因 |
 | --- | --- | --- |
 | 跨请求多轮会话 | 追踪维修 `guided_repair_agent`、专家模式 `expert_repair_agent` | 状态存 Redis，每次 HTTP 请求只推进一小段，**不存在一次性跑完的固定拓扑**；硬上图要自己接 checkpoint 持久化，与现有 Redis 会话重复建设，收益为零 |
 | 单请求内循环 | ReAct 检索 `retrieval_agent`（最多 5 轮） | 循环是否继续取决于**运行时语义判断**（LLM 判“够不够”），本质是带退出条件的 while 循环；图只能描述静态拓扑，把动态循环塞进图反而多一层封装 |
 | 单次 LLM 调用 | 回答 `answer_generator`、去重 `dedup_agent`、知识抽取 `knowledge_extractor`、手册结构化 `manual_structurizer`、故障拆解 `fault_decomposer`、工单理解 `ticket_agent`、会话摘要 `session_summarizer` | 单输入单输出、无分支无循环，**没有可编排的拓扑**；图的价值在节点间流转，单函数调用上图纯属样板 |
-| 纯规则零 LLM | 错误码提取、查询清洗 `query_extractor`、意图路由（条件边实现） | 确定性规则 <30ms，作为图内**节点**被调用即可，本身不需要编排 |
+| 纯规则零 LLM | 错误码提取、查询清洗 `query_extractor`、问答 `qa_kind` 分流 | 确定性规则 <30ms，作为函数或图内节点被调用即可，本身不需要编排 |
 
 一句话决策原则：**图解决的是“多个步骤按什么拓扑流转”的问题——没有多步拓扑（单次调用）、拓扑在运行时才确定（循环/多轮会话），就不该用图。**
 
@@ -168,7 +168,7 @@ validate（字段校验）→ save_draft（存草稿待人工确认）→ END
 
 | 分组 | 模块 | 职责 |
 | --- | --- | --- |
-| 图编排（3） | `qa_graph`、`robot_graph`、`work_order_importer` | 拓扑写死的 LangGraph 工作流，负责流转不负责决策 |
+| 图编排与渠道分发 | `qa_graph`（故障检索子图）、`work_order_importer`、`robot_graph`（函数分发）、`intent_classifier` | 固定拓扑上图；钉钉渠道与闲聊/库存用函数分发；分类器供 AgentRouter 兜底 |
 | 功能工具（5） | `answer_generator`（把检索案例渲染成回答，智能在上游检索）、`knowledge_extractor`、`fault_decomposer`、`manual_structurizer`、`session_summarizer` | 单次 LLM 调用完成固定转换任务，无循环无自主性 |
 | 检索工具（4） | `tools.py`、`retrieval_flow`、`query_extractor`、`inventory_tools` | 四路召回/RRF/精排编排、错误码正则、查询清洗，纯代码+规则 |
 
@@ -214,14 +214,14 @@ flowchart TD
     J -- 已解决 --> L[会话结束<br/>经验可沉淀为工单/知识]
 ```
 
-**③ 钉钉机器人流程**（Stream 长连接，robot_graph 9 意图分发）：
+**③ 钉钉机器人流程**（Stream 长连接，AgentRouter 分类后函数分发）：
 
 ```mermaid
 flowchart TD
-    A[钉钉群/单聊消息<br/>Stream 推送] --> B[robot_graph<br/>意图路由]
-    B -- 知识问答 --> C[复用问答主流程<br/>检索→生成]
-    B -- 建单 --> D[创建工单<br/>推工单卡片]
-    B -- 待办/工单号 --> E[workorder 子图<br/>工单号归一化→查详情]
+    A[钉钉群/单聊消息<br/>Stream 推送] --> B[AgentRouter 分类<br/>robot_graph 函数分发]
+    B -- 知识问答 --> C[追踪维修引导<br/>检索→逐步排查]
+    B -- 建单 --> D[提示去系统开单]
+    B -- 待办/工单号 --> E[workorder_node<br/>提取工单号→查详情]
     B -- 库存 --> F[备件库存查询]
     B -- 排班/请假 --> G[值班表/请假流程]
     B -- help/闲聊 --> H[帮助文案/固定回复]
@@ -281,7 +281,7 @@ Smart-Repair-System/
 
 ### 后端核心目录
 
-- `app/agents`：`qa_graph.py`、`guided_repair_agent.py`、`expert_repair_agent.py`、`retrieval_flow.py`、`retrieval_agent.py`、`fault_decomposer.py`、`answer_generator.py`、`manual_structurizer.py`、`knowledge_extractor.py`、`dedup_agent.py`、`ticket_agent.py`、`robot_graph.py`、`work_order_importer.py`、`session_summarizer.py`、`inventory_tools.py`、`tools.py`（命名约定：只有承担独立判断/自主决策职责的模块才带 `_agent` 后缀）
+- `app/agents`：`consult_guide_agent.py`、`work_order_agent.py`、`router.py`、`intent_classifier.py`、`qa_graph.py`、`robot_graph.py`、`guided_repair_agent.py`、`expert_repair_agent.py`、`retrieval_flow.py`、`retrieval_agent.py`、`fault_decomposer.py`、`answer_generator.py`、`manual_structurizer.py`、`knowledge_extractor.py`、`dedup_agent.py`、`ticket_agent.py`、`work_order_importer.py`、`session_summarizer.py`、`inventory_tools.py`、`tools.py`（命名约定：只有承担独立判断/自主决策职责的模块才带 `_agent` 后缀）
 - `app/api`：认证、用户、设备、工单、工单导入、知识、手册错误码、备件、分类、故障码、搜索、会话、驾驶舱、排班、请假、通知、派工、钉钉、文件上传、级联数据
 - `app/core`：`embedding_server.py`、`embeddings.py`、`reranker.py`、`vector_store.py`、`cache_service.py`、`database.py`、`config.py`、`security.py`、`dingtalk*.py`、`robot_handler.py`、`notification.py`、`sms.py`、`stock_alert.py`、`sys_config.py`、`manual_text.py`、`langfuse_tracer.py`
 - `app/models`：用户、设备、工单、进度日志、知识、手册错误码、故障码映射、分类、备件、排班、请假、通知、系统配置、工单导入批次与明细
@@ -396,7 +396,7 @@ npm run dev
 
 | 模式 | 入口 | 说明 |
 | --- | --- | --- |
-| 智能问答 | `/api/v1/search/answer/stream` | LangGraph 意图路由：库存 > 聊天 > 故障 |
+| 智能问答 | `/api/v1/search/answer/stream` | AgentRouter.qa_kind 分流：库存 / 闲聊 / 故障；故障走检索子图 |
 | 追踪维修 | `/api/v1/search/guided-repair/*` | 多轮逐步排查，Redis 会话持久化 |
 | 专家模式 | `/api/v1/search/answer/expert` | 复合故障拆解，管道优先 + ReAct 救援，流式回答 |
 | 专家模式下一步 | `/api/v1/search/answer/expert/step` | 多轮分析 + 引导 |

@@ -5,7 +5,7 @@
 ## 1. 分层定义（固定）
 
 1. **API 接入层**（`app/api`、`app/main.py`）：接收 HTTP 请求、参数校验、鉴权；禁止写业务逻辑与检索逻辑。
-2. **Agent 编排层**（`app/agents` 中的 LangGraph / 门面 Agent）：Skill 编排、会话状态机。多轮追踪维修与专家模式仍留在 Redis 状态机，不搬到 LangGraph。
+2. **Agent 编排层**（`app/agents` 中的门面 Agent、故障检索子图、导入 DAG、钉钉函数分发）：Skill 编排、会话状态机。多轮追踪维修与专家模式仍留在 Redis 状态机，不搬到 LangGraph。闲聊、库存和钉钉渠道动作也不再编译成图。
 3. **RAG 检索层**（`app/rag`）：文本向量（pgvector）、关键词（tsvector/`ts_rank`，工具名仍为 `bm25_search`）、混合检索、Rerank。外部统一走 `app.rag.rag_service`。
 4. **业务工具层**：配件查询、工单、外部接口调用。
 5. **存储层**：**PostgreSQL**（业务数据、pgvector 向量、tsvector 关键词）、Redis 会话缓存。对应客户端在 `app.core`（`vector_store` / `database` / Redis 封装）。

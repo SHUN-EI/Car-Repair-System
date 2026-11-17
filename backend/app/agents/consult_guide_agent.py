@@ -4,7 +4,7 @@
 本模块只做编排委托，检索阈值、RRF 与报价规则仍留在既有模块。
 
 内部能力（兼容别名，不是并列的第三 Agent）：
-- 智能问答主图 qa_graph
+- 智能问答入口 invoke_qa（故障检索仍用子图）
 - 追踪维修 Redis 状态机 guided_repair_agent（TTL 24h，最多 30 步）
 - 专家模式 Redis 状态机 expert_repair_agent / fault_decomposer
 - 有上限的检索 ReAct retrieval_agent
@@ -44,7 +44,7 @@ class ConsultGuideAgent:
         fault_code: Optional[str] = None,
         top_k: int = 10,
     ):
-        """委托问答主图。SSE 事件仍由 HTTP 层按原协议组装。"""
+        """委托问答入口 invoke_qa。SSE 事件仍由 HTTP 层按原协议组装。"""
         from app.agents.qa_graph import invoke_qa
         return invoke_qa(
             question,

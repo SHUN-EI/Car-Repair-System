@@ -355,7 +355,7 @@ async def iter_analyze_answer_sse(
     )
     tools = make_tools()
 
-    # 走 LangGraph 主图 + 子图：意图路由（聊天/库存/故障）→ 对应子图执行。
+    # 走问答入口：AgentRouter.qa_kind 分流闲聊/库存/故障；故障分支执行检索子图。
     t_retrieve_start = time.monotonic()
     try:
         state = await asyncio.to_thread(
@@ -365,7 +365,7 @@ async def iter_analyze_answer_sse(
     except Exception as e:
         t_retrieve = (time.monotonic() - t_retrieve_start) * 1000
         logger.error(f"[Answer/stream] 阶段=检索 异常耗时={t_retrieve:.0f}ms")
-        logger.error(f"[Answer] 智能问答图执行失败: {e}")
+        logger.error(f"[Answer] 智能问答执行失败: {e}")
         yield f"data: {json_module.dumps({'type': 'answer', 'content': f'服务异常: {e}'}, ensure_ascii=False)}\n\n"
         yield f"data: {json_module.dumps({'type': 'done', 'confidence': 0, 'sources_count': 0}, ensure_ascii=False)}\n\n"
         return

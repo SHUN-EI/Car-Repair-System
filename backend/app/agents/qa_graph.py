@@ -1,15 +1,13 @@
-"""智能问答 LangGraph：主图（意图路由）+ 子图（聊天 / 库存 / 故障问答）
+"""智能问答入口：AgentRouter 分流 + 故障检索子图。
 
-架构（与钉钉机器人 RobotGraph 同构：子图作为主图节点挂载）：
-- 主图 QaGraph：router 意图分类 → 条件边 → chat / inventory / fault 三个子图节点
-- 子图：
-  - ChatSubgraph：闲聊/问候/功能介绍，直接回复，不检索（比旧 if-else 少跑一轮无效检索）
-  - InventorySubgraph：备件库存查询（复用 AnswerAgent.handle_inventory_query）
-  - FaultQaSubgraph：复合故障预检(零 LLM) → 双库检索（知识库 vector+BM25 / 手册错误码精确+语义）→
-    RRF 融合 → 严格过滤/加权重排 → 错误码精确置顶
+闲聊与库存是普通函数，不再编译成单节点子图。故障问答仍用 LangGraph 子图，
+因为有「预检 → 检索 → 过滤精排」的固定多步拓扑。
 
-由 /api/v1/search/answer/stream 调用，SSE 事件协议与改造前完全一致：
+由 /api/v1/search/answer/stream 调用，SSE 事件协议不变：
 thinking → (suggest_expert) → references → answer 流式 → done
+
+分流走 AgentRouter.qa_kind（库存 / 闲聊 / 故障），不再维护独立的 route_qa_intent。
+本入口不会把「查工单进度」自动转到工单只读工具。
 """
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ from app.rag.rag_service import case_rank_score
 
 
 class QaState(TypedDict, total=False):
-    """问答主图的状态：原始问题、可选设备/故障码、路由类型（闲聊/库存/故障），以及各子图的载荷和是否建议切换专家模式。"""
+    """问答状态：原始问题、可选设备/故障码、路由类型（闲聊/库存/故障），以及各分支的载荷和是否建议切换专家模式。"""
     question: str
     device_type: Optional[str]
     fault_code: Optional[str]
@@ -33,23 +31,6 @@ class QaState(TypedDict, total=False):
     suggest_expert: bool  # 复合故障提问 → 提示一键切换专家模式
 
 
-# ============================================================
-# 主图意图路由
-# ============================================================
-def route_qa_intent(state: QaState) -> str:
-    """库存 > 聊天 > 故障问答。判断逻辑与 AnswerGenerator 内部保持一致，避免行为漂移。"""
-    from app.agents.answer_generator import answer_generator
-    q = state.get("question") or ""
-    if answer_generator.is_inventory_query(q):
-        return "inventory"
-    if not answer_generator._is_technical_query(q):
-        return "chat"
-    return "fault"
-
-
-# ============================================================
-# 子图 1：聊天（问候/功能介绍/闲聊，无检索）
-# ============================================================
 def chat_node(state: QaState) -> dict:
     """闲聊分支：不走检索，直接用回答生成器给出非技术回复。"""
     from app.agents.answer_generator import answer_generator
@@ -57,18 +38,8 @@ def chat_node(state: QaState) -> dict:
     return {"kind": "chat", "payload": answer_generator._answer_non_technical(q)}
 
 
-_chat_graph = StateGraph(QaState)
-_chat_graph.add_node("chat", chat_node)
-_chat_graph.set_entry_point("chat")
-_chat_graph.add_edge("chat", END)
-CHAT_SUBGRAPH = _chat_graph.compile()
-
-
-# ============================================================
-# 子图 2：库存查询
-# ============================================================
 def inventory_node(state: QaState) -> dict:
-    """库存只读分支：打开临时数据库会话查询库存，结束后关闭。失败时记下错误，不把异常抛出图外。"""
+    """库存只读分支：打开临时数据库会话查询库存，结束后关闭。失败时记下错误，不把异常抛出入口外。"""
     from app.agents.answer_generator import answer_generator
     from app.core.database import SessionLocal
     q = state.get("question") or ""
@@ -83,15 +54,8 @@ def inventory_node(state: QaState) -> dict:
         db.close()
 
 
-_inv_graph = StateGraph(QaState)
-_inv_graph.add_node("inventory", inventory_node)
-_inv_graph.set_entry_point("inventory")
-_inv_graph.add_edge("inventory", END)
-INVENTORY_SUBGRAPH = _inv_graph.compile()
-
-
 # ============================================================
-# 子图 3：故障问答（预检 → 双库检索 → 过滤重排 → 错误码置顶）
+# 故障检索子图：预检 → 双库检索 → 过滤重排 → 错误码置顶
 # ============================================================
 def compound_check_node(state: QaState) -> dict:
     """多故障规则预检（连接词 + 多故障信号词，零 LLM 调用）"""
@@ -156,40 +120,28 @@ _fault_graph.add_edge("filter", END)
 FAULT_SUBGRAPH = _fault_graph.compile()
 
 
-# ============================================================
-# 主图构建
-# ============================================================
-def build_qa_graph():
-    """编译问答 LangGraph：入口是占位路由节点，按意图条件边分到闲聊、库存或故障子图，然后结束。拓扑固定，多轮会话不在这张图里保存。"""
-    graph = StateGraph(QaState)
-    graph.add_node("router", lambda s: {})  # 占位节点，实际分发由条件边完成
-    graph.add_node("chat", CHAT_SUBGRAPH)
-    graph.add_node("inventory", INVENTORY_SUBGRAPH)
-    graph.add_node("fault", FAULT_SUBGRAPH)
-    graph.set_entry_point("router")
-    graph.add_conditional_edges(
-        "router",
-        route_qa_intent,
-        {"chat": "chat", "inventory": "inventory", "fault": "fault"},
-    )
-    for n in ("chat", "inventory", "fault"):
-        graph.add_edge(n, END)
-    return graph.compile()
-
-
-QA_GRAPH = build_qa_graph()
-
-
 def invoke_qa(
     question: str,
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     top_k: int = 10,
 ) -> QaState:
-    """智能问答入口：执行主图 + 子图，返回最终 state（kind 指明走了哪个子图）"""
-    return QA_GRAPH.invoke({
+    """智能问答入口：按 AgentRouter.qa_kind 分流，故障分支执行检索子图，返回最终 state。"""
+    from app.agents.router import agent_router
+
+    state: QaState = {
         "question": question,
         "device_type": device_type,
         "fault_code": fault_code,
         "top_k": top_k,
-    })
+    }
+    kind = agent_router.qa_kind(question)
+    if kind == "chat":
+        state.update(chat_node(state))
+        return state
+    if kind == "inventory":
+        state.update(inventory_node(state))
+        return state
+    fault_state = FAULT_SUBGRAPH.invoke(state)
+    fault_state["kind"] = "fault"
+    return fault_state
