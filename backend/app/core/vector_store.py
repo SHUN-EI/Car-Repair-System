@@ -1,171 +1,59 @@
-"""Milvus 向量库封装：知识集合和手册错误码集合共用连接与检索逻辑，字段定义按集合区分。API 层不应直接调用本模块，应走 rag_service。"""
+"""PostgreSQL pgvector 向量库封装：知识表与手册错误码表共用检索逻辑。
 
-from pymilvus import (
-    connections, Collection, FieldSchema, CollectionSchema,
-    DataType, utility
-)
-from typing import List, Dict, Optional
-from app.core.config import settings
-import uuid
+语义向量写在业务表的 embedding 列上，不再使用 Milvus。
+API 层不应直接调用本模块，应走 rag_service。
+对外方法名与参数与原 Milvus 封装对齐，便于检索漏斗零改动：
+insert / update / search / delete / delete_by_knowledge_id / flush / count / drop_collection。
+返回的 score 已从余弦距离还原为相似度（1 - 距离），阈值刻度保持不变。
+"""
+from __future__ import annotations
+
+from typing import Any, List, Dict, Optional
+
 from loguru import logger
+from sqlalchemy import text
+
+from app.core.config import settings
+from app.core.database import SessionLocal
+from app.rag.lexical import (
+    cosine_distance_to_similarity,
+    knowledge_point_id,
+    manual_point_id,
+    parse_point_id,
+)
 
 
-def _entity_field(hit, key: str, default=""):
-    """从 Milvus Hit 提取字段值（兼容 entity 为 Hit 对象或 dict）
-
-    pymilvus>=2.4 中 hit.entity 是 Hit 对象，get(key) 不接受默认值参数；
-    hit.entity.fields 才是字段 dict。此处统一走 fields，兼容旧版 entity 为 dict 的情况。
-    """
-    ent = hit.entity
-    fields = getattr(ent, "fields", None)
-    if isinstance(fields, dict):
-        return fields.get(key, default)
-    if isinstance(ent, dict):
-        return ent.get(key, default)
-    return default
+def _session():
+    """打开一个短会话，调用方必须关闭。"""
+    return SessionLocal()
 
 
 class VectorStore:
-    """Milvus 向量存储服务封装（懒加载模式，支持多集合泛化）
+    """知识库向量存储（knowledge_items.embedding）。
 
-    基类默认管理知识库集合（knowledge）；子类可传不同的集合名/字段 schema，
-    复用同一套连接、建集合、索引、刷写逻辑。
+    一条已同步的知识对应一行 embedding；未同步或已删除向量时该列为空，不进入召回。
+    collection_name 参数仅为兼容旧调用签名，不再对应外部集合。
     """
-
-    # 知识库集合（knowledge）默认字段
-    _KNOWLEDGE_FIELDS = [
-        FieldSchema(
-            name="id",
-            dtype=DataType.VARCHAR,
-            is_primary=True,
-            max_length=100,
-            description="向量 ID"
-        ),
-        FieldSchema(
-            name="vector",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=settings.MILVUS_VECTOR_SIZE,
-            description="向量数据"
-        ),
-        FieldSchema(
-            name="knowledge_id",
-            dtype=DataType.INT64,
-            description="关联 PostgreSQL 知识条目 ID"
-        ),
-        FieldSchema(
-            name="title",
-            dtype=DataType.VARCHAR,
-            max_length=500,
-            description="知识标题"
-        ),
-        FieldSchema(
-            name="content",
-            dtype=DataType.VARCHAR,
-            max_length=65535,
-            description="知识内容"
-        ),
-        FieldSchema(
-            name="device_type",
-            dtype=DataType.VARCHAR,
-            max_length=100,
-            description="设备类型"
-        ),
-        FieldSchema(
-            name="fault_code",
-            dtype=DataType.VARCHAR,
-            max_length=500,
-            description="故障码，多个用逗号分隔"
-        ),
-        FieldSchema(
-            name="fault_tags",
-            dtype=DataType.JSON,
-            description="故障标签"
-        ),
-    ]
-
-    # 知识库集合搜索/查询默认输出字段
-    _KNOWLEDGE_OUTPUT_FIELDS = ["knowledge_id", "title", "content", "device_type", "fault_code", "fault_tags"]
 
     def __init__(self, collection_name: Optional[str] = None, fields: Optional[List] = None,
                  description: str = ""):
-        """初始化知识向量集合客户端。可覆盖集合名和字段；默认使用配置中的知识集合和 1024 维向量长度，连接在首次操作时再建立。"""
-        self.host = settings.MILVUS_HOST
-        self.port = settings.MILVUS_PORT
-        self.collection_name = collection_name or settings.MILVUS_COLLECTION
-        self.vector_size = settings.MILVUS_VECTOR_SIZE
-        self._fields = fields if fields is not None else self._KNOWLEDGE_FIELDS
-        self._description = description or f"Milvus 集合: {self.collection_name}"
-        self._output_fields = self._KNOWLEDGE_OUTPUT_FIELDS
-        self._collection = None
-        self._connected = False
+        """记录可选的兼容参数。真正读写发生在首次 search/insert，不需要单独建集合。"""
+        self.collection_name = collection_name or "knowledge"
+        self.vector_size = settings.VECTOR_DIM
+        self._description = description or "pgvector: knowledge_items.embedding"
 
-    def _lazy_init(self):
-        """首次使用时初始化连接和集合"""
-        if not self._connected:
-            self._connect()
-            self._ensure_collection()
-            self._connected = True
+    def _set_ef_search(self, db) -> None:
+        """在当前事务内设置 HNSW ef_search，只影响本连接。"""
+        ef = int(getattr(settings, "PGVECTOR_EF_SEARCH", 64) or 64)
+        db.execute(text("SELECT set_config('hnsw.ef_search', :ef, true)"), {"ef": str(ef)})
 
-    def _connect(self):
-        """连接 Milvus"""
-        try:
-            connections.connect(
-                alias="default",
-                host=self.host,
-                port=self.port
+    def _validate_vector(self, vector: List[float]) -> List[float]:
+        """校验向量维度，避免写入与索引不一致的长度。"""
+        if not vector or len(vector) != self.vector_size:
+            raise ValueError(
+                f"向量维度必须是 {self.vector_size}（bge-m3），实际为 {0 if not vector else len(vector)}"
             )
-            logger.info(f"已连接 Milvus: {self.host}:{self.port}")
-        except Exception as e:
-            logger.error(f"连接 Milvus 失败: {e}")
-            raise
-
-    def _ensure_collection(self):
-        """确保集合存在、索引已创建、已加载到内存"""
-        try:
-            if utility.has_collection(self.collection_name):
-                logger.info(f"Milvus 集合已存在: {self.collection_name}")
-                self._collection = Collection(self.collection_name)
-                # 确保索引存在，不存在则创建
-                if not self._collection.has_index():
-                    self._create_index()
-                self._collection.load()
-            else:
-                self._create_collection()
-        except Exception as e:
-            logger.error(f"Milvus 集合初始化失败: {e}")
-            raise
-
-    def _create_collection(self):
-        """创建集合（schema 由子类传入的 fields 决定）"""
-        schema = CollectionSchema(
-            fields=self._fields,
-            description=self._description
-        )
-
-        self._collection = Collection(
-            name=self.collection_name,
-            schema=schema
-        )
-
-        self._create_index()
-
-        logger.info(f"创建 Milvus 集合: {self.collection_name}, 向量维度: {self.vector_size}")
-
-    def _create_index(self):
-        """创建向量索引并加载集合"""
-        index_params = [
-            {
-                "field_name": "vector",
-                "index_params": {
-                    "index_type": "IVF_FLAT",
-                    "metric_type": "COSINE",
-                    "params": {"nlist": 1024}
-                }
-            }
-        ]
-        self._collection.create_index(field_name="vector", index_params=index_params[0]["index_params"])
-        self._collection.load()
-        logger.info(f"Milvus 索引创建成功: {self.collection_name}")
+        return [float(x) for x in vector]
 
     def insert(
         self,
@@ -176,55 +64,75 @@ class VectorStore:
         device_type: Optional[str] = None,
         fault_code: Optional[str] = None,
         fault_tags: Optional[List] = None,
-        point_id: Optional[str] = None
+        point_id: Optional[str] = None,
     ) -> str:
-        """插入向量（知识库集合专用字段）
+        """把向量写入对应知识行。已有 embedding 时覆盖，返回稳定点号 pg:k:{id}。
 
-        Args:
-            vector: 向量数据
-            knowledge_id: PostgreSQL 知识条目 ID
-            title: 知识标题
-            content: 知识内容
-            device_type: 设备类型
-            fault_code: 故障码
-            fault_tags: 故障标签
-            point_id: 向量 ID（自动生成如未指定）
-
-        Returns:
-            向量 ID
+        title/content/device_type 等字段以 PostgreSQL 正本为准，这里不再另存一份副本；
+        参数保留是为了与原 Milvus insert 签名兼容。
         """
-        self._lazy_init()
-        if point_id is None:
-            point_id = str(uuid.uuid4())
+        return self._upsert_knowledge(knowledge_id, vector, point_id=point_id)
 
-        data = [
-            [point_id],  # id
-            [vector],   # vector
-            [knowledge_id],  # knowledge_id
-            [title],  # title
-            [content[:65000] if content else ""],  # content (截断到 65535)
-            [device_type or ""],  # device_type
-            [fault_code or ""],  # fault_code
-            [fault_tags or []],  # fault_tags
-        ]
+    def update(
+        self,
+        point_id: str,
+        vector: List[float],
+        title: str,
+        content: str,
+        device_type: Optional[str] = None,
+        fault_code: Optional[str] = None,
+        fault_tags: Optional[List] = None,
+    ) -> None:
+        """按点号或 milvus_id 兼容字段更新已有知识向量。"""
+        kid = self._resolve_knowledge_id(point_id)
+        if kid is None:
+            raise ValueError(f"找不到要更新的知识向量: {point_id}")
+        self._upsert_knowledge(kid, vector, point_id=point_id)
 
+    def _upsert_knowledge(self, knowledge_id: int, vector: List[float], point_id: Optional[str] = None) -> str:
+        """写入或覆盖 knowledge_items.embedding，并回写稳定点号到 milvus_id。"""
+        vec = self._validate_vector(vector)
+        new_id = knowledge_point_id(knowledge_id)
+        db = _session()
         try:
-            self._collection.insert(data)
-            logger.debug(f"向量插入成功: {point_id}")
-            return point_id
-        except Exception as e:
-            logger.error(f"向量插入失败: {e}")
+            row = db.execute(
+                text(
+                    "UPDATE knowledge_items "
+                    "SET embedding = CAST(:embedding AS vector), milvus_id = :point_id "
+                    "WHERE id = :id "
+                    "RETURNING id"
+                ),
+                {"embedding": _vector_literal(vec), "point_id": new_id, "id": knowledge_id},
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"知识条目不存在，无法写入向量: {knowledge_id}")
+            db.commit()
+            logger.debug(f"知识向量已写入 pgvector: {new_id}")
+            return new_id
+        except Exception:
+            db.rollback()
             raise
+        finally:
+            db.close()
 
-    def flush(self):
-        """手动刷写向量数据到磁盘（批量插入完成后调用一次即可）"""
-        self._lazy_init()
+    def _resolve_knowledge_id(self, point_id: str) -> Optional[int]:
+        """从 pg:k:{id} 或历史 milvus_id 反查知识主键。"""
+        parsed = parse_point_id(point_id)
+        if parsed and parsed[0] == "knowledge":
+            return parsed[1]
+        db = _session()
         try:
-            self._collection.flush()
-            logger.debug("向量数据已刷写到磁盘")
-        except Exception as e:
-            logger.error(f"向量刷写失败: {e}")
-            raise
+            row = db.execute(
+                text("SELECT id FROM knowledge_items WHERE milvus_id = :pid"),
+                {"pid": point_id},
+            ).fetchone()
+            return int(row.id) if row else None
+        finally:
+            db.close()
+
+    def flush(self) -> None:
+        """PostgreSQL 在事务提交时已落盘，保留空实现以兼容旧刷写调用。"""
+        return None
 
     def search(
         self,
@@ -232,254 +140,144 @@ class VectorStore:
         limit: int = 5,
         device_type: Optional[str] = None,
         fault_code: Optional[str] = None,
-        score_threshold: float = 0.3
+        score_threshold: float = 0.3,
     ) -> List[Dict]:
-        """向量相似度搜索（知识库集合）
+        """按余弦距离检索知识向量，返回相似度分（1 - 距离）及条目字段。
 
-        Args:
-            query_vector: 查询向量
-            limit: 返回结果数量
-            device_type: 设备类型过滤
-            fault_code: 故障码过滤
-            score_threshold: 相似度阈值
-
-        Returns:
-            [{id, score, knowledge_id, title, ...}, ...]
+        只召回 embedding 非空的行；设备类型精确过滤，故障码仍为包含匹配。
         """
-        self._lazy_init()
-        expr_parts = []
-        if device_type:
-            expr_parts.append(f'device_type == "{device_type}"')
-        if fault_code:
-            expr_parts.append(f'fault_code like "%{fault_code}%"')
-
-        expr = " and ".join(expr_parts) if expr_parts else None
-
-        search_params = {
-            "metric_type": "COSINE",
-            "params": {"nprobe": 16}
+        vec = self._validate_vector(query_vector)
+        max_distance = 1.0 - float(score_threshold or 0.0)
+        clauses = ["embedding IS NOT NULL", "embedding <=> CAST(:q AS vector) <= :max_distance"]
+        params: Dict[str, Any] = {
+            "q": _vector_literal(vec),
+            "max_distance": max_distance,
+            "limit": int(limit),
         }
+        if device_type:
+            clauses.append("device_type = :device_type")
+            params["device_type"] = device_type
+        if fault_code:
+            clauses.append("fault_code ILIKE :fault_code")
+            params["fault_code"] = f"%{fault_code}%"
 
-        results = self._collection.search(
-            data=[query_vector],
-            anns_field="vector",
-            param=search_params,
-            limit=limit,
-            expr=expr,
-            output_fields=self._output_fields
+        sql = text(
+            "SELECT id, milvus_id, title, content, device_type, fault_code, fault_tags, "
+            "       (embedding <=> CAST(:q AS vector)) AS distance "
+            "FROM knowledge_items "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY embedding <=> CAST(:q AS vector) "
+            "LIMIT :limit"
         )
-
-        output = []
-        for hits in results:
-            for hit in hits:
-                if hit.score >= score_threshold:
-                    output.append({
-                        "id": hit.id,
-                        "score": hit.score,
-                        "knowledge_id": _entity_field(hit, "knowledge_id"),
-                        "title": _entity_field(hit, "title", ""),
-                        "content": _entity_field(hit, "content", ""),
-                        "device_type": _entity_field(hit, "device_type", ""),
-                        "fault_code": _entity_field(hit, "fault_code", ""),
-                        "fault_tags": _entity_field(hit, "fault_tags", [])
-                    })
-
-        return output
-
-    def update(
-        self,
-        point_id: str,
-        vector: Optional[List[float]] = None,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        device_type: Optional[str] = None,
-        fault_code: Optional[str] = None,
-        fault_tags: Optional[List] = None
-    ) -> bool:
-        """更新向量或元数据（知识库集合专用字段）"""
-        self._lazy_init()
+        db = _session()
         try:
-            # Milvus 2.x 使用 upsert 更新
-            fields_data = {
-                "id": [point_id],
-            }
-
-            if vector is not None:
-                fields_data["vector"] = [vector]
-            if title is not None:
-                fields_data["title"] = [title]
-            if content is not None:
-                fields_data["content"] = [content[:65000] if content else ""]
-            if device_type is not None:
-                fields_data["device_type"] = [device_type]
-            if fault_code is not None:
-                fields_data["fault_code"] = [fault_code]
-            if fault_tags is not None:
-                fields_data["fault_tags"] = [fault_tags]
-
-            self._collection.upsert(fields_data)
-            logger.debug(f"向量更新成功: {point_id}")
-            return True
-        except Exception as e:
-            logger.error(f"向量更新失败: {e}")
-            return False
+            self._set_ef_search(db)
+            rows = db.execute(sql, params).fetchall()
+            output = []
+            for row in rows:
+                score = cosine_distance_to_similarity(row.distance)
+                kid = int(row.id)
+                output.append({
+                    "id": row.milvus_id or knowledge_point_id(kid),
+                    "score": round(score, 6),
+                    "knowledge_id": kid,
+                    "title": row.title or "",
+                    "content": (row.content or "")[:65000],
+                    "device_type": row.device_type or "",
+                    "fault_code": row.fault_code or "",
+                    "fault_tags": row.fault_tags or [],
+                })
+            return output
+        finally:
+            db.close()
 
     def delete(self, point_id: str) -> bool:
-        """删除向量"""
-        self._lazy_init()
-        try:
-            self._collection.delete(expr=f'id == "{point_id}"')
-            logger.debug(f"向量删除成功: {point_id}")
-            return True
-        except Exception as e:
-            logger.error(f"向量删除失败: {e}")
+        """按点号清空知识向量，不删除知识行。找不到行时返回 False。"""
+        kid = self._resolve_knowledge_id(point_id)
+        if kid is None:
             return False
+        return self.delete_by_knowledge_id(kid)
 
     def delete_by_knowledge_id(self, knowledge_id: int) -> bool:
-        """删除指定 knowledge_id 的全部向量（幂等同步/重灌用，可安全重跑）"""
-        self._lazy_init()
+        """按知识主键清空 embedding 与 milvus_id。"""
+        db = _session()
         try:
-            self._collection.delete(expr=f'knowledge_id == {knowledge_id}')
-            logger.debug(f"knowledge_id={knowledge_id} 旧向量已删除")
-            return True
-        except Exception as e:
-            logger.error(f"删除 knowledge_id={knowledge_id} 向量失败: {e}")
-            return False
+            row = db.execute(
+                text(
+                    "UPDATE knowledge_items "
+                    "SET embedding = NULL, milvus_id = NULL "
+                    "WHERE id = :id "
+                    "RETURNING id"
+                ),
+                {"id": knowledge_id},
+            ).fetchone()
+            db.commit()
+            return row is not None
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def get_by_id(self, point_id: str) -> Optional[Dict]:
-        """根据 ID 获取向量（知识库集合字段）"""
-        self._lazy_init()
+        """按点号读取一条知识向量的元数据，不计算相似度。"""
+        kid = self._resolve_knowledge_id(point_id)
+        if kid is None:
+            return None
+        db = _session()
         try:
-            results = self._collection.query(
-                expr=f'id == "{point_id}"',
-                output_fields=self._output_fields
-            )
-            if results:
-                row = results[0]
-                return {
-                    "id": row["id"],
-                    "vector": row.get("vector"),
-                    "knowledge_id": row.get("knowledge_id"),
-                    "title": row.get("title", ""),
-                    "content": row.get("content", ""),
-                    "device_type": row.get("device_type", ""),
-                    "fault_code": row.get("fault_code", ""),
-                    "fault_tags": row.get("fault_tags", [])
-                }
-            return None
-        except Exception as e:
-            logger.error(f"向量查询失败: {e}")
-            return None
+            row = db.execute(
+                text(
+                    "SELECT id, milvus_id, title, content, device_type, fault_code, fault_tags "
+                    "FROM knowledge_items WHERE id = :id"
+                ),
+                {"id": kid},
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row.milvus_id or knowledge_point_id(int(row.id)),
+                "knowledge_id": int(row.id),
+                "title": row.title or "",
+                "content": row.content or "",
+                "device_type": row.device_type or "",
+                "fault_code": row.fault_code or "",
+                "fault_tags": row.fault_tags or [],
+            }
+        finally:
+            db.close()
 
     def count(self) -> int:
-        """获取向量总数"""
-        self._lazy_init()
+        """已写入向量的知识条数。"""
+        db = _session()
         try:
-            # 用 query 方式获取数量，兼容性更好
-            results = self._collection.query(
-                expr="id != ''",
-                output_fields=["count(*)"]
-            )
-            if results:
-                return results[0].get("count(*)", 0)
-            return 0
-        except Exception as e:
-            logger.error(f"向量计数失败: {e}")
-            return 0
+            row = db.execute(text("SELECT COUNT(*) AS n FROM knowledge_items WHERE embedding IS NOT NULL")).fetchone()
+            return int(row.n) if row else 0
+        finally:
+            db.close()
 
-    def drop_collection(self):
-        """删除集合（危险操作）"""
-        self._lazy_init()
+    def drop_collection(self) -> None:
+        """清空全部知识向量，保留知识行。名称沿用旧接口，便于脚本 --force-rebuild。"""
+        db = _session()
         try:
-            self._collection.drop()
-            logger.warning(f"已删除 Milvus 集合: {self.collection_name}")
-        except Exception as e:
-            logger.error(f"删除集合失败: {e}")
+            db.execute(text("UPDATE knowledge_items SET embedding = NULL, milvus_id = NULL"))
+            db.commit()
+            logger.warning("已清空 knowledge_items.embedding")
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
 
 class LogCodeVectorStore(VectorStore):
-    """设备手册错误码向量存储（log_code 集合）
-
-    只存设备说明书/维修手册中的"错误码 → 故障诊断"条目，
-    与知识库集合（knowledge）完全隔离；检索时双库并行召回再融合。
-    """
-
-    _LOG_CODE_FIELDS = [
-        FieldSchema(
-            name="id",
-            dtype=DataType.VARCHAR,
-            is_primary=True,
-            max_length=100,
-            description="向量 ID"
-        ),
-        FieldSchema(
-            name="vector",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=settings.MILVUS_VECTOR_SIZE,
-            description="向量数据"
-        ),
-        FieldSchema(
-            name="manual_code_id",
-            dtype=DataType.INT64,
-            description="关联 PostgreSQL 手册条目 ID"
-        ),
-        FieldSchema(
-            name="error_code",
-            dtype=DataType.VARCHAR,
-            max_length=100,
-            description="错误码/报警码"
-        ),
-        FieldSchema(
-            name="manual_name",
-            dtype=DataType.VARCHAR,
-            max_length=300,
-            description="设备说明书/手册名称"
-        ),
-        FieldSchema(
-            name="device_type",
-            dtype=DataType.VARCHAR,
-            max_length=100,
-            description="设备类型"
-        ),
-        FieldSchema(
-            name="title",
-            dtype=DataType.VARCHAR,
-            max_length=500,
-            description="错误码标题"
-        ),
-        FieldSchema(
-            name="description",
-            dtype=DataType.VARCHAR,
-            max_length=65535,
-            description="错误含义/触发条件"
-        ),
-        FieldSchema(
-            name="chapter",
-            dtype=DataType.VARCHAR,
-            max_length=200,
-            description="所属章节"
-        ),
-        FieldSchema(
-            name="page",
-            dtype=DataType.VARCHAR,
-            max_length=50,
-            description="页码"
-        ),
-    ]
-
-    _LOG_CODE_OUTPUT_FIELDS = [
-        "manual_code_id", "error_code", "manual_name", "device_type",
-        "title", "description", "chapter", "page",
-    ]
+    """手册错误码向量存储（manual_code_entries.embedding），与知识向量隔离。"""
 
     def __init__(self, collection_name: Optional[str] = None):
-        """初始化手册错误码向量集合，复用父类连接逻辑，但使用错误码专用字段和输出列。"""
-        super().__init__(
-            collection_name=collection_name or settings.MILVUS_LOG_CODE_COLLECTION,
-            fields=self._LOG_CODE_FIELDS,
-            description="设备手册错误码-故障诊断向量集合",
-        )
-        self._output_fields = self._LOG_CODE_OUTPUT_FIELDS
+        """兼容旧的集合名参数，实际写入 manual_code_entries.embedding。"""
+        super().__init__(collection_name=collection_name or "log_code")
+        self.collection_name = collection_name or "log_code"
+        self._description = "pgvector: manual_code_entries.embedding"
 
     def insert(
         self,
@@ -492,49 +290,95 @@ class LogCodeVectorStore(VectorStore):
         description: str,
         chapter: str = "",
         page: str = "",
-        point_id: Optional[str] = None
+        point_id: Optional[str] = None,
     ) -> str:
-        """插入手册错误码向量（log_code 集合专用字段）
-
-        Args:
-            vector: 向量数据（对 description 编码）
-            manual_code_id: PostgreSQL 手册条目 ID
-            error_code: 错误码/报警码
-            manual_name: 说明书/手册名称
-            device_type: 设备类型
-            title: 错误码标题
-            description: 错误含义/触发条件
-            chapter: 所属章节（出处）
-            page: 页码（出处）
-            point_id: 向量 ID（自动生成如未指定）
-
-        Returns:
-            向量 ID
-        """
-        self._lazy_init()
-        if point_id is None:
-            point_id = str(uuid.uuid4())
-
-        data = [
-            [point_id],        # id
-            [vector],          # vector
-            [manual_code_id],  # manual_code_id
-            [error_code],      # error_code
-            [manual_name],     # manual_name
-            [device_type or ""],   # device_type
-            [title],           # title
-            [description[:65000] if description else ""],  # description (截断到 65535)
-            [chapter or ""],   # chapter
-            [page or ""],      # page
-        ]
-
+        """把手册条目向量写入本行，返回稳定点号 pg:m:{id}。其它字段以正本为准。"""
+        vec = self._validate_vector(vector)
+        new_id = manual_point_id(manual_code_id)
+        db = _session()
         try:
-            self._collection.insert(data)
-            logger.debug(f"手册错误码向量插入成功: {point_id}")
-            return point_id
-        except Exception as e:
-            logger.error(f"手册错误码向量插入失败: {e}")
+            row = db.execute(
+                text(
+                    "UPDATE manual_code_entries "
+                    "SET embedding = CAST(:embedding AS vector), milvus_id = :point_id "
+                    "WHERE id = :id "
+                    "RETURNING id"
+                ),
+                {"embedding": _vector_literal(vec), "point_id": new_id, "id": manual_code_id},
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"手册条目不存在，无法写入向量: {manual_code_id}")
+            db.commit()
+            logger.debug(f"手册向量已写入 pgvector: {new_id}")
+            return new_id
+        except Exception:
+            db.rollback()
             raise
+        finally:
+            db.close()
+
+    def _resolve_manual_id(self, point_id: str) -> Optional[int]:
+        """从 pg:m:{id} 或历史 milvus_id 反查手册主键。"""
+        parsed = parse_point_id(point_id)
+        if parsed and parsed[0] == "manual":
+            return parsed[1]
+        db = _session()
+        try:
+            row = db.execute(
+                text("SELECT id FROM manual_code_entries WHERE milvus_id = :pid"),
+                {"pid": point_id},
+            ).fetchone()
+            return int(row.id) if row else None
+        finally:
+            db.close()
+
+    def delete(self, point_id: str) -> bool:
+        """按点号清空手册向量，不删除手册行。"""
+        mid = self._resolve_manual_id(point_id)
+        if mid is None:
+            return False
+        db = _session()
+        try:
+            row = db.execute(
+                text(
+                    "UPDATE manual_code_entries "
+                    "SET embedding = NULL, milvus_id = NULL "
+                    "WHERE id = :id "
+                    "RETURNING id"
+                ),
+                {"id": mid},
+            ).fetchone()
+            db.commit()
+            return row is not None
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def drop_collection(self) -> None:
+        """清空全部手册向量，保留手册行。"""
+        db = _session()
+        try:
+            db.execute(text("UPDATE manual_code_entries SET embedding = NULL, milvus_id = NULL"))
+            db.commit()
+            logger.warning("已清空 manual_code_entries.embedding")
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def count(self) -> int:
+        """已写入向量的手册条数。"""
+        db = _session()
+        try:
+            row = db.execute(
+                text("SELECT COUNT(*) AS n FROM manual_code_entries WHERE embedding IS NOT NULL")
+            ).fetchone()
+            return int(row.n) if row else 0
+        finally:
+            db.close()
 
     def search(
         self,
@@ -542,63 +386,63 @@ class LogCodeVectorStore(VectorStore):
         limit: int = 5,
         device_type: Optional[str] = None,
         error_code: Optional[str] = None,
-        score_threshold: float = 0.0
+        score_threshold: float = 0.0,
     ) -> List[Dict]:
-        """向量语义搜索手册错误码条目（可叠加 device_type / error_code 过滤）
-
-        Args:
-            query_vector: 查询向量（对提问文本编码）
-            limit: 返回结果数量
-            device_type: 设备类型过滤
-            error_code: 错误码精确过滤
-            score_threshold: 相似度阈值
-
-        Returns:
-            [{id, score, manual_code_id, error_code, title, description, chapter, page, ...}, ...]
-        """
-        self._lazy_init()
-        expr_parts = []
-        if device_type:
-            expr_parts.append(f'device_type == "{device_type}"')
-        if error_code:
-            expr_parts.append(f'error_code == "{error_code}"')
-
-        expr = " and ".join(expr_parts) if expr_parts else None
-
-        search_params = {
-            "metric_type": "COSINE",
-            "params": {"nprobe": 16}
+        """按余弦距离检索手册向量，可叠加设备类型和错误码精确过滤。"""
+        vec = self._validate_vector(query_vector)
+        max_distance = 1.0 - float(score_threshold or 0.0)
+        clauses = ["embedding IS NOT NULL", "embedding <=> CAST(:q AS vector) <= :max_distance"]
+        params: Dict[str, Any] = {
+            "q": _vector_literal(vec),
+            "max_distance": max_distance,
+            "limit": int(limit),
         }
+        if device_type:
+            clauses.append("device_type = :device_type")
+            params["device_type"] = device_type
+        if error_code:
+            clauses.append("error_code = :error_code")
+            params["error_code"] = error_code
 
-        results = self._collection.search(
-            data=[query_vector],
-            anns_field="vector",
-            param=search_params,
-            limit=limit,
-            expr=expr,
-            output_fields=self._output_fields
+        sql = text(
+            "SELECT id, milvus_id, error_code, manual_name, device_type, title, "
+            "       description, chapter, page, "
+            "       (embedding <=> CAST(:q AS vector)) AS distance "
+            "FROM manual_code_entries "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY embedding <=> CAST(:q AS vector) "
+            "LIMIT :limit"
         )
+        db = _session()
+        try:
+            self._set_ef_search(db)
+            rows = db.execute(sql, params).fetchall()
+            output = []
+            for row in rows:
+                score = cosine_distance_to_similarity(row.distance)
+                mid = int(row.id)
+                output.append({
+                    "id": row.milvus_id or manual_point_id(mid),
+                    "score": round(score, 6),
+                    "manual_code_id": mid,
+                    "error_code": row.error_code or "",
+                    "manual_name": row.manual_name or "",
+                    "device_type": row.device_type or "",
+                    "title": row.title or "",
+                    "description": row.description or "",
+                    "chapter": row.chapter or "",
+                    "page": row.page or "",
+                })
+            return output
+        finally:
+            db.close()
 
-        output = []
-        for hits in results:
-            for hit in hits:
-                if hit.score >= score_threshold:
-                    output.append({
-                        "id": hit.id,
-                        "score": hit.score,
-                        "manual_code_id": _entity_field(hit, "manual_code_id"),
-                        "error_code": _entity_field(hit, "error_code", ""),
-                        "manual_name": _entity_field(hit, "manual_name", ""),
-                        "device_type": _entity_field(hit, "device_type", ""),
-                        "title": _entity_field(hit, "title", ""),
-                        "description": _entity_field(hit, "description", ""),
-                        "chapter": _entity_field(hit, "chapter", ""),
-                        "page": _entity_field(hit, "page", ""),
-                    })
 
-        return output
+def _vector_literal(vector: List[float]) -> str:
+    """把 Python 浮点列表格式化成 pgvector 可 CAST 的文本，如 '[0.1,0.2]'。"""
+    return "[" + ",".join(f"{x:.8f}" for x in vector) + "]"
 
 
-# 全局单例
-vector_store = VectorStore()              # 知识库集合（knowledge）
-log_code_store = LogCodeVectorStore()     # 设备手册错误码集合（log_code）
+# 全局单例（签名保持不变，检索流仍注入这两个对象）
+vector_store = VectorStore()
+log_code_store = LogCodeVectorStore()

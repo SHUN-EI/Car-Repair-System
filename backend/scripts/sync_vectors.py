@@ -1,4 +1,4 @@
-"""同步脚本：将 PostgreSQL 中已发布的知识条目重新导入 Milvus 向量库
+"""同步脚本：将 PostgreSQL 中已发布的知识条目重新写入 PostgreSQL embedding 列
 
 幂等：对同一 knowledge_id 先删旧向量再插入，可安全重跑。
 
@@ -8,7 +8,7 @@
 
 前提条件:
     - 推理服务已启动（bge-m3 编码走 HTTP）：start_all.ps1 或 python -m app.core.embedding_server
-    - PostgreSQL 已启动，Milvus 已启动
+    - PostgreSQL 已启动（需已执行 pgvector 迁移），推理服务已启动
 """
 import sys
 import os
@@ -37,9 +37,8 @@ def check_inference_server():
 
 
 def main():
-    """把 PostgreSQL 中所有已发布知识重新导入 Milvus。同一 knowledge_id 会先删旧向量再插入，可安全重跑。空内容跳过，失败条数单独统计。"""
+    """把 PostgreSQL 中所有已发布知识重新写入 embedding 列。同一 knowledge_id 会先清空再写入，可安全重跑。空内容跳过，失败条数单独统计。"""
     check_inference_server()
-    store_name = settings.MILVUS_COLLECTION
 
     db = SessionLocal()
     try:
@@ -47,7 +46,7 @@ def main():
         items = db.query(KnowledgeItem).filter(
             KnowledgeItem.status == KnowledgeStatus.PUBLISHED
         ).all()
-        logger.info(f"PostgreSQL 中共有 {len(items)} 条已发布知识条目，目标集合: {store_name}")
+        logger.info(f"PostgreSQL 中共有 {len(items)} 条已发布知识条目，将写入 knowledge_items.embedding")
 
         success = 0
         failed = 0
@@ -74,7 +73,7 @@ def main():
             flush_knowledge_vectors()
 
         logger.info(f"同步完成: 成功 {success}, 跳过 {skipped}, 失败 {failed}")
-        logger.info(f"Milvus 集合 {store_name} 当前向量总数: {count_knowledge_vectors()}")
+        logger.info(f"knowledge_items.embedding 当前向量总数: {count_knowledge_vectors()}")
     finally:
         db.close()
 

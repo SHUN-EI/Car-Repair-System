@@ -29,11 +29,11 @@ Smart-Repair-System（仓库名 `Car-Repair-System`，`settings.APP_NAME` 为 `S
 | 能力 | 实现入口 |
 |------|----------|
 | **双门面 Agent** | `ConsultGuideAgent`（问答、追踪维修、专家模式、库存只读）与 `WorkOrderAgent`（理解、导入、生命周期写入口、报价/套餐、知识沉淀）。渠道经 `AgentRouter` 分发，路由本身不是第三 Agent，见 [§5](#5-agent-设计) |
-| **公共检索漏斗** | 公开入口 `app.rag.rag_service`，实现 `app/rag/retrieval_flow.py`（`app/agents/retrieval_flow.py` 是兼容 shim）：知识库向量 + BM25，手册错误码精确 + 语义，RRF 融合后粗筛、严格过滤、精排，见 [§4.1](#41-检索漏斗) |
+| **公共检索漏斗** | 公开入口 `app.rag.rag_service`，实现 `app/rag/retrieval_flow.py`（`app/agents/retrieval_flow.py` 是兼容 shim）：知识库向量 + 关键词（工具名仍为 `bm25_search`，实现为 tsvector/`ts_rank`），手册错误码精确 + 语义，RRF 融合后粗筛、严格过滤、精排，见 [§4.1](#41-检索漏斗) |
 | **维修业务域** | `domain/` + `api/`：工单双车道状态机、状态迁移 `work_order_transition.do_transition`、门店隔离、预约、报价规则引擎、采购入库、回访；支付只落占位单，不接清算渠道 |
 | **渠道接入** | FastAPI `/api/v1/*`、Vue 3 管理端与 `/m` 车主/技师 H5、钉钉 Stream/HTTP 机器人、内部 `/mcp` 与默认关闭的 `/mcp/public` |
 
-四条进程边界：本机用 `docker-compose.dev.yml` 跑 PostgreSQL、Redis、Milvus（及 etcd、MinIO、Attu）；统一推理服务 `python -m app.core.embedding_server` 占用 `:8010`，托管 bge-m3 与 bge-reranker-v2-m3；`uvicorn` 跑 FastAPI（HTTP、LangGraph、MCP 挂载、可选前端静态资源）；Vite 开发服务器默认 `:4173`，经代理打到后端 `:18080`。钉钉 Stream 与 OA 轮询挂在 FastAPI 进程内，不另起 worker。细则见 [§2.3](#23-进程边界) 与 [§7.4](#74-部署形态)。
+四条进程边界：本机用 `docker-compose.dev.yml` 跑 PostgreSQL（`pgvector/pgvector:pg16`，承担关系数据、pgvector 向量与 tsvector 关键词检索）和 Redis；统一推理服务 `python -m app.core.embedding_server` 占用 `:8010`，托管 bge-m3 与 bge-reranker-v2-m3；`uvicorn` 跑 FastAPI（HTTP、LangGraph、MCP 挂载、可选前端静态资源）；Vite 开发服务器默认 `:4173`，经代理打到后端 `:18080`。钉钉 Stream 与 OA 轮询挂在 FastAPI 进程内，不另起 worker。细则见 [§2.3](#23-进程边界) 与 [§7.4](#74-部署形态)。
 
 三条写约束：工单状态迁移只认 `domain/work_order_status.py` 的 `VALID_TRANSITIONS`（报表 PUT 把已填草稿直接标成 `IN_PROGRESS` 是代码写明的既有捷径，不走该表）；报价金额只来自目录价与数量的确定性计算，LLM 不定价；咨询/引导门面不暴露工单写方法，写入与状态流转只走工单 Agent。见 [§2.2](#22-依赖关系与硬约束)。
 
@@ -67,9 +67,8 @@ flowchart TB
     end
 
     subgraph stores [Stateful backends]
-        PG["PostgreSQL 16 maintenance_db"]
+        PG["PostgreSQL 16 maintenance_db<br/>pgvector + tsvector"]
         Redis["Redis 7"]
-        Milvus["Milvus 2.4.15<br/>knowledge / log_code"]
         ChatLLM["Chat LLM<br/>cloud: 百炼 qwen-plus / local: Qwen2.5-7B"]
         SMS["阿里云短信 可选"]
         Trace["RAGFlow / Langfuse / local"]
@@ -78,10 +77,6 @@ flowchart TB
     subgraph compose [docker-compose.dev.yml]
         PG
         Redis
-        Etcd["etcd"]
-        Minio["MinIO"]
-        Milvus
-        Attu["Attu :8080"]
     end
 
     VuePC --> Vite
@@ -103,7 +98,6 @@ flowchart TB
     MCP --> WOA
     MCP --> Mem
     RAG --> Emb
-    RAG --> Milvus
     RAG --> PG
     Domain --> PG
     Mem --> Redis
@@ -113,13 +107,11 @@ flowchart TB
     API --> Redis
     API --> SMS
     API --> Trace
-    Etcd --> Milvus
-    Minio --> Milvus
 ```
 
 上图方框是**本机多进程**，不是单个容器里的 App。基础设施在 Compose 里；后端、推理服务和前端开发服务器在宿主机上由 `start_all.ps1` 拉起。仓库根目录的 `docker-compose.yml` 是可选的 RAGFlow 编排，不是本系统的主数据面，见 [§7.4](#74-部署形态) 与附录。
 
-HTTP 检索与知识/手册向量读写经 `rag_service` / `search_app`，路由不再直接调 Milvus。追踪维修与专家模式的 Redis 会话经 `memory_service`。漏斗内部仍调用 `RetrievalTools`，见 [§2.2](#22-依赖关系与硬约束) 与附录。
+HTTP 检索与知识/手册向量读写经 `rag_service` / `search_app`，路由不再直接调 `vector_store`。追踪维修与专家模式的 Redis 会话经 `memory_service`。漏斗内部仍调用 `RetrievalTools`，见 [§2.2](#22-依赖关系与硬约束) 与附录。
 
 浏览器开发时访问 Vite `:4173`。`frontend/vite.config.js` 把 `/api` 和 `/dingtalk` 代理到 `http://127.0.0.1:18080`。后端默认 `BACKEND_PORT=18080`。`DEBUG=true` 时 CORS 放行任意来源；非调试必须配置 `CORS_ORIGINS`。若已执行 `npm run build` 且存在前端 `dist`，FastAPI 会挂载静态资源并用 SPA 回退返回 `index.html`。
 
@@ -194,7 +186,7 @@ sequenceDiagram
 | LangGraph | 1.2.6 | `qa_graph`、`robot_graph`、导入 DAG |
 | langchain / langchain-openai / langchain-community | 1.3.13 / 1.2.2 / 0.4.2 | 千问 OpenAI 兼容 Chat、工具 |
 | fastmcp | 3.4.5 | `/mcp`、`/mcp/public`，Streamable HTTP |
-| pymilvus | 2.4.15 | 向量库（配套 `setuptools==80.9.0`，因 81+ 去掉 `pkg_resources`） |
+| pgvector | 0.3.6 | PostgreSQL 向量类型适配（`psycopg2` 注册 `vector`） |
 | torch / transformers / FlagEmbedding | 2.6.0 / >=4.40.0 / >=1.2.10 | 推理服务加载 bge-m3 与 bge-reranker-v2-m3 |
 | python-jose / passlib / bcrypt | 3.3.0 / 1.7.4 / 4.0.1 | JWT HS256、密码哈希；bcrypt 钉在 4.0.1 |
 | httpx / aiohttp / requests | 0.28.1 / 3.13.5 / 2.33.1 | 对话 LLM、钉钉、追踪上报 |
@@ -204,7 +196,7 @@ sequenceDiagram
 | loguru | 0.7.2 | 日志，10 MB 轮转、保留 30 天 |
 | pytest / pytest-asyncio / pytest-cov | 9.1.1 / 1.4.0 / 7.1.0 | 测试 |
 
-运行时约定：Python 3.10+；Node.js 18+；PostgreSQL 16（`postgres:16-alpine`）；Redis 7；Milvus 2.4.15。
+运行时约定：Python 3.10+；Node.js 18+；PostgreSQL 16（`pgvector/pgvector:pg16`）；Redis 7。
 
 ---
 
@@ -269,13 +261,13 @@ flowchart LR
 
 | 进程 | 怎么启动 | 职责 |
 |------|----------|------|
-| PostgreSQL / Redis / etcd / MinIO / Milvus / Attu | `docker compose -f docker-compose.dev.yml up -d` | 关系数据、缓存与会话、向量库依赖与管理界面 |
+| PostgreSQL / Redis | `docker compose -f docker-compose.dev.yml up -d` | 关系数据、pgvector 向量、tsvector 关键词检索、缓存与会话 |
 | 推理服务 `:8010` | `python -m app.core.embedding_server` 或 `start_embedding_server.ps1` | `POST /v1/embeddings`、`POST /v1/rerank`、`GET /health` |
 | FastAPI `:18080` | `uvicorn app.main:app` | 全部 HTTP、图编排、MCP 挂载、钉钉 Stream（若启用）、OA 定时任务 |
 | Vite `:4173` | `npm run dev` | 前端开发与反向代理 |
 | RAGFlow（可选） | 根目录 `docker-compose.yml` | 仅当 `TRACING_BACKEND=ragflow` 且配置了地址时作为追踪后端 |
 
-FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务，失败只打日志、不阻塞启动。检索在推理服务不可用时降级为 BM25-only，见 [§4.1](#41-检索漏斗)。
+FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务，失败只打日志、不阻塞启动。检索在推理服务不可用时降级为关键词-only（tsvector，工具名仍为 `bm25_search`），见 [§4.1](#41-检索漏斗)。
 
 ### 2.4 各模块要解决的问题
 
@@ -306,7 +298,7 @@ FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务
 
 `core/database.py`：同步引擎 `postgresql+psycopg2`，异步引擎 `postgresql+asyncpg`，`pool_size=10`，`max_overflow=20`，`pool_pre_ping=True`，`echo=settings.DEBUG`。现网 API 主路径走同步 `SessionLocal` / `get_db()`。
 
-除关系数据外，知识库 BM25 路在 PostgreSQL 上做关键词检索（`RetrievalTools.bm25_search`，标题/正文加权；失败时有降级路径）。迁移 `7a8b9c0d1e2f_add_pg_trgm_indexes.py` 为模糊匹配补了 `pg_trgm` 索引。不要用仓库根目录的 `init-db.sql` 建库，它的工单状态枚举是早期工业子集，文件自己写明会和 Alembic 分叉；新环境在 `backend` 目录执行 `alembic upgrade head`。
+除关系数据外，知识库关键词路与向量路都在 PostgreSQL 上完成。关键词路由 `RetrievalTools.bm25_search` 走生成列 `search_tsv` 与 `ts_rank`（分词与写入共用 `repair_text_tokens()` / `app.rag.lexical.tokenize_repair_text`：中文 2/3-gram、完整 CJK 片段、长度≥2 的英文和数字；查询与存储对齐）。失败时回退到原 ILIKE 加权路径。迁移 `7a8b9c0d1e2f_add_pg_trgm_indexes.py` 仍为模糊匹配保留 `pg_trgm` 索引；`c4d5e6f7a8b9_add_pgvector_and_tsvector.py` 增加 `vector` 扩展、`embedding` 列、HNSW 与 `search_tsv` GIN。不要用仓库根目录的 `init-db.sql` 建库，它的工单状态枚举是早期工业子集，文件自己写明会和 Alembic 分叉；新环境在 `backend` 目录执行 `alembic upgrade head`。已有 PG16 数据卷可继续使用，但必须换成 `pgvector/pgvector:pg16` 镜像并重建容器，再跑迁移；向量不会由迁移回填，需推理服务起来后执行发布同步或 `scripts/sync_vectors.py`。
 
 ### 3.2 Redis 用途一览
 
@@ -326,11 +318,11 @@ Agent/对话记忆的读写统一走 `app.memory.memory_service`（底层仍用 
 
 追踪维修与专家模式的步数上限都是 30，超限后总结结束，不靠 Redis 的 key 数量限制。见 [§5.4](#54-多轮会话下图-redis-状态机)。
 
-### 3.3 向量库与对象存储
+### 3.3 向量与全文检索（PostgreSQL）
 
-Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康检查 `9091`。依赖 etcd `v3.5.5` 与 MinIO（镜像标签 `RELEASE.2025-02-28T09-55-16Z`，API `9000`，控制台 `9001`）。Attu `zilliz/attu:v2.4` 映射到宿主机 `${ATTU_PORT:-8080}`。MinIO 默认账号在 compose 与配置里是 `minioadmin` / `minioadmin`，只适合本机开发。
+开发编排不再启动 Milvus、etcd、MinIO 或 Attu。向量写在 `knowledge_items.embedding` 与 `manual_code_entries.embedding`（`vector(1024)`），与业务行同库，不再维护独立语义副本。索引为 HNSW，`vector_cosine_ops`，`m=16`，`ef_construction=64`；检索时设置 `hnsw.ef_search`，由 `PGVECTOR_EF_SEARCH` 控制，默认 64。pgvector 的 `<=>` 是余弦距离，检索出口把分数映射为 `1 - distance`，以便沿用原有 `RETRIEVAL_COARSE_THRESHOLD` 等相似度阈值。
 
-两个集合由 `VectorStore` / `LogCodeVectorStore` 懒创建，schema 见 [§6.6](#66-向量库-schema)。
+`VectorStore` / `LogCodeVectorStore` 仍保留原方法名，读写的是上述列。`milvus_id` 列作为兼容点号保留，新写入为 `pg:k:{id}` / `pg:m:{id}`；旧 UUID 仍可按列回查。`flush` 对 PostgreSQL 是空操作。`delete` / `drop_collection` 只清空 embedding（及点号），不删业务行。schema 见 [§6.6](#66-向量与全文-schema)。
 
 ### 3.4 大模型底座：本地检索 vs 远程生成
 
@@ -338,7 +330,7 @@ Milvus Standalone `milvusdb/milvus:v2.4.15`，gRPC 默认 `19530`，REST/健康�
 
 | 职责 | 实现 | 失败时 |
 |------|------|--------|
-| 召回编码 | 本机推理服务 `BAAI/bge-m3`，1024 维，L2 归一化，`POST /v1/embeddings` | `encode_*` 抛 `RuntimeError`；混合检索降级 BM25-only |
+| 召回编码 | 本机推理服务 `BAAI/bge-m3`，1024 维，L2 归一化，`POST /v1/embeddings` | `encode_*` 抛 `RuntimeError`；混合检索降级为关键词-only（tsvector） |
 | 精排 | 同一服务 `BAAI/bge-reranker-v2-m3`，`POST /v1/rerank`（分数 0~1） | 返回 `None`，`retrieval_flow` 回退 `weighted_rerank` |
 | 生成 / 抽取 / 意图分类 / ReAct 决策 | `CHAT_LLM_MODE` 切换：cloud 走阿里云百炼 `qwen-plus`，local 走本机 vLLM `Qwen2.5-7B-Instruct`；统一 `make_chat_llm()` / `ChatOpenAI` | 各调用点打日志或返回降级文案，不改检索阈值 |
 
@@ -370,7 +362,9 @@ cloud 未配密钥、或 local 未配地址/模型时，启动日志提示「未
 | `EMBEDDING_SERVER_URL` | `http://localhost:8010` | 主链路地址 |
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | 召回 |
 | `EMBEDDING_MAX_LENGTH` | 512 | 编码截断 |
-| `MILVUS_VECTOR_SIZE` | 1024 | 维度；健康检查读不到 `dim` 时回退此值 |
+| `VECTOR_DIM` | 1024 | 维度；健康检查读不到 `dim` 时回退此值。`MILVUS_VECTOR_SIZE` 仍是兼容别名 |
+| `PGVECTOR_EF_SEARCH` | 64 | HNSW 检索 `ef_search` |
+| `TS_RANK_WEIGHTS` | `{0.1, 0.2, 0.4, 1.0}` | `ts_rank` 的 `{D,C,B,A}` 权重；标题与故障码为 A，正文为 B，标签为 C |
 | `RERANKER_MODEL_NAME` | `BAAI/bge-reranker-v2-m3` | 精排（0~1 分；质量阀门阈值仍按原 Qwen 标定，尚未重标） |
 | `RERANKER_ENABLED` | `True` | 总开关；CPU 延迟敏感时可关 |
 | `RERANKER_CANDIDATES` | 30 | 送入精排的候选条数 |
@@ -395,7 +389,7 @@ README 架构示意图里曾出现 `Qwen3-Embed-4B`，与现网默认模型不�
 
 `core/rate_limit.py` 是**进程内**滑动窗口。`POST /api/v1/search/agent` 对 `search-agent:{user_id}` 限制 60 秒 20 次。多副本各算各的，不替代网关限流。问答 SSE 入口未挂同一套 `hit()`。
 
-健康检查 `GET /health`：PostgreSQL 与 Redis 都连通才返回 `healthy`，否则 503 `degraded`。Milvus 只做端口可达探测（`reachable` / `down`），推理服务打 `/health`（`ready` / `down`），这两项不影响 `core_ok`。
+健康检查 `GET /health`：PostgreSQL 与 Redis 都连通才返回 `healthy`，否则 503 `degraded`。`pgvector` 探的是是否已安装 `vector` 扩展（`present` / `missing` / `down`），推理服务打 `/health`（`ready` / `down`），这两项不影响 `core_ok`。
 
 ### 3.6 其它外部集成
 
@@ -416,7 +410,7 @@ JWT：`ALGORITHM=HS256`，`ACCESS_TOKEN_EXPIRE_MINUTES=30`。生产密钥策略�
 
 ### 4.1 检索漏斗
 
-公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（BM25、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。
+公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（向量、关键词 `bm25_search`、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。检索协议未改：仍是最多四路召回 → RRF（k=60）→ 粗筛 → `bge-reranker-v2-m3`。
 
 HTTP 的 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`、`/answer/stream`、`/answer/expert*` 由 `app/api/search.py` 鉴权后交给 `app/rag/search_app.py` 编排；其中 `/answer/stream` 仍走 `consult_guide_agent.invoke_qa` → `qa_graph`，不经过 `AgentRouter`。其它入口还包括问答图故障子图、钉钉/MCP `search_knowledge`。
 
@@ -424,7 +418,7 @@ HTTP 的 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`、`/answer/st
 flowchart TD
     Q[查询] --> E[extract_error_codes 正则]
     Q --> V["知识向量路 vector_search<br/>top_k=RECALL_TOP_K 默认 30"]
-    Q --> B["知识 BM25 路 bm25_search<br/>同一 top_k"]
+    Q --> B["知识关键词路 bm25_search<br/>tsvector / ts_rank，同一 top_k"]
     E -->|有错误码| MX["手册精确 manual_code_search<br/>top_k=10"]
     E -->|有错误码| MV["手册语义 manual_vector_search<br/>top_k=10"]
     V --> RRF["rrf_merge k=60"]
@@ -444,7 +438,7 @@ flowchart TD
 
 | 键 / 常量 | 值 | 含义 |
 |-----------|----|------|
-| `RECALL_TOP_K` | 30 | 知识库向量路、BM25 路各自召回条数；RRF 候选池同值 |
+| `RECALL_TOP_K` | 30 | 知识库向量路、关键词路（`bm25_search`）各自召回条数；RRF 候选池同值 |
 | 手册两路 `top_k` | 10 | `retrieve_hybrid` 里写死，不是 `RECALL_TOP_K` |
 | `RETRIEVAL_COARSE_THRESHOLD` | 0.45 | RRF 后向量相似度下限 |
 | `SEMANTIC_RESCUE_THRESHOLD` | 0.60 | 严格过滤为空时的语义兜底线 |
@@ -456,11 +450,11 @@ flowchart TD
 | `MAX_VECTOR_CONTENT_LEN` | 500 | 知识向量编码文本截断 |
 | `MAX_MANUAL_VECTOR_TEXT_LEN` | 1200 | 手册条目向量文本截断 |
 
-融合去重键优先级：`_dedup_key`（知识 `K:{id}`、手册 `M:{id}`）> `knowledge_id` > `id`。向量路 id 是 Milvus point uuid，BM25 路 id 是数据库整数，不能用原始 `id` 合并，否则双路命中无法把 `1/(k+r1)+1/(k+r2)` 加在同一条上（`rrf_merge` 注释）。
+融合去重键优先级：`_dedup_key`（知识 `K:{id}`、手册 `M:{id}`）> `knowledge_id` > `id`。向量路返回的 id 现为兼容点号 `pg:k:{id}` / `pg:m:{id}`（旧数据可能仍是 UUID），关键词路 id 仍是数据库整数，不能用原始 `id` 合并，否则双路命中无法把 `1/(k+r1)+1/(k+r2)` 加在同一条上（`rrf_merge` 注释）。
 
 过滤规则：
 
-- 粗筛跳过 `rrf_only`（无向量分、仅 BM25/RRF 带来的条目），避免没有余弦分时被 0.45 误杀；BM25-only 降级时也会跳过分数阈值。
+- 粗筛跳过 `rrf_only`（无向量分、仅关键词/RRF 带来的条目），避免没有余弦分时被 0.45 误杀；关键词-only 降级时也会跳过分数阈值。
 - 严格过滤在精排之前，先丢掉设备/关键词不匹配的候选。若提取出的设备类型并不在知识库实际设备集合里，设备约束失效，只按故障关键词过滤，避免「日志里写了 PLC、库里没有 PLC 手册」时整路被灭。
 - 严格过滤为空时不做「再塞两条宽松结果」；只保留向量分 ≥ `SEMANTIC_RESCUE_THRESHOLD` 且非跨系统同码冲突的候选。再空则交给回答层如实说未检索到。
 - 手册条目的 `conditions` 用查询 token 与 `signal` 做子串命中重排，命中项加 `[命中]` 前缀，无 LLM。
@@ -601,7 +595,7 @@ MCP：
 
 `api/payments.py` 模块说明：只落本地单据，不调用任何支付渠道。意向单号 `PI-YYYYMMDD-` + 8 位十六进制。`channel` 固定为 `STUB`（模型默认），状态只有 `CREATED` / `CANCELLED`。必须报价已到 `CUSTOMER_CONFIRMED` 才能创建；同一报价已有 `CREATED` 单则复用。取消仅主管或管理员。
 
-其它现网能力（细节以对应 API / domain 为准，不在此展开状态表以外的流程）：预约与工位占用（`appointment_slots`）、回访提醒、采购入库与库存流水（`stock_ledger` / `procurement`）、排班与请假（可与钉钉 OA 同步）、设备心跳与外部同步、知识审核发布后写入 Milvus。
+其它现网能力（细节以对应 API / domain 为准，不在此展开状态表以外的流程）：预约与工位占用（`appointment_slots`）、回访提醒、采购入库与库存流水（`stock_ledger` / `procurement`）、排班与请假（可与钉钉 OA 同步）、设备心跳与外部同步、知识审核发布后写入 PostgreSQL embedding 列。
 
 ---
 
@@ -808,9 +802,9 @@ erDiagram
 
 #### `knowledge_items` / `manual_code_entries`
 
-知识：`milvus_id` 唯一，`title` / `content`，`device_type`，`fault_code`，`fault_tags`，`source_type` / `source_id`，`status`（`DRAFT` / `UNDER_REVIEW` / `PUBLISHED` / `DEPRECATED` / `ARCHIVED`），`version`，审核与抽取元数据。
+知识：`embedding vector(1024)`，生成列 `search_tsv`，`milvus_id` 仍唯一（兼容点号），`title` / `content`，`device_type`，`fault_code`，`fault_tags`，`source_type` / `source_id`，`status`（`DRAFT` / `UNDER_REVIEW` / `PUBLISHED` / `DEPRECATED` / `ARCHIVED`），`version`，审核与抽取元数据。
 
-手册错误码：`error_code`、`manual_name`、`device_type`、`title`、`description`、`message_text`、`severity` / `effect`、`conditions` JSON（`[{signal, cause, steps}]`）、`related_codes`、章节页码。旧的 `causes` / `solutions` 文本字段标注为过渡期兼容。
+手册错误码：`embedding vector(1024)`，`error_code`、`manual_name`、`device_type`、`title`、`description`、`message_text`、`severity` / `effect`、`conditions` JSON（`[{signal, cause, steps}]`）、`related_codes`、章节页码；`milvus_id` 同样保留为兼容点号。旧的 `causes` / `solutions` 文本字段标注为过渡期兼容。
 
 #### `devices` / `fault_code_mappings` / 分类表
 
@@ -856,55 +850,40 @@ erDiagram
 - 门店与外键上的普通索引：`store_id`、`vehicle_id`、`customer_id`、`work_order_id` 等，服务列表过滤。
 - 进度日志 `(work_order_id, created_at)`，避免看板 N+1。
 - `pg_trgm` 迁移为需要模糊匹配的文本列补充 GIN/GiST（以该修订为准）。
-- 知识 `milvus_id`、手册 `error_code` 服务与向量库对账和精确码查询。
+- 知识与手册 `embedding` 上的 HNSW（`vector_cosine_ops`），知识 `search_tsv` 上的 GIN。
+- 知识 `milvus_id`（兼容点号）、手册 `error_code` 服务点号回查和精确码查询。
 
-不要使用 `init-db.sql` 里那套过时的 `simple` 全文索引作为现网描述。
+现网关键词检索以迁移生成的 `search_tsv` 为准（`simple` 配置加上应用侧 `repair_text_tokens()`）。不要用仓库根目录 `init-db.sql` 里那套过时全文索引建库或当作现网描述。
 
 ### 6.5 多级缓存
 
 没有独立的「本地 → Redis → DB」分层框架。实际是：
 
 1. Redis（`maint:` 前缀）或进程内存回退，TTL 见 [§3.2](#32-redis-用途一览)。Agent 会话经 `memory_service` 读写；业务缓存（如 `user:{id}`、`spare_part:{id}`、`stock_alerts:*`）仍直接走 `cache_service`。
-2. PostgreSQL 正本。现网没有独立长期记忆事实表。
-3. Milvus 是知识/手册的语义副本，发布或同步脚本写入，不是缓存层。
+2. PostgreSQL 正本，同时持有知识/手册的 `embedding` 与 `search_tsv`。发布或同步脚本写入向量列，它不是另一套缓存。现网没有独立长期记忆事实表。
 
 向量内容截断长度见 [§4.1](#41-检索漏斗)，避免超长文本进入编码。
 
-### 6.6 向量库 Schema
+### 6.6 向量与全文 Schema
 
-索引均为 `IVF_FLAT`，`metric_type=COSINE`，`nlist=1024`。检索 `nprobe=16`。维度 `MILVUS_VECTOR_SIZE=1024`。
+维度 `VECTOR_DIM=1024`（`MILVUS_VECTOR_SIZE` 为兼容别名）。向量列在业务表上，检索时回表取标题、正文等字段，不再把这些字段复制到独立集合。
 
-#### `knowledge`（`MILVUS_COLLECTION`，默认名 `knowledge`）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | VARCHAR(100)，主键 | 向量 ID，对应库里的 `milvus_id` |
-| `vector` | FLOAT_VECTOR，1024 | bge-m3 dense |
-| `knowledge_id` | INT64 | PostgreSQL `knowledge_items.id` |
-| `title` | VARCHAR(500) | 标题 |
-| `content` | VARCHAR(65535) | 内容 |
-| `device_type` | VARCHAR(100) | 设备类型 |
-| `fault_code` | VARCHAR(500) | 多个码逗号分隔 |
-| `fault_tags` | JSON | 故障标签 |
-
-输出字段：`knowledge_id, title, content, device_type, fault_code, fault_tags`。
-
-#### `log_code`（`MILVUS_LOG_CODE_COLLECTION`，默认名 `log_code`）
+#### `knowledge_items` 检索列
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | VARCHAR(100)，主键 | 向量 ID |
-| `vector` | FLOAT_VECTOR，1024 | 同模型 |
-| `manual_code_id` | INT64 | `manual_code_entries.id` |
-| `error_code` | VARCHAR(100) | 错误码 |
-| `manual_name` | VARCHAR(300) | 手册名 |
-| `device_type` | VARCHAR(100) | 设备类型 |
-| `title` | VARCHAR(500) | 标题 |
-| `description` | VARCHAR(65535) | 含义/触发条件 |
-| `chapter` | VARCHAR(200) | 章节 |
-| `page` | VARCHAR(50) | 页码 |
+| `embedding` | `vector(1024)` | bge-m3 dense，HNSW 余弦索引 |
+| `search_tsv` | 生成列 `tsvector` | 由 `knowledge_search_tsv()` 生成：标题与 `fault_code` 权重 A，正文 B，`fault_tags` C |
+| `milvus_id` | VARCHAR，唯一 | 兼容点号，新值为 `pg:k:{id}` |
 
-`LogCodeVectorStore` 复用同一套连接与建索引逻辑。编码文本还可能包含 `message_text` 与前 3 条情形信号，那是写入时的拼接规则（`MAX_MANUAL_VECTOR_TEXT_LEN`），不是单独的 Milvus 字段。
+#### `manual_code_entries` 检索列
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `embedding` | `vector(1024)` | 同模型、同索引；手册关键词仍走精确错误码路，不建 `search_tsv` |
+| `milvus_id` | VARCHAR，唯一 | 兼容点号，新值为 `pg:m:{id}` |
+
+`LogCodeVectorStore` 复用同一套写入与距离换算逻辑。编码文本还可能包含 `message_text` 与前 3 条情形信号，那是写入时的拼接规则（`MAX_MANUAL_VECTOR_TEXT_LEN`），不是单独的向量字段。
 
 ### 6.7 Redis Key 与过期
 
@@ -990,9 +969,9 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 
 #### 本机开发
 
-1. `docker compose -f docker-compose.dev.yml up -d` 启动 PostgreSQL、Redis、etcd、MinIO、Milvus、Attu。
+1. `docker compose -f docker-compose.dev.yml up -d` 启动 PostgreSQL（`pgvector/pgvector:pg16`）和 Redis。若数据卷来自旧的 `postgres:16-alpine` 容器，先用新镜像重建容器（卷可保留），再执行 Alembic。
 2. `python -m app.core.embedding_server --host 0.0.0.0 --port 8010`。
-3. 首次：`alembic upgrade head`，再按需跑 `scripts/init_categories.py`、手册导入、`scripts/sync_vectors.py`。
+3. 首次：`alembic upgrade head`（含 pgvector/tsvector 迁移），再按需跑 `scripts/init_categories.py`、手册导入、`scripts/sync_vectors.py`。迁移不会回填向量，需推理服务已启动。
 4. `uvicorn app.main:app --host 0.0.0.0 --port 18080`（`DEBUG` 时 reload）。
 5. `frontend` 下 `npm run dev`，浏览器访问 `http://127.0.0.1:4173`。后端文档 `http://127.0.0.1:18080/docs`，健康检查 `/health`，推理健康检查 `http://127.0.0.1:8010/health`。
 
@@ -1004,7 +983,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 
 `README.md` 描述企业内网用 Docker + Nginx 终结 HTTPS、反代 `/api` 与钉钉回调，并把 `DEBUG` 设为 false、配置独立 `SECRET_KEY` 与 `SCHEDULER_TOKEN`。仓库内**没有**与 AgentCommerce 示例相当的 k3s 清单或 Nginx 配置正本。本文把 Nginx/HTTPS 视为 README 给出的目标形态，不把它写成已经落在本仓库的编排代码。
 
-根目录 `docker-compose.yml` 引用 `./docker-compose-base.yml`，内容是 RAGFlow CPU/GPU 服务，不是本系统的 PostgreSQL/Milvus 数据面。可选追踪后端需要时再启用，缺 `docker-compose-base.yml` 时该文件不能单独 `compose up`。
+根目录 `docker-compose.yml` 引用 `./docker-compose-base.yml`，内容是 RAGFlow CPU/GPU 服务，不是本系统的 PostgreSQL 数据面。可选追踪后端需要时再启用，缺 `docker-compose-base.yml` 时该文件不能单独 `compose up`。
 
 `backend/Dockerfile` 存在，用于后端镜像；本机开发默认不走它。
 
@@ -1015,7 +994,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - `test_two_agent_router.py`：双门面与路由边界
 - `test_auth_scope.py`：鉴权与范围
 - `test_phase0_domain.py` / `test_phase1_loop.py` / `test_phase2_commerce.py` / `test_phase3_platform.py`：领域分阶段
-- `test_retrieval_rank.py`、`test_extract_error_codes.py`
+- `test_retrieval_rank.py`、`test_extract_error_codes.py`、`test_pgvector_tsvector.py`、`test_rag_layer_imports.py`
 - `test_employee_id_migration.py`
 
 前端有 `npm run build`，没有在 `package.json` 里声明单元测试脚本。方案文档把「pytest 通过；前端有改动则 build 通过」列为落地检查，仓库未见强制 CI 配置出现在本次通读的根目录文件中；若后续加入 GitHub Actions，以当时工作流为准，本文不编造已有的覆盖率门槛。
@@ -1037,7 +1016,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 9. **门店范围与车主范围分开实现。** 店内角色锁店；车主走客户档案。代码写明了这种切分。落实是否覆盖每一个列表接口，见附录。
 10. **生产密钥门禁与 MCP 默认收紧。** `assert_production_secrets`、公开 MCP 与写工具默认关闭，是配置和鉴权代码里的明确策略。
 11. **精排模型为何选 bge-reranker-v2-m3、召回为何选 bge-m3：** 这是现网默认实现。粗筛阈值按 bge-m3 分布标定；质量阀门阈值仍按原 Qwen3-Reranker 的 0~1 分标定，换模型后尚未重标，排序与「结果是否充足」的判断可能变化。未提供与其它模型的对比实验，本文不补选型故事。
-12. **为何用 Milvus 而不是只在 PostgreSQL 做向量：** 代码按「关系正本 + 语义副本」拆分，未写与 pgvector 的对比结论。
+12. **为何把向量迁到 PostgreSQL pgvector、并把关键词路升到 tsvector：** 现网按门店规模把向量列与业务行放在同一 PostgreSQL，不再维护独立向量副本；关键词路由 tsvector/`ts_rank` 承担，工具名仍为 `bm25_search`，不另建 BM25 引擎或 OpenSearch。检索协议（四路召回、RRF、粗筛、bge-reranker）保持不变。仓库未写与 Milvus 的性能对比实验，本文不补选型故事。
 13. **检索、记忆、工单流转分别收口到门面。** 代码与 `docs/HARNESS.md` 约定：向量只经 `rag_service`，Agent 会话 Redis 只经 `memory_service`，工单状态迁移经 `do_transition`。尚未拆掉的跨层存量见附录。
 
 ---

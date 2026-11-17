@@ -209,7 +209,7 @@ def review_knowledge(
     """
     知识审核操作：
     - submit: 提交审核 (DRAFT → UNDER_REVIEW)
-    - publish: 审核通过发布 (UNDER_REVIEW → PUBLISHED)，同步向量到 Milvus
+    - publish: 审核通过发布 (UNDER_REVIEW → PUBLISHED)，同步向量到 PostgreSQL
     - reject: 驳回 (UNDER_REVIEW → DRAFT)，附带修改建议
     - deprecate: 标记过期 (PUBLISHED → DEPRECATED)
     """
@@ -240,7 +240,7 @@ def review_knowledge(
     if review.comment:
         item.review_comment = review.comment
 
-    # 发布时同步向量到 Milvus
+    # 发布时同步向量到 PostgreSQL
     if review.action == "publish":
         try:
             _sync_to_milvus(item, db)
@@ -537,11 +537,11 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
 
 
 def _sync_to_milvus(item: KnowledgeItem, db: Session):
-    """将知识条目向量化并同步到 Milvus（经 rag_service 收口）"""
+    """将知识条目向量化并写入 PostgreSQL embedding 列（经 rag_service 收口）"""
     from app.rag.rag_service import sync_knowledge_item
 
     sync_knowledge_item(item)
-    logger.info(f"[Knowledge] 向量同步成功: #{item.id} milvus_id={item.milvus_id}")
+    logger.info(f"[Knowledge] 向量同步成功: #{item.id} point_id={item.milvus_id}")
 
 
 # ==================== 知识库引用查询 ====================

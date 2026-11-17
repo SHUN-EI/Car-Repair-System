@@ -739,7 +739,7 @@ def rrf_merge(
       多库融合（知识库 knowledge + 手册库 log_code）时两者主键都是 PG 自增 int，
       必须用 `_dedup_key` 区分，否则手册条目与知识条目会互相合并/去重错误。
     - 其次使用 knowledge_id（知识库主键，跨检索路稳定）；
-    - 向量路的 id 是 Milvus point_id（uuid 字符串），BM25 路的 id 是数据库 id（整数），
+    - 向量路的 id 是兼容点号（新值为 pg:k:{id} / pg:m:{id}，旧数据可能仍是 UUID），关键词路的 id 是数据库 id（整数），
       若用 id 做合并键，同一知识会因两路 id 不同被当成两条，导致双路命中的
       RRF 分数不合并（该知识本应得到 1/(k+rank1)+1/(k+rank2)）。
     - 因此统一以 `_dedup_key` > `knowledge_id` > `id` 为合并键；若发现某路结果
@@ -766,7 +766,7 @@ def rrf_merge(
                 continue
 
             # 防范措施①：一致性告警——同一条结果 id 与 knowledge_id 并存且不同，
-            # 说明该检索路携带了不稳定的 id（如 Milvus point_id），提示必须提供 knowledge_id
+            # 说明该检索路携带了不稳定的 id（如兼容点号），提示必须提供 knowledge_id
             method = item.get("method", "unknown")
             if raw_id is not None and kid is not None and str(raw_id) != str(kid):
                 if method not in _RRF_ALERTED_METHODS:
@@ -866,7 +866,7 @@ class RetrievalTools:
         score_threshold: Optional[float] = None,
     ) -> ToolResult:
         """
-        向量语义检索 - 基于 embedding 相似度从 Milvus 检索相关知识
+        向量语义检索 - 基于 embedding 余弦相似度从 PostgreSQL pgvector 检索相关知识
 
         Args:
             query: 自然语言查询文本
@@ -910,7 +910,7 @@ class RetrievalTools:
         fault_code: Optional[str] = None,
     ) -> ToolResult:
         """
-        BM25 关键词检索 - 基于 PostgreSQL 全文检索的精确关键词匹配
+        关键词检索 - 基于 PostgreSQL tsvector / ts_rank（simple 词典 + 中文 n-gram 记号）
 
         Args:
             query: 关键词查询文本（支持 AND/OR 逻辑）
@@ -920,66 +920,41 @@ class RetrievalTools:
         """
         try:
             from sqlalchemy import text
+            from app.core.config import settings
             db = self.db_factory()
             try:
-                import re
-                # ===== 关键优化：用白名单+LLM提取技术关键词 =====
+                # ===== 用白名单+LLM提取技术关键词，再走 tsvector =====
+                from app.rag.lexical import build_or_tsquery, tokenize_repair_text
+
                 raw = self.query_extractor.extract(query.strip()) or query.strip()
                 if not raw:
                     return ToolResult(success=True, data=[], metadata={"method": "bm25_search", "count": 0})
 
-                # 中文分词：拆分为 2-gram 重叠片段 + 英文/数字按空格分词
-                tokens = set()
-                chinese_spans = re.findall(r'[\u4e00-\u9fff]+', raw)
-                for span in chinese_spans:
-                    for i in range(len(span)):
-                        for n in [2, 3]:
-                            if i + n <= len(span):
-                                tokens.add(span[i:i+n])
-                    tokens.add(span)
-                # 英文/数字部分
-                non_chinese = re.sub(r'[\u4e00-\u9fff]+', ' ', raw)
-                for w in non_chinese.split():
-                    if len(w) >= 2:
-                        tokens.add(w)
-
-                words = list(tokens)
-                if not words:
+                tsq = build_or_tsquery(raw)
+                if not tsq:
+                    # 分不出记号时退回整句分词再试一次
+                    tsq = build_or_tsquery(" ".join(tokenize_repair_text(query.strip())))
+                if not tsq:
                     return ToolResult(success=True, data=[], metadata={"method": "bm25_search", "count": 0})
 
-                # 分类关键词：设备类型 vs 故障原因
-                device_kw, fault_kw = _classify_keywords(set(words))
-
-                # 构建 ILIKE 条件：标题或内容包含任一关键词（OR 逻辑）
-                like_clauses = []
-                params = {"limit": top_k, "device_filter": device_type or None, "fault_filter": f"%{fault_code}%" if fault_code else None}
-                for i, w in enumerate(words):
-                    like_clauses.append(f"(title ILIKE :kw_{i} OR content ILIKE :kw_{i})")
-                    params[f"kw_{i}"] = f"%{w}%"
-
-                # 加权评分：故障原因关键词权重高，设备类型关键词权重低
-                rank_parts = []
-                for i, w in enumerate(words):
-                    if w in fault_kw:
-                        title_w = FAULT_CAUSE_WEIGHT
-                        content_w = FAULT_CONTENT_WEIGHT
-                    else:
-                        title_w = DEVICE_TYPE_WEIGHT
-                        content_w = DEVICE_CONTENT_WEIGHT
-                    rank_parts.append(
-                        f"(CASE WHEN title ILIKE :kw_{i} THEN {title_w} ELSE 0 END"
-                        f" + CASE WHEN content ILIKE :kw_{i} THEN {content_w} ELSE 0 END)"
-                    )
-                rank_expr = " + ".join(rank_parts)
-                where_extra = " OR ".join(like_clauses)
-
-                sql = text(f"""
+                params = {
+                    "limit": top_k,
+                    "device_filter": device_type or None,
+                    "fault_filter": f"%{fault_code}%" if fault_code else None,
+                    "tsq": tsq,
+                    "weights": settings.TS_RANK_WEIGHTS,
+                }
+                sql = text("""
                     SELECT
                         id, title, content, device_type, fault_code, fault_tags,
-                        ({rank_expr}) AS score
+                        ts_rank(
+                            CAST(:weights AS real[]),
+                            search_tsv,
+                            to_tsquery('simple', :tsq),
+                            32
+                        ) AS score
                     FROM knowledge_items
-                    WHERE 1=1
-                        AND ({where_extra})
+                    WHERE search_tsv @@ to_tsquery('simple', :tsq)
                         AND (:device_filter IS NULL OR device_type = :device_filter)
                         AND (:fault_filter IS NULL OR fault_code LIKE :fault_filter)
                     ORDER BY score DESC, id DESC
@@ -1004,7 +979,7 @@ class RetrievalTools:
                 return ToolResult(
                     success=True,
                     data=results,
-                    metadata={"method": "bm25_search", "count": len(results)},
+                    metadata={"method": "bm25_search", "count": len(results), "tsquery": tsq},
                 )
             finally:
                 db.close()
@@ -1141,7 +1116,7 @@ class RetrievalTools:
     ) -> ToolResult:
         """手册错误码语义检索——对提问文本编码后向量搜索 log_code 集合
 
-        Milvus 集合只存基础字段（无 causes/solutions/conditions），向量命中后
+        向量列本身不存 causes/solutions/conditions，向量命中后
         按 manual_code_id 回查 PG enrichment 补全字段（PG 已删的脏点跳过）。
 
         Args:
@@ -1186,7 +1161,7 @@ class RetrievalTools:
             for r in results:
                 row = by_id.get(r.get("manual_code_id"))
                 if row is None:
-                    continue   # PG 已删而 Milvus 残留的脏点，跳过
+                    continue   # 行已删或无 embedding 的脏点，跳过
                 item = self._manual_row_to_dict(row)
                 item.update({
                     "score": round(float(r.get("score", 0)), 4),

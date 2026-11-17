@@ -8,14 +8,17 @@
 """
 from sqlalchemy import Column, String, Text, Integer
 from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import Vector
 from app.models.base import BaseModel
+from app.core.config import settings
 
 
 class ManualCodeEntry(BaseModel):
-    """从设备说明书导入的错误码条目，作为「错误码 → 故障诊断」的权威映射，可写入向量库做手册检索。"""
+    """从设备说明书导入的错误码条目，作为「错误码 → 故障诊断」的权威映射；embedding 写入本表供手册语义检索。"""
     __tablename__ = "manual_code_entries"
 
-    milvus_id = Column(String(100), unique=True, index=True, comment="Milvus 向量 ID")
+    milvus_id = Column(String(100), unique=True, index=True, comment="兼容字段：现为 pg:m:{id}，不再指向 Milvus")
+    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True, comment="bge-m3 1024 维向量，未同步时为空")
     manual_name = Column(String(200), nullable=False, comment="设备说明书/手册名称，如 KUKA KR210 维修手册")
     device_type = Column(String(100), comment="设备类型（机械臂/数控机床等）")
     error_code = Column(String(100), index=True, nullable=False, comment="错误码/报警码，如 SV0436 / ALM-6401")

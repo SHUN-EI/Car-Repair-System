@@ -6,8 +6,8 @@
     python scripts/seed_auto_repair_knowledge.py
     python scripts/seed_auto_repair_knowledge.py --sync
 
-`--sync` 在推理服务可用时调用 scripts/sync_vectors.py，把已发布知识同步到 Milvus。
-推理服务或 Milvus 没起来时只写 PostgreSQL，并打印同步命令。不编造召回率。
+`--sync` 在推理服务可用时调用 scripts/sync_vectors.py，把已发布知识写入 embedding 列。
+推理服务没起来时只写知识行，并打印同步命令。不编造召回率。
 """
 import argparse
 import os
@@ -76,7 +76,7 @@ def seed(db) -> dict:
 
 
 def sync_vectors() -> None:
-    """在推理服务可用时，调用向量同步脚本把刚写入的已发布知识导入 Milvus；服务不可用则只提示稍后手动同步。"""
+    """在推理服务可用时，调用向量同步脚本把刚写入的已发布知识写入 embedding 列；服务不可用则只提示稍后手动同步。"""
     from app.core.config import settings
     from app.rag.rag_service import is_server_available
 
@@ -89,9 +89,9 @@ def sync_vectors() -> None:
 
 
 def main():
-    """命令行入口：写入样例知识。带 --sync 时会在写入后再同步向量，需要推理服务和 Milvus 已启动。"""
+    """命令行入口：写入样例知识。带 --sync 时会在写入后再同步向量，需要推理服务已启动，且已执行 pgvector 迁移。"""
     parser = argparse.ArgumentParser(description="写入汽修问诊样例")
-    parser.add_argument("--sync", action="store_true", help="写入后调用 sync_vectors（需要推理服务和 Milvus）")
+    parser.add_argument("--sync", action="store_true", help="写入后调用 sync_vectors（需要推理服务）")
     args = parser.parse_args()
     db = SessionLocal()
     try:

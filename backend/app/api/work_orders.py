@@ -631,7 +631,7 @@ def complete_work_order(
     维修人员确认全部填写完成并提交：
     1. AI 标准化分析（补全缺失的标准化字段）
     2. 自动提取结构化知识 + 去重检测
-    3. 非重复 → 发布到知识库 → 同步 Milvus
+    3. 非重复 → 发布到知识库 → 同步 embedding
     4. 工单状态改为 COMPLETED
     返回 knowledge_synced 标识知识是否被收录
 
@@ -815,7 +815,7 @@ def _auto_publish_knowledge(wo: WorkOrder, db: Session) -> bool:
     db.commit()
     db.refresh(knowledge)
 
-    # 同步到 Milvus
+    # 同步到 PostgreSQL embedding（函数名 _sync_to_milvus 为兼容保留）
     try:
         from app.api.knowledge import _sync_to_milvus
         _sync_to_milvus(knowledge, db)

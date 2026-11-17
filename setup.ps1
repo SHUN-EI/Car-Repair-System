@@ -66,7 +66,7 @@ if ($npmOK) { Ok "Node/npm 已安装" } else { Warn "未检测到 Node.js，请�
 # 1. Docker 基础设施
 # ------------------------------------------------------------
 if (-not $SkipInfra) {
-    Step "1/6 启动 Docker 基础设施（PostgreSQL / Redis / Milvus / etcd / MinIO）"
+    Step "1/6 启动 Docker 基础设施（PostgreSQL / Redis）"
     if ($dockerOK) {
         Set-Location $RootDir
         docker-compose up -d
@@ -139,9 +139,9 @@ if (-not $SkipDB) {
             if ($LASTEXITCODE -eq 0) { Ok "$s 完成" } else { Warn "$s 执行异常（可忽略或稍后手动重跑）" }
         }
 
-        Write-Host "  同步知识向量到 Milvus（首次会下载 Embedding 模型，耗时较长）..."
+        Write-Host "  同步知识向量到 PostgreSQL embedding 列（首次会下载 Embedding 模型，耗时较长）..."
         & $VenvPython (Join-Path $BackendDir "scripts\sync_vectors.py") | Out-Host
-        if ($LASTEXITCODE -eq 0) { Ok "向量同步完成" } else { Warn "向量同步异常，请检查 Milvus 是否健康（docker-compose ps）" }
+        if ($LASTEXITCODE -eq 0) { Ok "向量同步完成" } else { Warn "向量同步异常，请检查 PostgreSQL 是否健康并已执行 alembic 迁移（docker-compose -f docker-compose.dev.yml ps）" }
     } else {
         Fail "虚拟环境不存在，请先执行后端依赖安装"
     }

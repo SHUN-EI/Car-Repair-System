@@ -64,7 +64,7 @@ def get_vector_dimension() -> int:
             return int(dim)
     except Exception:
         pass
-    return settings.MILVUS_VECTOR_SIZE
+    return settings.VECTOR_DIM
 
 
 def encode_text(text: str, max_length: int = 512) -> List[float]:

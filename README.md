@@ -5,7 +5,7 @@
 ```
 维修工单/历史工单 ──→ 知识抽取、去重、人工审核 ──→ 知识库
                                       │
-新人提问 ──→ 意图路由 ──→ 混合检索（向量 + BM25 + 手册错误码）
+新人提问 ──→ 意图路由 ──→ 混合检索（pgvector 向量 + tsvector 关键词 + 手册错误码）
                                       │
                           RRF 融合 → 过滤 → Reranker 精排 → AI 诊断回答
 ```
@@ -16,7 +16,7 @@
 | --- | --- |
 | 工单全生命周期 | 14 态状态机，从 DRAFT 到 ARCHIVED/REJECTED，每次流转写入进度日志 |
 | 设备台账与监控 | 设备档案、运行状态、心跳、故障标签、外部监控系统同步接口 |
-| 知识库 RAG | PostgreSQL BM25 + Milvus 向量双路召回，RRF 名次融合，两级模型精排 |
+| 知识库 RAG | PostgreSQL 内 pgvector 向量 + tsvector 关键词双路召回，RRF 名次融合，两级模型精排 |
 | 设备手册错误码库 | 说明书错误码结构化入库，精确匹配 + 语义双路检索，权威方案置顶 |
 | AI 智能问答 | LangGraph 主图意图路由（库存 > 聊天 > 故障），SSE 流式回答 |
 | 追踪维修 | LangGraph 多轮对话状态机，按“分析 + 操作”逐步引导排查 |
@@ -37,7 +37,7 @@
 | 后端 | FastAPI、SQLAlchemy 2.0、Alembic、Pydantic v2、Loguru |
 | AI / Agent | LangChain、LangGraph、FastMCP、通义千问（云端百炼 / 本地 Qwen2.5-7B）、RAGFlow/LangFuse/local 追踪 |
 | 召回 / 精排 | BAAI/bge-m3 召回（1024 维）、BAAI/bge-reranker-v2-m3 精排 |
-| 数据存储 | PostgreSQL 16、Redis 7、Milvus 2.4、MinIO、etcd |
+| 数据存储 | PostgreSQL 16（pgvector + tsvector）、Redis 7 |
 | 集成 | 钉钉开放平台、阿里云短信、RAGFlow |
 | 测试 | Pytest、pytest-asyncio、pytest-cov |
 
@@ -57,13 +57,12 @@
 │ 公共检索编排层：retrieval_flow.py           │
 └───┬────────┬────────┬────────┬────────────┘
     │        │        │        │ HTTP
-┌───▼───┐ ┌──▼───┐ ┌──▼──┐ ┌──▼────────────┐   ┌─────────────────┐
-│ PG 16 │ │Milvus│ │Redis│ │ 推理服务 8010  │   │ 千问云 / 本地vLLM│
-│15432  │ │19530 │ │7379 │ │ Qwen3-Embed-4B │   │ LLM 问答/抽取/  │
-│业务+  │ │向量库 │ │会话 │ │ BGE-Reranker   │   │ Agent 推理      │
-│BM25   │ └──┬───┘ │缓存 │ │（独立进程，双模型）│   └─────────────────┘
-└───────┘    │     └─────┘ └───────────────┘
-        依赖 etcd（元数据）+ MinIO（对象存储）
+┌───▼───────────────┐ ┌──▼──┐ ┌──▼────────────┐   ┌─────────────────┐
+│ PG 16（pgvector）  │ │Redis│ │ 推理服务 8010  │   │ 千问云 / 本地vLLM│
+│15432              │ │7379 │ │ BAAI/bge-m3    │   │ LLM 问答/抽取/  │
+│业务 + 向量 +      │ │会话 │ │ BGE-Reranker   │   │ Agent 推理      │
+│tsvector 关键词    │ │缓存 │ │（独立进程，双模型）│   └─────────────────┘
+└───────────────────┘ └─────┘ └───────────────┘
 ```
 
 ### 3.1 后端分层
@@ -75,13 +74,13 @@
 | 检索编排层 | `agents/retrieval_flow.py` + `agents/tools.py` | 四路召回、RRF 融合、粗筛/精排/过滤、错误码正则提取；**所有 AI 入口共用**，保证行为一致 |
 | 能力层 | `app/core/` | 推理服务客户端（embeddings/reranker）、向量库、缓存、数据库、钉钉/短信/通知 |
 
-### 3.2 双库分工
+### 3.2 存储分工
 
-| | PostgreSQL | Milvus |
-| --- | --- | --- |
-| 定位 | 正本档案室：全部业务数据 + 结构化检索 | 语义储物柜：只存 1024 维向量副本 |
-| 集合/表 | `knowledge_items`、`manual_code_entries`、工单/设备/备件等 | `knowledge`（知识案例）、`log_code`（手册错误码） |
-| 承担检索路 | BM25 关键词路（ILIKE 加权）、手册精确路（错误码等值） | 知识向量路、手册语义路（COSINE ANN） |
+| | PostgreSQL（关系 + 向量 + 全文） |
+| --- | --- |
+| 定位 | 业务数据、1024 维 embedding 与关键词检索的唯一存储，不再拆出独立向量库 |
+| 表 | `knowledge_items`（`embedding` + 生成列 `search_tsv`）、`manual_code_entries`（`embedding`），以及工单/设备/备件等 |
+| 承担检索路 | 知识向量路、手册语义路走 pgvector HNSW（余弦距离转 `1-distance` 相似度）；关键词路走 tsvector/`ts_rank`（工具名仍为 `bm25_search`）；手册精确路仍为错误码等值查询 |
 
 ### 3.3 两级模型（都托管在统一推理服务 8010）
 
@@ -104,7 +103,7 @@
 
 - **推理服务独立进程**：模型推理与业务解耦，可独立升级/扩缩容；主链路启动不加载模型，推理服务挂掉时检索自动降级而非整体不可用
 - **LLM 只花在语义边界**：意图路由、错误码提取、关键词清洗均为确定性规则（零成本、零延迟）；LLM 只用于回答生成、可答性裁决等无法用规则表达的环节
-- **全链路降级**：推理服务不可用 → BM25-only；Reranker 不可用 → 规则重排；严格过滤为空 → 回答层如实说未检索到；任何单点故障都不导致“无回答”
+- **全链路降级**：推理服务不可用 → 关键词-only（tsvector）；Reranker 不可用 → 规则重排；严格过滤为空 → 回答层如实说未检索到；任何单点故障都不导致“无回答”
 - **检索本地 + 生成可切换**：检索模型仍走本机 `8010` 推理服务；对话生成由 `CHAT_LLM_MODE` 在云端百炼（`qwen-plus`）和本机 vLLM（`Qwen2.5-7B-Instruct`，默认 `:8001`）之间切换
 
 ### 3.6 LangGraph 图编排
@@ -188,7 +187,7 @@ flowchart TD
     B -- 问候/闲聊 --> D[零检索<br/>固定话术回复]
     B -- 故障问答 --> E[复合故障预检<br/>规则拆解]
     E --> F[错误码三道闸门抽取<br/>正则+白名单]
-    F --> G[四路召回<br/>Milvus向量 / BM25 / 手册码 / PG结构化]
+    F --> G[四路召回<br/>pgvector向量 / tsvector / 手册码 / 手册语义]
     G --> H[RRF 融合 + 粗筛]
     H --> I[bge-reranker-v2-m3 精排<br/>分块打分]
     I --> J[严格过滤<br/>设备匹配+关键词命中]
@@ -241,12 +240,8 @@ flowchart TD
 
 | 服务 | 本机端口 | 说明 |
 | --- | --- | --- |
-| PostgreSQL | 15432 | 业务数据、BM25 检索 |
+| PostgreSQL | 15432 | 业务数据、pgvector 向量、tsvector 关键词检索 |
 | Redis | 7379 | 会话、缓存、追踪维修会话 |
-| etcd | 2379 | Milvus 元数据 |
-| MinIO | 9000 / 9001 | Milvus 依赖的对象存储 |
-| Milvus | 19530 / 9091 | 知识向量、手册错误码向量 |
-| Attu | 8080 | Milvus Web 管理界面 |
 | 统一推理服务 | 8010 | bge-m3 编码 + bge-reranker-v2-m3 精排 |
 | 后端 API | 18080 | FastAPI，Swagger 在 `/docs` |
 | 前端开发服务器 | 4173 | Vite，代理 `/api` 和 `/dingtalk` 到 18080 |
@@ -275,7 +270,7 @@ Smart-Repair-System/
 │   ├── src/router/            # 路由
 │   ├── src/styles/            # 全局样式
 │   └── src/views/             # 页面
-├── docker-compose.dev.yml     # 开发基础设施：PG/Redis/Milvus/etcd/MinIO/Attu
+├── docker-compose.dev.yml     # 开发基础设施：PostgreSQL（pgvector）/ Redis
 ├── docker-compose.yml         # RAGFlow 编排（可选）
 ├── requirements.txt           # Python 依赖
 ├── setup.ps1                  # 一键初始化
@@ -300,7 +295,7 @@ Smart-Repair-System/
 
 ### 部署形态（企业生产环境）
 
-系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis/Milvus 等）以常驻容器/服务方式运行；统一推理服务（8010）跑 **BAAI/bge-m3（召回，1024 维）+ BAAI/bge-reranker-v2-m3（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。生产环境把 `DEBUG` 设为 false，并设置独立的 `SECRET_KEY`、`SCHEDULER_TOKEN`。
+系统正式部署于**企业服务器（内网/私有云）**：Docker 容器化编排 + 常驻服务运行，**Nginx 反向代理**统一入口并终结 **HTTPS**——前端 `npm run build` 构建产物由 Nginx 托管，`/api`、`/dingtalk` 等路径反代到后端；后端与基础设施（PostgreSQL/Redis）以常驻容器/服务方式运行；统一推理服务（8010）跑 **BAAI/bge-m3（召回，1024 维）+ BAAI/bge-reranker-v2-m3（精排）**，OpenAI 兼容接口、本地私有化部署（**数据不出内网**）；钉钉等外部集成的回调地址直接指向企业服务器域名，经 Nginx 反代到达后端。生产环境把 `DEBUG` 设为 false，并设置独立的 `SECRET_KEY`、`SCHEDULER_TOKEN`。
 
 以下「初始化与启动」说明为**本地开发/排查**用途。
 
@@ -348,7 +343,7 @@ python -m app.core.embedding_server --host 0.0.0.0 --port 8010
 alembic upgrade head
 python scripts\init_categories.py
 python scripts\import_manual_codes.py   # 可选：导入设备手册错误码
-python scripts\sync_vectors.py          # 知识条目同步到 Milvus
+python scripts\sync_vectors.py          # 知识条目同步到 PostgreSQL embedding 列
 
 # 4. 启动后端
 uvicorn app.main:app --host 0.0.0.0 --port 18080
@@ -377,7 +372,7 @@ npm run dev
 
 检索链路：
 1. 错误码预检：正则从提问/日志原文提取报警码（混合码自由匹配 + 纯数字码白名单裁决，零 LLM），命中则激活手册双路
-2. 召回：知识库向量 + BM25 双路（各 top 30）；含错误码时增加手册错误码精确 + 语义两路
+2. 召回：知识库向量 + tsvector 关键词双路（各 top 30，工具名仍为 bm25_search）；含错误码时增加手册错误码精确 + 语义两路
 3. 融合：RRF 名次融合（k=60），复合去重键防止双库撞号
 4. 过滤：向量相似度粗筛（0.15）+ 设备类型 / 故障关键词严格过滤（错误码精确命中的权威条目不被误杀）
 5. 精排：BAAI/bge-reranker-v2-m3 对头部 30 条候选打分（分块批调用防内存峰值，分数 0~1）；不可用时回退规则重排。质量阀门阈值仍按原 Qwen3-Reranker 标定，尚未重标，排序与「结果是否充足」的判断可能变化
@@ -393,7 +388,7 @@ npm run dev
 
 ### 降级策略
 
-- 推理服务不可用：检索自动降级为 BM25-only，跳过向量分数阈值
+- 推理服务不可用：检索自动降级为关键词-only（tsvector），跳过向量分数阈值
 - Reranker 不可用：回退 `weighted_rerank` 规则重排；连续失败进入 60s 冷却期避免雪崩
 - 严格过滤为空：返回空结果（不做跨设备兜底，避免噪声伪装成结果），由回答层如实说未检索到
 
@@ -416,7 +411,7 @@ npm run dev
 - 知识库：历史维修工单沉淀的真实案例
 - 手册库：设备说明书中的权威“错误码 → 故障诊断”映射
 
-字段包括手册名称、设备类型、错误码、标题、描述、屏幕/日志原文、报警等级、影响、结构化条件、伴随报警、章节与页码。手册条目支持 JSON 批量导入、LLM 结构化解析、PG + Milvus 同步维护。
+字段包括手册名称、设备类型、错误码、标题、描述、屏幕/日志原文、报警等级、影响、结构化条件、伴随报警、章节与页码。手册条目支持 JSON 批量导入、LLM 结构化解析，并同步写入 PostgreSQL embedding 列。
 
 相关接口：
 
@@ -506,7 +501,9 @@ MCP 访问控制：配置 `MCP_API_KEY` 后要求 `Authorization: Bearer <key>`�
 | `CHAT_LOCAL_BASE_URL` / `CHAT_LOCAL_MODEL` | local 默认 `http://127.0.0.1:8001/v1` 与 `Qwen/Qwen2.5-7B-Instruct` |
 | `EMBEDDING_SERVER_URL` | 推理服务地址，默认 `http://localhost:8010` |
 | `EMBEDDING_MODEL_NAME` | 召回模型，默认 `BAAI/bge-m3`（1024 维） |
-| `MILVUS_VECTOR_SIZE` | 向量维度，必须与 bge-m3 一致，默认 1024 |
+| `VECTOR_DIM` | 向量维度，必须与 bge-m3 一致，默认 1024；`MILVUS_VECTOR_SIZE` 仍可作为兼容别名 |
+| `PGVECTOR_EF_SEARCH` | HNSW 检索 `ef_search`，默认 64 |
+| `TS_RANK_WEIGHTS` | ts_rank 字段权重 `{D,C,B,A}`，默认 `{0.1, 0.2, 0.4, 1.0}` |
 | `RERANKER_MODEL_NAME` | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（分数 0~1；质量阀门阈值尚未按新模型重标） |
 | `RERANKER_ENABLED` | 模型精排总开关 |
 | `RECALL_TOP_K` / `FINAL_TOP_N` | 召回候选数（30）/ 最终送 LLM 条数（10） |

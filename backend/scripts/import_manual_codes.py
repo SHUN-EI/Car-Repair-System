@@ -1,7 +1,7 @@
-"""设备手册错误码导入脚本 - 从设备说明书导入"错误码 → 故障诊断"条目到 PostgreSQL + Milvus
+"""设备手册错误码导入脚本 - 从设备说明书导入"错误码 → 故障诊断"条目到 PostgreSQL（含 pgvector embedding）
 
 数据边界约定（重要）：
-- 本表（manual_code_entries / log_code 集合）**只接受设备说明书/维修手册**中的错误码条目，
+- 本表（manual_code_entries）**只接受设备说明书/维修手册**中的错误码条目，
   含章节/页码用于出处回溯；不接收工单数据。
 - 涉及错误码的维修工单照常沉淀到知识库（knowledge_items），检索时双库并行召回再融合。
 
@@ -15,13 +15,13 @@ causes/solutions 为 deprecated 过渡列，不再写入。
     cd backend
     python scripts/import_manual_codes.py                          # 种子数据增量导入（同码 upsert）
     python scripts/import_manual_codes.py --json-file manual_codes.json   # 从 JSON 文件导入
-    python scripts/import_manual_codes.py --force-rebuild          # 清空重灌（PG 表 + Milvus 集合）
-    python scripts/import_manual_codes.py --resync                 # 按 PG 重灌全部向量（修复 Milvus 不一致）
+    python scripts/import_manual_codes.py --force-rebuild          # 清空重灌（手册表及 embedding 列）
+    python scripts/import_manual_codes.py --resync                 # 按 PG 重灌全部向量（修复向量列不一致）
 
 前提条件:
     - 推理服务已启动（bge-m3 编码走 HTTP）：start_all.ps1 或 python -m app.core.embedding_server
     - PostgreSQL 已启动，数据库已迁移（alembic upgrade head，含 manual_code_entries 表）
-    - Milvus 已启动（log_code 集合不存在时会自动创建）
+    - PostgreSQL 已启动并完成 pgvector 迁移，推理服务已启动
 """
 import sys
 import os
@@ -2160,9 +2160,9 @@ def _normalize_item(item: dict) -> dict:
 
 
 def _write_entry(db, item: dict, existing: Optional[ManualCodeEntry] = None) -> str:
-    """写入 PG（新建或更新）+ 重编码写入 Milvus，返回 ('created'|'updated')"""
+    """写入手册行并重编码写入 embedding，返回 ('created'|'updated')"""
     if existing is not None:
-        # upsert：全字段更新 + Milvus 删旧插新
+        # upsert：全字段更新 + embedding 删旧写新
         for k in ("manual_name", "device_type", "error_code", "title", "description",
                   "message_text", "severity", "effect", "conditions", "related_codes",
                   "chapter", "page"):
@@ -2196,12 +2196,11 @@ def import_manual_codes(
     """主导入函数
 
     Args:
-        force_rebuild: 清空 manual_code_entries 表 + Milvus 集合后重灌
+        force_rebuild: 清空 manual_code_entries 表及其 embedding 后重灌
         json_file: JSON 文件路径（数组格式，字段见 manual_codes.example.json）；缺省用种子数据
-        resync: 只按 PG 重灌全部向量（PG 不动，修复 Milvus 不一致，如 PUT 中途失败）
+        resync: 只按 PG 重灌全部向量（PG 不动，修复向量列不一致，如 PUT 中途失败）
     """
     check_inference_server()
-    store_name = settings.MILVUS_LOG_CODE_COLLECTION
 
     # 数据源：--json-file 优先，否则种子数据
     if json_file:
@@ -2222,15 +2221,15 @@ def import_manual_codes(
 
     try:
         if force_rebuild:
-            # 清空 PG 手册表 + 目标集合（旧向量一并清除，避免残留/重复）
+            # 清空手册表（embedding 随行删除，避免残留/重复）
             cleared = db.query(ManualCodeEntry).delete()
             db.commit()
             logger.info(f"force-rebuild: 已清空 manual_code_entries 表（{cleared} 条）")
-            # drop 后重建集合，并刷新 rag_service / vector_store 单例
+            # 清空手册 embedding，供随后重灌
             drop_and_recreate_manual_collection()
 
         if resync:
-            # 只修 Milvus：按 PG 全部条目重编码删旧插新
+            # 只修向量列：按手册表全部条目重编码删旧写新
             rows = db.query(ManualCodeEntry).all()
             logger.info(f"--resync: 按 PG 重灌 {len(rows)} 条手册向量...")
             for i, row in enumerate(rows):
@@ -2257,7 +2256,7 @@ def import_manual_codes(
                 logger.warning(f"失败清单:\n" + "\n".join(errors[:10]))
             return
 
-        logger.info(f"开始导入 {len(items)} 条设备手册错误码条目 -> 集合 {store_name} ...")
+        logger.info(f"开始导入 {len(items)} 条设备手册错误码条目 -> manual_code_entries.embedding ...")
         for i, item in enumerate(items):
             try:
                 # upsert：同一手册 + 同一错误码 → 更新（重跑脚本即数据升级路径）
@@ -2287,7 +2286,7 @@ def import_manual_codes(
         # 批量向量插入完成后统一刷写
         if vector_count > 0:
             flush_manual_vectors()
-            logger.info(f"{store_name} 向量数据已刷写落盘")
+            logger.info("手册 embedding 已提交（PostgreSQL 落盘）")
 
         logger.info(f"导入完成: 新建 {created_count} 条, 更新 {updated_count} 条, 失败 {len(errors)} 条")
         logger.info(f"向量化: {vector_count} 条")
@@ -2304,13 +2303,13 @@ def import_manual_codes(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="设备手册错误码导入（PostgreSQL + Milvus log_code 集合）")
+    parser = argparse.ArgumentParser(description="设备手册错误码导入（PostgreSQL + pgvector embedding）")
     parser.add_argument("--force-rebuild", action="store_true",
-                        help="清空 manual_code_entries 表与 Milvus 集合后重灌")
+                        help="清空 manual_code_entries 表及其 embedding 后重灌")
     parser.add_argument("--json-file", default="",
                         help="JSON 文件路径（数组格式，字段见 scripts/manual_codes.example.json）；缺省用种子数据")
     parser.add_argument("--resync", action="store_true",
-                        help="只按 PG 重灌全部向量（PG 不动，修复 Milvus 不一致）")
+                        help="只按 PG 重灌全部向量（PG 不动，修复向量列不一致）")
     args = parser.parse_args()
     import_manual_codes(
         force_rebuild=args.force_rebuild,

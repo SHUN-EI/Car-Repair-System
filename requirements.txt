@@ -32,9 +32,8 @@ langgraph==1.2.6               # Agent 图编排：StateGraph 状态机（意图
 langsmith==0.10.2              # LangChain 官方追踪 SDK（可选）
 fastmcp==3.4.5                 # MCP Server 框架：暴露检索/工单等工具给外部 AI 客户端（app/mcp/server.py）
 
-# ---------- 向量数据库（Milvus，语义检索）----------
-pymilvus==2.4.15               # Milvus 官方 Python 客户端：插入/查询向量
-setuptools==80.9.0             # pymilvus 2.4.15 运行期需要 pkg_resources（setuptools 81+ 已移除）
+# ---------- 向量检索（PostgreSQL pgvector）----------
+pgvector==0.3.6                # SQLAlchemy / psycopg2 的 vector 类型适配
 
 # ---------- 数据处理与安全 ----------
 pandas==3.0.3                  # 数据处理：工单导入 Excel、报表分析

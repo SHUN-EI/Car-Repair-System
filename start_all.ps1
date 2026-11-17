@@ -16,7 +16,7 @@ $BackendErr  = Join-Path $Root 'backend.err.log'
 $FrontendLog = Join-Path $Root 'frontend.log'
 $FrontendErr = Join-Path $Root 'frontend.err.log'
 
-$projectPorts = 3000, 4173, 18080, 15432, 7379, 19530, 9091, 9000, 9001
+$projectPorts = 3000, 4173, 18080, 15432, 7379
 
 function Get-ExcludedRanges {
     netsh interface ipv4 show excludedportrange protocol=tcp | ForEach-Object {
@@ -59,7 +59,7 @@ Write-Host "[OK] 端口检查通过，无冲突。" -ForegroundColor Green
 
 # ---- [1/4] Docker 中间件 ----
 Write-Host ""
-Write-Host "[1/4] 启动 Docker 中间件（PG/Redis/Milvus/etcd/MinIO）..." -ForegroundColor Cyan
+Write-Host "[1/4] 启动 Docker 中间件（PostgreSQL + Redis）..." -ForegroundColor Cyan
 try {
     docker compose -f (Join-Path $Root 'docker-compose.dev.yml') up -d
     if ($LASTEXITCODE -ne 0) { throw "docker compose 执行失败" }

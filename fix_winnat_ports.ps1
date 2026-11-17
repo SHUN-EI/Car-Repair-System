@@ -3,7 +3,7 @@
 # 彻底解决 Hyper-V/WSL 动态保留端口冲突
 # 原理：Hyper-V/WSL 每次启动会随机保留一段端口（如 2644-3243），
 #       被圈走的端口任何程序都无法监听。本项目端口（3000/4173/18080/
-#       15432/7379/19530/9091/9000/9001）随时可能被圈走。
+#       15432/7379）随时可能被圈走。
 #       本脚本把 WinNAT 动态端口范围固定到 50000-64999，保留段就
 #       永久固定在高位，项目端口再也不受影响。
 # 用法：右键「使用 PowerShell 运行」（会自动弹 UAC 提权）
@@ -60,7 +60,7 @@ Write-Host ""
 Write-Host "================= 修复后保留端口范围 =================" -ForegroundColor Cyan
 netsh interface ipv4 show excludedportrange protocol=tcp
 
-$projectPorts = 3000, 4173, 18080, 15432, 7379, 19530, 9091, 9000, 9001
+$projectPorts = 3000, 4173, 18080, 15432, 7379
 $ranges = netsh interface ipv4 show excludedportrange protocol=tcp | ForEach-Object {
     if ($_ -match '^\s*(\d+)\s+(\d+)') {
         [PSCustomObject]@{ Start = [int]$Matches[1]; End = [int]$Matches[2] }

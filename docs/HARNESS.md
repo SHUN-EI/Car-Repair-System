@@ -6,14 +6,14 @@
 
 1. **API 接入层**（`app/api`、`app/main.py`）：接收 HTTP 请求、参数校验、鉴权；禁止写业务逻辑与检索逻辑。
 2. **Agent 编排层**（`app/agents` 中的 LangGraph / 门面 Agent）：Skill 编排、会话状态机。多轮追踪维修与专家模式仍留在 Redis 状态机，不搬到 LangGraph。
-3. **RAG 检索层**（`app/rag`）：文本向量、稀疏 BM25、混合检索、Rerank。外部统一走 `app.rag.rag_service`。
+3. **RAG 检索层**（`app/rag`）：文本向量（pgvector）、关键词（tsvector/`ts_rank`，工具名仍为 `bm25_search`）、混合检索、Rerank。外部统一走 `app.rag.rag_service`。
 4. **业务工具层**：配件查询、工单、外部接口调用。
-5. **存储层**：Milvus 向量库、**PostgreSQL** 事实库、Redis 会话缓存。对应客户端在 `app.core`（`vector_store` / `database` / Redis 封装）。
+5. **存储层**：**PostgreSQL**（业务数据、pgvector 向量、tsvector 关键词）、Redis 会话缓存。对应客户端在 `app.core`（`vector_store` / `database` / Redis 封装）。
 
 ## 2. 依赖方向【强约束】
 
 - 允许：上层 → 下层调用。
-- 禁止：下层反向依赖上层；跨层直接调用（API 层不能直接调 Milvus / `vector_store` / `encode_text` / reranker）。
+- 禁止：下层反向依赖上层；跨层直接调用（API 层不能直接调 `vector_store` / `encode_text` / reranker）。
 - 向量检索只能封装在 `rag_service` 内部，外部统一走 `rag_service` 接口。
 
 ## 3. 接口契约
@@ -45,7 +45,7 @@
 
 ## 6. 批次划分
 
-1. **第一批**：新增 `rag_service`，把编码 / Milvus 读写 / 混合检索 / 精排收口；检索算法与阈值不变；当时 Reranker 仍为 Qwen3-Reranker。
+1. **第一批**：新增 `rag_service`，把编码 / 向量读写 / 混合检索 / 精排收口；检索算法与阈值不变；当时 Reranker 仍为 Qwen3-Reranker，向量库当时仍为 Milvus。
 2. **第二批**：将精排模型替换为 `BAAI/bge-reranker-v2-m3`，保持 `/v1/rerank` 入参出参不变，分数继续 0~1 归一化；质量阀门阈值仍按原 Qwen 标定，本批不重标。
 3. **第三批**：API 中残留的业务 / 检索编排下沉到 `app.rag.search_app`；切断 `dingtalk_wo_card` 对 `app.api.work_orders._do_transition` 的反向依赖，流转下沉到 `app.domain.work_order_transition`。
 4. **第四批（本批）**：收口 Agent/对话记忆写入到 `app.memory.memory_service`，对照 Harness 自检并补充回归用例。不把工单/库存/报价等业务持久化塞进记忆模块。

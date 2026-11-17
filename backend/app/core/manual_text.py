@@ -1,7 +1,7 @@
 """手册条目文本拼装 - 导入脚本 / API / 检索三处共用的纯函数
 
 结构化改造后手册条目的两种文本形态：
-1. 嵌入文本（build_manual_embedding_text）：写入 Milvus 的向量编码源
+1. 嵌入文本（build_manual_embedding_text）：写入 PostgreSQL embedding 列的向量编码源
    锚点 = error_code + title + message_text（屏幕原文）+ description + 前 3 情形的信号/原因
 2. 内容文本（build_manual_content_text）：给 LLM/前端展示的完整结构化文本
    conditions 非空时按情形分组输出；为空回退旧平铺格式（过渡期兼容）

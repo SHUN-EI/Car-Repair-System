@@ -33,17 +33,14 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     REDIS_URL: str = ""
 
-    # Milvus 向量数据库配置
-    MILVUS_HOST: str = "localhost"
-    MILVUS_PORT: int = 19530
-    MILVUS_REST_PORT: int = 9091
-    MILVUS_COLLECTION: str = "knowledge"
-    MILVUS_LOG_CODE_COLLECTION: str = "log_code"  # 设备手册错误码向量集合
-    MILVUS_VECTOR_SIZE: int = 1024  # Embedding 维度（BAAI/bge-m3 dense，1024）
-    MINIO_HOST: str = "localhost"
-    MINIO_PORT: int = 9000
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
+    # 向量维度（BAAI/bge-m3 dense，写入 PostgreSQL pgvector，余弦度量）
+    VECTOR_DIM: int = 1024
+    # 兼容旧配置名：历史代码与文档曾用 MILVUS_VECTOR_SIZE，与 VECTOR_DIM 同值
+    MILVUS_VECTOR_SIZE: int = 1024
+    # 向量检索时 HNSW 的 ef_search（越大召回越稳，延迟略增）
+    PGVECTOR_EF_SEARCH: int = 64
+    # 关键词路 ts_rank 权重：D, C, B, A（标题与故障码为 A，正文为 B，标签为 C）
+    TS_RANK_WEIGHTS: str = "{0.1, 0.2, 0.4, 1.0}"
 
     # 对话模型切换：cloud 走阿里云百炼（通义千问）OpenAI 兼容接口；
     # local 走本机 vLLM 的 Qwen2.5-7B-Instruct。调用点统一走 chat_llm_mode / make_chat_llm。
@@ -170,12 +167,6 @@ class Settings(BaseSettings):
             return f"http://{ip}:{self.BACKEND_PORT}"
         except Exception:
             return f"http://127.0.0.1:{self.BACKEND_PORT}"
-
-    @property
-    def milvus_connection(self) -> str:
-        """把 Milvus 主机和端口拼成 host:port，供向量库客户端连接。"""
-        return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
-
 
     @staticmethod
     def _normalize_chat_llm_mode(raw: str) -> str:

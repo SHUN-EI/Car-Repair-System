@@ -11,7 +11,7 @@
 
 ## 1. 目标与边界
 
-改造起点：FastAPI + Vue3 + LangGraph + PG/Redis/Milvus + DeepSeek + bge-m3。目标是可运营的单店/少量门店汽修 Agent 平台，而不是全国加盟 SaaS 或自建仓配。
+改造起点曾是 FastAPI + Vue3 + LangGraph + PG/Redis/Milvus + DeepSeek + bge-m3。现网检索已迁到 PostgreSQL pgvector + tsvector，对话由 `CHAT_LLM_MODE` 在云端千问与本地 Qwen2.5-7B 之间切换。目标仍是可运营的单店/少量门店汽修 Agent 平台，而不是全国加盟 SaaS 或自建仓配。
 
 ### 对标的公开能力形态（非官方商标/内部 API）
 
@@ -64,7 +64,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 3. 目标架构
 
-节点对齐现网技术栈：FastAPI、Vue3、LangGraph、Milvus、DeepSeek、bge-m3、Redis、PostgreSQL。支付与微信标为可选。
+节点对齐现网技术栈：FastAPI、Vue3、LangGraph、PostgreSQL（pgvector + tsvector）、Redis、bge-m3、bge-reranker-v2-m3，对话经 `CHAT_LLM_MODE` 切换。支付与微信标为可选。
 
 ```
 车主端 H5 ──┐
@@ -73,12 +73,12 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
                       ├── Agent 编排 (qa_graph / guided / expert / retrieval_flow)
                       │         ├── 检索与知识 (bge-m3 + Qwen3-Reranker-0.6B + RRF)
                       │         └── DeepSeek 生成
-                      ├── PG + Redis + Milvus
+                      ├── PG（pgvector + tsvector）+ Redis
                       ├── 消息（钉钉 + 短信开关）
                       └── 支付（可选，P1 占位）
 ```
 
-原则沿用 SRS：管道优先、ReAct 仅救援；检索数据走本地 embedding/Milvus；生成走云端 DeepSeek；门店协作优先复用钉钉 Stream/卡片。
+原则沿用 SRS：管道优先、ReAct 仅救援；检索数据走本地 embedding 与 PostgreSQL（pgvector / tsvector）；生成按 `CHAT_LLM_MODE` 切换云端千问或本地 vLLM；门店协作优先复用钉钉 Stream/卡片。
 
 ---
 
@@ -112,7 +112,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ## 5. Agent 能力设计
 
-检索主干继续复用 `agents/retrieval_flow.py`：四路召回（向量 / ILIKE 加权「BM25」/ 手册精确 / 手册向量）→ RRF(k=60) → 粗筛/精排 → 送 LLM。默认 embedding 仍为代码事实 `BAAI/bge-m3`（1024 维），Reranker `Qwen3-Reranker-0.6B`，失败冷却后规则重排。
+检索主干继续复用 `retrieval_flow.py`：四路召回（pgvector 向量 / tsvector 关键词，工具名仍为 `bm25_search` / 手册精确 / 手册语义）→ RRF(k=60) → 粗筛/精排 → 送 LLM。默认 embedding 仍为代码事实 `BAAI/bge-m3`（1024 维），Reranker `BAAI/bge-reranker-v2-m3`，失败冷却后规则重排。
 
 ### 话术与工具改造
 
@@ -144,7 +144,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 
 ### Phase 0（1–2 周）领域 Renaming + 车辆 MVP
 
-依赖：可运行的现网 compose（PG/Redis/Milvus）与 embedding :8010。
+依赖：可运行的现网 compose（PostgreSQL + Redis）与 embedding :8010。
 
 - [ ] Fork/重命名仓库与 README 业务表述（制造→汽修）
 - [ ] User 角色扩展：车主/店长/技师/仓管（`models/user.py` + auth）
@@ -211,7 +211,7 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
    - 路由 `frontend/src/router` 改名（**无 Pinia，勿按 README 引入**）
 4. **基础设施**
    - embedding 默认仍 `BAAI/bge-m3` + `embedding_server.py` :8010
-   - Milvus 集合可继续 knowledge/log_code，或加 auto_manual；维数 1024
+   - 向量写在 `knowledge_items.embedding` / `manual_code_entries.embedding`，维数 1024；不必再维护独立集合
    - `requirements.txt` 补齐 `pdfplumber`（及 OCR 可选依赖）
    - 阈值：现网 0.45/0.6/0.3 等仅作起点，换域后【待重标】
 
@@ -256,6 +256,6 @@ Phase 0–1 只交付「门店工单闭环 + 车主 H5 预约/进度 + 汽修语
 - 召回默认 **bge-m3**，非 README 中的 Qwen3-Embedding-4B
 - 前端 **无 Pinia**
 - 粗筛默认 **0.45**
-- 所谓 BM25 为 **PG ILIKE 加权**，不是独立 BM25 引擎
+- 关键词路为 **tsvector / ts_rank**（工具名仍为 `bm25_search`），失败时回退 ILIKE 加权；不是独立 BM25 引擎
 
 方案执行中勿被 README 旧表述带偏。

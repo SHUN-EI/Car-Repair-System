@@ -1,8 +1,8 @@
-"""统一 RAG 门面：编码 / Milvus 读写 / 混合检索 / 精排的唯一对外入口。
+"""统一 RAG 门面：编码 / PostgreSQL 向量读写 / 混合检索 / 精排的唯一对外入口。
 
 分层约定（按现网技术栈改写）：
 - 本模块属于 RAG 检索层。API、Agent、脚本不得再直接调用
-  app.core.embeddings / vector_store / reranker 或 pymilvus。
+  app.core.embeddings / vector_store / reranker 或向量存储实现。
 - 本模块只封装现有能力，不改检索算法、阈值或降级路径。
 - 存储与推理客户端仍在 app.core（embeddings / reranker / vector_store），
   仅允许本包（app.rag）调用。
@@ -12,12 +12,12 @@
 推理探测与编码（签名与 embeddings 对齐）：
     is_server_available, encode_text, encode_texts, get_vector_dimension
 
-知识库向量（Milvus knowledge 集合）：
+知识库向量（knowledge_items.embedding）：
     search_knowledge_vectors, search_knowledge_vectors_by_embedding
     sync_knowledge_item, resync_knowledge_item
     flush_knowledge_vectors, count_knowledge_vectors
 
-手册错误码向量（Milvus log_code 集合）：
+手册错误码向量（manual_code_entries.embedding）：
     search_manual_vectors, insert_manual_vector, delete_manual_vector
     drop_and_recreate_manual_collection, flush_manual_vectors
 
@@ -73,13 +73,13 @@ def get_vector_dimension() -> int:
 
 
 def _knowledge_store():
-    """返回知识条目使用的 Milvus 集合客户端。延迟导入以免循环依赖，外部应通过 rag_service 的检索函数使用，不要直接操作集合。"""
+    """返回知识条目使用的向量存储客户端。延迟导入以免循环依赖，外部应通过 rag_service 的检索函数使用，不要直接操作存储。"""
     from app.core import vector_store as vs
     return vs.vector_store
 
 
 def _log_code_store():
-    """返回手册错误码使用的 Milvus 集合客户端，同样延迟导入。"""
+    """返回手册错误码使用的向量存储客户端，同样延迟导入。"""
     from app.core import vector_store as vs
     return vs.log_code_store
 
@@ -122,41 +122,29 @@ def search_knowledge_vectors_by_embedding(
 
 
 def sync_knowledge_item(item: Any) -> None:
-    """将知识条目向量化并同步到 Milvus（有 milvus_id 则更新，否则插入并回写 milvus_id）。
+    """将知识条目向量化并写入 PostgreSQL embedding 列，回写稳定点号到 milvus_id（pg:k:{id}）。
 
-    文本拼装与原 knowledge._sync_to_milvus 保持一致：
-    ``f"{title} {content[:MAX_VECTOR_CONTENT_LEN]}"``。
+    文本拼装保持不变：``f"{title} {content[:MAX_VECTOR_CONTENT_LEN]}"``。
     """
     from app.core.config import settings
 
     text = f"{item.title} {item.content[:settings.MAX_VECTOR_CONTENT_LEN]}"
     vec = encode_text(text)
     store = _knowledge_store()
-    if item.milvus_id:
-        store.update(
-            point_id=item.milvus_id,
-            vector=vec,
-            title=item.title,
-            content=item.content,
-            device_type=item.device_type,
-            fault_code=item.fault_code,
-            fault_tags=item.fault_tags,
-        )
-    else:
-        point_id = store.insert(
-            vector=vec,
-            knowledge_id=item.id,
-            title=item.title,
-            content=item.content,
-            device_type=item.device_type,
-            fault_code=item.fault_code,
-            fault_tags=item.fault_tags,
-        )
-        item.milvus_id = point_id
+    point_id = store.insert(
+        vector=vec,
+        knowledge_id=item.id,
+        title=item.title,
+        content=item.content,
+        device_type=item.device_type,
+        fault_code=item.fault_code,
+        fault_tags=item.fault_tags,
+    )
+    item.milvus_id = point_id
 
 
 def resync_knowledge_item(item: Any) -> None:
-    """按已发布知识条目重灌向量：先删同 knowledge_id 旧点再插入（可安全重跑）。
+    """按已发布知识条目重灌向量：先清空同 knowledge_id 的 embedding 再写入（可安全重跑）。
 
     文本拼装与原 scripts/sync_vectors.py 保持一致：
     ``f"{title or ''}\\n{(content or '')[:MAX_VECTOR_CONTENT_LEN]}"``。
@@ -167,7 +155,7 @@ def resync_knowledge_item(item: Any) -> None:
     vec = encode_text(text)
     store = _knowledge_store()
     store.delete_by_knowledge_id(item.id)
-    store.insert(
+    item.milvus_id = store.insert(
         vector=vec,
         knowledge_id=item.id,
         title=item.title or "",
@@ -179,12 +167,12 @@ def resync_knowledge_item(item: Any) -> None:
 
 
 def flush_knowledge_vectors() -> None:
-    """刷写知识库向量集合。"""
+    """兼容接口：PostgreSQL 提交即落盘，此处为空操作。"""
     _knowledge_store().flush()
 
 
 def count_knowledge_vectors() -> int:
-    """知识库向量条数。"""
+    """已写入 embedding 的知识条数。"""
     return _knowledge_store().count()
 
 
@@ -196,7 +184,7 @@ def search_manual_vectors(
     error_code: Optional[str] = None,
     score_threshold: float = 0.0,
 ) -> List[dict]:
-    """用已有向量检索手册错误码集合（log_code）。"""
+    """用已有向量检索手册错误码表的 embedding 列。"""
     return _log_code_store().search(
         query_vector=query_vector,
         limit=limit,
@@ -207,7 +195,7 @@ def search_manual_vectors(
 
 
 def insert_manual_vector(manual_code_id: int, data: dict) -> str:
-    """按手册条目字段编码并插入 log_code 集合，返回新 point_id。"""
+    """按手册条目字段编码并写入 embedding 列，返回稳定点号 pg:m:{id}。"""
     vector = encode_text(build_manual_embedding_text(data))
     point_id = _log_code_store().insert(
         vector=vector,
@@ -224,24 +212,15 @@ def insert_manual_vector(manual_code_id: int, data: dict) -> str:
 
 
 def delete_manual_vector(point_id: str) -> bool:
-    """删除 log_code 集合中的一个向量点。"""
+    """清空手册条目的 embedding，不删除手册行。"""
     return _log_code_store().delete(point_id)
 
 
 def drop_and_recreate_manual_collection() -> None:
-    """清空并重建 log_code 集合，同时刷新模块内单例（供 --force-rebuild）。
-
-    原脚本在 drop 后只替换了局部 store 变量，模块级 log_code_store 会失效。
-    收口到本门面后改为同步替换单例，后续插入与在线检索都走新集合。
-    """
-    from app.core import vector_store as vs
-    from app.core.config import settings
-    from app.core.vector_store import LogCodeVectorStore
-
-    vs.log_code_store.drop_collection()
-    vs.log_code_store = LogCodeVectorStore(collection_name=settings.MILVUS_LOG_CODE_COLLECTION)
+    """清空全部手册 embedding，供导入脚本 --force-rebuild 后重灌。不删除手册行。"""
+    _log_code_store().drop_collection()
 
 
 def flush_manual_vectors() -> None:
-    """刷写手册错误码向量集合。"""
+    """兼容接口：PostgreSQL 提交即落盘，此处为空操作。"""
     _log_code_store().flush()

@@ -246,9 +246,8 @@ else:
 
 @app.get("/health", tags=["系统"])
 async def health_check():
-    """数据库和 Redis 决定整体状态。Milvus 与推理服务单独探测，超时不拖死本接口。"""
+    """数据库和 Redis 决定整体状态。pgvector 扩展与推理服务单独探测，超时不拖死本接口。"""
     from sqlalchemy import text
-    import socket
 
     database = "down"
     try:
@@ -268,13 +267,16 @@ async def health_check():
     except Exception as exc:
         logger.warning(f"[Health] Redis 探测失败: {exc}")
 
-    milvus = "down"
+    pgvector = "down"
     try:
-        sock = socket.create_connection((settings.MILVUS_HOST, int(settings.MILVUS_PORT)), timeout=0.4)
-        sock.close()
-        milvus = "reachable"
-    except Exception:
-        milvus = "down"
+        from sqlalchemy import text as sa_text
+        from app.core.database import engine
+        with engine.connect() as conn:
+            row = conn.execute(sa_text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")).fetchone()
+        pgvector = "ready" if row else "unavailable"
+    except Exception as exc:
+        logger.warning(f"[Health] pgvector 探测失败: {exc}")
+        pgvector = "down"
 
     embedding = "down"
     try:
@@ -289,7 +291,7 @@ async def health_check():
         "status": "healthy" if core_ok else "degraded",
         "database": database,
         "redis": redis_status,
-        "milvus": milvus,
+        "pgvector": pgvector,
         "embedding": embedding,
         "version": settings.APP_VERSION,
         "mcp": "ok",

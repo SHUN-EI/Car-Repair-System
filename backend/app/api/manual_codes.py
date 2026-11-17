@@ -5,8 +5,8 @@
 
 录入方式：
 - POST /parse          LLM 结构化（粘贴手册原文 → entries，只预填不落库）
-- POST /               单条新建（ADMIN，PG + Milvus 同步写）
-- PUT /{id}            单条更新（ADMIN，PG + Milvus 删旧插新）
+- POST /               单条新建（ADMIN，写入 PostgreSQL 并同步 embedding）
+- PUT /{id}            单条更新（ADMIN，更新 PostgreSQL 并重写 embedding）
 - POST /import-json    批量导入（ADMIN，upsert，单条失败不中断）
 """
 from typing import List, Optional
@@ -114,7 +114,7 @@ def _require_admin(current_user: User) -> None:
 
 
 def _sync_vector(entry: ManualCodeEntry, data: dict) -> str:
-    """按当前字段编码并写入/更新 Milvus log_code 集合，返回新 point_id"""
+    """按当前字段编码并写入/更新手册 embedding，返回新 point_id"""
     from app.rag.rag_service import insert_manual_vector
 
     return insert_manual_vector(entry.id, data)
@@ -213,9 +213,9 @@ def parse_manual_text(
         raise HTTPException(status_code=502, detail=f"结构化失败: {e}")
 
 
-# ==================== 写入端点（ADMIN，PG + Milvus 同步） ====================
+# ==================== 写入端点（ADMIN，PostgreSQL 与 embedding 同步） ====================
 
-@router.post("/", summary="新建手册错误码条目（PG + Milvus 同步）")
+@router.post("/", summary="新建手册错误码条目（同步 embedding）")
 def create_manual_code(
     data: ManualCodeCreate,
     db: Session = Depends(get_db),
@@ -245,7 +245,7 @@ def create_manual_code(
     return _m_to_dict(entry)
 
 
-@router.put("/{manual_code_id}", summary="更新手册错误码条目（PG + Milvus 删旧插新）")
+@router.put("/{manual_code_id}", summary="更新手册错误码条目（更新 PostgreSQL 并重写 embedding）")
 def update_manual_code(
     manual_code_id: int,
     data: ManualCodeUpdate,
@@ -267,7 +267,7 @@ def update_manual_code(
     _apply_fields(item, fields)
     try:
         db.flush()
-        # 新向量按最新字段编码；Milvus 无 update，删旧点 + 插新点
+        # 新向量按最新字段编码：先清旧 embedding，再写入新向量
         merged = _m_to_dict(item)
         new_point_id = _sync_vector(item, merged)
         if old_milvus_id:
@@ -335,20 +335,20 @@ def import_manual_codes_json(
 
 # ==================== 删除端点（不变） ====================
 
-@router.delete("/{manual_code_id}", summary="删除手册错误码（PG + Milvus 同步）")
+@router.delete("/{manual_code_id}", summary="删除手册错误码（同时清空 embedding）")
 def delete_manual_code(
     manual_code_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """删除手册条目：同时删除 Milvus log_code 集合中的对应向量"""
+    """删除手册条目：同时清空对应 embedding"""
     _require_admin(current_user)
 
     item = db.query(ManualCodeEntry).filter(ManualCodeEntry.id == manual_code_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="手册条目不存在")
 
-    # 1. 删 Milvus 向量（存在 milvus_id 才删）
+    # 1. 清空 embedding（存在 milvus_id 才删）
     if item.milvus_id:
         try:
             from app.rag.rag_service import delete_manual_vector

@@ -17,7 +17,7 @@
 
 前提条件:
     - 推理服务已启动（bge-m3 编码走 HTTP）：start_all.ps1 或 python -m app.core.embedding_server
-    - Milvus 已启动，knowledge 集合已灌入 bge-m3 向量
+    - PostgreSQL 已执行 pgvector 迁移，knowledge_items.embedding 已灌入 bge-m3 向量
 """
 import sys
 import os
