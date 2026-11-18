@@ -292,7 +292,7 @@ FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务
 
 ## 3. 第三方依赖、中间件与模型底座
 
-本节只写代码和配置里出现的依赖。默认值来自 `backend/app/core/config.py`；`.env.example` 若不同，运行时以环境变量覆盖后的值为准。
+本节只写代码和配置里出现的依赖。默认值来自 `backend/app/core/config.py`；`.env.example` 若不同，运行时以环境变量覆盖后的值为准。 中间件的库、键和故障行为另见 [中间件.md](./中间件.md)，本文第 3、6 节是规格出处。
 
 ### 3.1 PostgreSQL
 
