@@ -735,7 +735,7 @@ def rrf_merge(
     Reciprocal Rank Fusion - 融合多个检索结果集
 
     去重键说明（重要）：
-    - 优先使用 `_dedup_key`（跨库复合键，如手册条目 "M:12"、知识条目 "K:3"）；
+    - 优先使用 `_dedup_key`（跨库复合键，如手册条目 "M:12"、知识条目 "K:3"、OBD "O:4"、手册章节 "C:5"、客服知识 "F:6"）；
       多库融合（知识库 knowledge + 手册库 log_code）时两者主键都是 PG 自增 int，
       必须用 `_dedup_key` 区分，否则手册条目与知识条目会互相合并/去重错误。
     - 其次使用 knowledge_id（知识库主键，跨检索路稳定）；

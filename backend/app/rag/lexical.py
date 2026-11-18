@@ -96,11 +96,32 @@ def manual_point_id(manual_code_id: int) -> str:
     return f"pg:m:{manual_code_id}"
 
 
+def obd_point_id(obd_id: int) -> str:
+    """OBD 标准码的稳定向量点号。"""
+    return f"pg:o:{obd_id}"
+
+
+def chunk_point_id(chunk_id: int) -> str:
+    """手册章节切片的稳定向量点号。"""
+    return f"pg:c:{chunk_id}"
+
+
+def faq_point_id(faq_id: int) -> str:
+    """已审客服知识的稳定向量点号。"""
+    return f"pg:f:{faq_id}"
+
+
 def parse_point_id(point_id: str) -> tuple[str, int] | None:
-    """解析 `pg:k:12` / `pg:m:3` 形式的点号。无法识别时返回 None。"""
+    """解析 `pg:k:12` / `pg:m:3` / `pg:o:4` / `pg:c:5` / `pg:f:6` 形式的点号。无法识别时返回 None。"""
     if not point_id or not isinstance(point_id, str):
         return None
-    for kind, prefix in (("knowledge", "pg:k:"), ("manual", "pg:m:")):
+    for kind, prefix in (
+        ("knowledge", "pg:k:"),
+        ("manual", "pg:m:"),
+        ("obd", "pg:o:"),
+        ("chunk", "pg:c:"),
+        ("faq", "pg:f:"),
+    ):
         if point_id.startswith(prefix):
             rest = point_id[len(prefix):]
             if rest.isdigit():

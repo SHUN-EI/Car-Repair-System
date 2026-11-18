@@ -38,6 +38,7 @@ from app.api.payments import router as payments_router
 from app.api.follow_ups import router as follow_ups_router
 from app.api.purchase_orders import router as purchase_orders_router
 from app.api.manual_codes import router as manual_codes_router
+from app.api.obd_codes import router as obd_codes_router
 from app.api.dingtalk import router as dingtalk_router, ensure_oa_services_started
 from app.api.session import router as session_router
 from app.api.fault_codes import router as fault_codes_router
@@ -133,6 +134,7 @@ app.add_middleware(
 app.include_router(work_orders.router, prefix="/api/v1/work-orders", tags=["工单管理"])
 app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["知识管理"])
 app.include_router(manual_codes_router, prefix="/api/v1/manual-codes", tags=["设备手册错误码"])
+app.include_router(obd_codes_router, prefix="/api/v1/obd-codes", tags=["OBD标准故障码"])
 app.include_router(devices.router, prefix="/api/v1/devices", tags=["设备管理"])
 app.include_router(spare_parts.router, prefix="/api/v1/spare-parts", tags=["备件管理"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["用户管理"])

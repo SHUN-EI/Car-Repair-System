@@ -17,3 +17,25 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_title_trgm
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_content_trgm
     ON knowledge_items USING gin (content gin_trgm_ops);
+
+
+CREATE INDEX IF NOT EXISTS idx_obd_codes_embedding_hnsw
+    ON obd_codes USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS idx_obd_codes_search_tsv
+    ON obd_codes USING gin (search_tsv);
+
+CREATE INDEX IF NOT EXISTS idx_repair_manual_chunks_embedding_hnsw
+    ON repair_manual_chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS idx_repair_manual_chunks_search_tsv
+    ON repair_manual_chunks USING gin (search_tsv);
+
+CREATE INDEX IF NOT EXISTS idx_consult_faqs_embedding_hnsw
+    ON consult_faqs USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX IF NOT EXISTS idx_consult_faqs_search_tsv
+    ON consult_faqs USING gin (search_tsv);

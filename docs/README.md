@@ -8,6 +8,7 @@
 | --- | --- |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 以当前代码为准的系统总体架构文档。分层、双门面 Agent、检索漏斗、工单状态机、存储与部署都按仓库实现书写；阈值和已知偏差以该文为准。 |
 | [中间件.md](./中间件.md) | 本项目实际用到的中间件：PostgreSQL（含 pgvector / tsvector）与 Redis。按现网代码列出库、表、键、故障行为和编排；说明为什么没有 MySQL、Milvus、Kafka。 |
+| [RAG多源改造技术方案.md](./RAG多源改造技术方案.md) | 让 RAG 同时支撑原厂/技术手册、完工与历史工单、客服聊天、OBD 标准码库和 PostgreSQL 图谱。第一期表结构与检索挂钩已落地（见文中核心代码举例）；原厂 PDF 自动切片和聊天蒸馏尚未实现。 |
 | [HARNESS.md](./HARNESS.md) | 按现网技术栈改写的分层与依赖契约（PostgreSQL、BGE-M3、bge-reranker-v2-m3）。与本文或该契约冲突时以代码为准；结构与流程说明以 ARCHITECTURE.md 为准。 |
 | [汽修-Agent-平台改造方案.md](./汽修-Agent-平台改造方案.md) | 平台改造范围、领域映射和阶段安排。PR #1 已合并，这里只补了互链。 |
 | [phase2-启用说明.md](./phase2-启用说明.md) | 适配、套餐、报价草案、车主通知、支付占位怎么启用。 |

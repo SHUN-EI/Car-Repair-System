@@ -32,6 +32,11 @@ from app.models.payment import PaymentIntent
 from app.models.follow_up import FollowUpReminder
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine
 from app.models.stock import StockMovement, StorePartStock
+from app.models.rag_source import RagSource
+from app.models.obd_code import ObdCode
+from app.models.repair_manual import RepairManual, RepairManualChunk
+from app.models.knowledge_graph import KgEntity, KgRelation
+from app.models.consult_faq import ConsultConversation, ConsultMessage, ConsultFaq
 
 __all__ = [
     "Device", "WorkOrder", "WorkOrderStatus",
@@ -60,4 +65,9 @@ __all__ = [
     "FollowUpReminder",
     "PurchaseOrder", "PurchaseOrderLine",
     "StockMovement", "StorePartStock",
+    "RagSource",
+    "ObdCode",
+    "RepairManual", "RepairManualChunk",
+    "KgEntity", "KgRelation",
+    "ConsultConversation", "ConsultMessage", "ConsultFaq",
 ]

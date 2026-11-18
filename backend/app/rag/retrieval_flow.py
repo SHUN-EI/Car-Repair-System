@@ -10,7 +10,7 @@
 
 统一封装：
 - make_tools(): 构造检索工具集
-- retrieve_hybrid(): 知识库（vector+BM25）+ 手册错误码路（精确+语义）→ RRF 融合
+- retrieve_hybrid(): 知识库（vector+BM25）+ 手册错误码路 + 手册章节 + OBD + 已审客服知识 → RRF 融合；可选图谱一跳扩展
 - extract_device_and_fault(): 从查询提取设备类型 + 故障关键词
 - filter_rerank_cases(): 粗筛 → 模型精排（bge-reranker-v2-m3）/规则降级 → 严格过滤 → 错误码置顶 → 取前 N 条
   （严格过滤后为空则返回空，不做跨设备兜底，由回答层如实说未检索到）
@@ -57,14 +57,17 @@ def retrieve_hybrid(
     top_k: Optional[int] = None,
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
+    expand_graph: bool = True,
 ) -> Tuple[List[dict], List[str], RetrievalTools]:
-    """双库检索：知识库（vector + BM25）+ 手册错误码路（精确 + 语义）→ RRF 融合
+    """多源混合检索：原有知识库与手册错误码路，加上手册章节、OBD、已审客服知识，可选图谱一跳。
 
-    向量路失败（推理服务不可用）时自动降级 BM25-only：结果全部为 rrf_only 标记，
-    由 filter_rerank_cases 识别并跳过分数阈值。
+    向量路失败（推理服务不可用）时自动降级关键词-only：结果全部为 rrf_only 标记，
+    由 filter_rerank_cases 识别并跳过分数阈值。新表尚未迁移或查询失败时，对应路返回空，
+    不打断原有四路。
 
     Args:
         top_k: 各路召回条数（默认 settings.RECALL_TOP_K），RRF 融合后候选池同值
+        expand_graph: 是否按症状/故障码做图谱一跳，并把关联条目并入融合
 
     Returns:
         (merged, error_codes, tools): RRF 融合结果 / 识别出的错误码 / 检索工具集
@@ -72,6 +75,8 @@ def retrieve_hybrid(
     top_k = top_k or settings.RECALL_TOP_K
     tools = make_tools()
     error_codes = extract_error_codes(query)
+    if fault_code and fault_code not in error_codes:
+        error_codes = [fault_code, *error_codes]
     result_sets = []
 
     vector_result = tools.vector_search(
@@ -90,7 +95,7 @@ def retrieve_hybrid(
 
     # 错误码双路：手册精确匹配（最高优先级）+ 手册语义检索
     if error_codes:
-        logger.info(f"[RetrievalFlow] 检测到错误码 {error_codes}，启用双库检索（手册 + 知识库）")
+        logger.info(f"[RetrievalFlow] 检测到错误码 {error_codes}，启用手册错误码路")
         manual_exact = tools.manual_code_search(error_codes, device_type=device_type, top_k=10)
         if manual_exact.success and manual_exact.data:
             result_sets.append(manual_exact.data)
@@ -98,7 +103,78 @@ def retrieve_hybrid(
         if manual_vec.success and manual_vec.data:
             result_sets.append(manual_vec.data)
 
+    # 多源扩展：问句解析 + 可选图谱一跳 + OBD / 手册章节 / 已审客服知识
+    from app.core.database import SessionLocal as _SessionLocal
+    from app.rag.query_parse import parse_consult_query
+    from app.rag.graph_service import expand_one_hop, load_alias_pairs
+    from app.rag.multisource_search import (
+        fetch_linked_sources,
+        search_faq_keyword,
+        search_faq_vector,
+        search_manual_chunks_keyword,
+        search_manual_chunks_vector,
+        search_obd_exact,
+        search_obd_semantic,
+    )
+
+    graph_db = None
+    extra_aliases = []
+    try:
+        graph_db = _SessionLocal()
+        extra_aliases = load_alias_pairs(graph_db)
+    except Exception as exc:
+        logger.warning(f"[RetrievalFlow] 打开图谱会话失败: {exc}")
+        graph_db = None
+
+    try:
+        parsed = parse_consult_query(query, existing_error_codes=error_codes, extra_aliases=extra_aliases)
+        for code in parsed.error_codes:
+            if code not in error_codes:
+                error_codes.append(code)
+
+        if parsed.error_codes:
+            obd_exact = search_obd_exact(parsed.error_codes, top_k=10)
+            if obd_exact:
+                result_sets.append(obd_exact)
+        obd_sem = search_obd_semantic(query, top_k=10)
+        if obd_sem:
+            result_sets.append(obd_sem)
+
+        chunk_vec = search_manual_chunks_vector(query, top_k=top_k)
+        if chunk_vec:
+            result_sets.append(chunk_vec)
+        chunk_kw = search_manual_chunks_keyword(query, top_k=top_k)
+        if chunk_kw:
+            result_sets.append(chunk_kw)
+
+        faq_vec = search_faq_vector(query, top_k=top_k)
+        if faq_vec:
+            result_sets.append(faq_vec)
+        faq_kw = search_faq_keyword(query, top_k=top_k)
+        if faq_kw:
+            result_sets.append(faq_kw)
+
+        if expand_graph and graph_db is not None and parsed.canonical_keys:
+            expansion = expand_one_hop(graph_db, parsed.canonical_keys)
+            linked = fetch_linked_sources(expansion.get("source_refs") or [], db=graph_db)
+            if linked:
+                logger.info(
+                    f"[RetrievalFlow] 图谱一跳命中实体 "
+                    f"{[e.get('canonical_key') for e in expansion.get('entities') or []]}，"
+                    f"关联 {len(linked)} 条"
+                )
+                result_sets.append(linked)
+    finally:
+        if graph_db is not None:
+            graph_db.close()
+
     merged = rrf_merge(result_sets, top_n=top_k) if result_sets else []
+    # 精确命中的 OBD / 手册错误码排在前面，其余保持 RRF 顺序
+    if merged:
+        exact_methods = {"obd_code_exact", "manual_code_exact"}
+        exact = [m for m in merged if m.get("method") in exact_methods]
+        rest = [m for m in merged if m.get("method") not in exact_methods]
+        merged = exact + rest
     return merged, error_codes, tools
 
 
@@ -288,8 +364,10 @@ def filter_rerank_cases(
         if error_codes:
             exact_hits = [
                 m for m in coarse
-                if m.get("method") == "manual_code_exact"
-                and not _manual_exact_device_conflict(m, require_device)
+                if (
+                    (m.get("method") == "manual_code_exact" and not _manual_exact_device_conflict(m, require_device))
+                    or m.get("method") == "obd_code_exact"
+                )
             ]
             if exact_hits:
                 seen = {id(x) for x in strict}

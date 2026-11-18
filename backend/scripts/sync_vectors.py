@@ -74,6 +74,12 @@ def main():
 
         logger.info(f"同步完成: 成功 {success}, 跳过 {skipped}, 失败 {failed}")
         logger.info(f"knowledge_items.embedding 当前向量总数: {count_knowledge_vectors()}")
+        try:
+            from scripts.seed_rag_multisource import sync_embeddings
+            extra = sync_embeddings(db)
+            logger.info(f"多源表向量同步: {extra}")
+        except Exception as exc:
+            logger.warning(f"多源表向量同步跳过: {exc}")
     finally:
         db.close()
 

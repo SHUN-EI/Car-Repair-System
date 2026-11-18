@@ -217,8 +217,8 @@
                       >
                         <span
                           class="chip-tag chip-source"
-                          :class="item.source_type === 'MANUAL' ? 'chip-source-manual' : 'chip-source-case'"
-                        >{{ item.source_type === 'MANUAL' ? '手册' : '案例' }}</span>
+                          :class="sourceTypeClass(item.source_type)"
+                        >{{ sourceTypeLabel(item.source_type) }}</span>
                         <span class="chip-tag chip-fault" v-if="item.fault">{{ item.fault }}</span>
                         <span class="chip-tag chip-err" v-if="item.error_code">{{ item.error_code }}</span>
                         <span class="chip-tag" v-if="item.device_type">{{ item.device_type }}</span>
@@ -321,20 +321,20 @@
           <el-tag
             v-if="sourceDialog.item.source_type"
             size="small"
-            :type="sourceDialog.item.source_type === 'MANUAL' ? 'warning' : 'primary'"
+            :type="sourceDialogTagType(sourceDialog.item.source_type)"
             effect="plain"
-          >{{ sourceDialog.item.source_type === 'MANUAL' ? '手册' : '案例' }}</el-tag>
+          >{{ sourceTypeLabel(sourceDialog.item.source_type) }}</el-tag>
           <el-tag v-if="sourceDialog.item.device_type" size="small" type="success" effect="plain">{{ sourceDialog.item.device_type }}</el-tag>
           <el-tag v-if="sourceDialog.item.error_code" size="small" type="danger" effect="plain">{{ sourceDialog.item.error_code }}</el-tag>
           <el-tag v-if="sourceDialog.item.fault_code" size="small" type="warning" effect="plain">{{ sourceDialog.item.fault_code }}</el-tag>
           <span class="source-detail-score">相关度 {{ (sourceDialog.item.score * 100).toFixed(0) }}%</span>
         </div>
         <!-- 手册出处：设备说明书/维修手册 + 章节 + 页码 -->
-        <div v-if="sourceDialog.item.source_type === 'MANUAL'" class="source-detail-cite">
-          <div class="cite-row"><span class="cite-label">手册</span>{{ sourceDialog.item.manual_name }}</div>
-          <div class="cite-row"><span class="cite-label">章节</span>{{ sourceDialog.item.chapter }}</div>
-          <div class="cite-row"><span class="cite-label">页码</span>{{ sourceDialog.item.page }}</div>
-          <div class="cite-row"><span class="cite-label">错误码</span>{{ sourceDialog.item.error_code }}</div>
+        <div v-if="hasCite(sourceDialog.item.source_type)" class="source-detail-cite">
+          <div class="cite-row" v-if="sourceDialog.item.manual_name"><span class="cite-label">出处</span>{{ sourceDialog.item.manual_name }}</div>
+          <div class="cite-row" v-if="sourceDialog.item.chapter"><span class="cite-label">章节</span>{{ sourceDialog.item.chapter }}</div>
+          <div class="cite-row" v-if="sourceDialog.item.page"><span class="cite-label">页码</span>{{ sourceDialog.item.page }}</div>
+          <div class="cite-row" v-if="sourceDialog.item.error_code"><span class="cite-label">错误码</span>{{ sourceDialog.item.error_code }}</div>
         </div>
         <div class="source-detail-content">{{ sourceDialog.item.content }}</div>
         <div v-if="sourceDialog.item.fault_tags?.length" class="source-detail-tags">
@@ -380,6 +380,44 @@ const sessions = ref([])
 const sessionIdCounter = ref(0)
 
 const sourceDialog = reactive({ visible: false, item: null })
+
+/**
+ * 把检索来源类型显示成中文标签。
+ */
+const sourceTypeLabel = (type) => {
+  const map = {
+    MANUAL: '手册错误码',
+    OEM_MANUAL: '原厂手册',
+    TECH_MANUAL: '技术手册',
+    OBD: 'OBD',
+    FAQ: '客服知识',
+    CASE: '案例',
+  }
+  return map[type] || '案例'
+}
+/**
+ * 来源徽标样式：手册偏橙，OBD 偏红，客服知识偏绿，案例偏蓝。
+ */
+const sourceTypeClass = (type) => {
+  if (type === 'MANUAL' || type === 'OEM_MANUAL' || type === 'TECH_MANUAL') return 'chip-source-manual'
+  if (type === 'OBD') return 'chip-source-obd'
+  if (type === 'FAQ') return 'chip-source-faq'
+  return 'chip-source-case'
+}
+/**
+ * 详情弹窗里来源标签的 Element Plus 类型。
+ */
+const sourceDialogTagType = (type) => {
+  if (type === 'MANUAL' || type === 'OEM_MANUAL' || type === 'TECH_MANUAL') return 'warning'
+  if (type === 'OBD') return 'danger'
+  if (type === 'FAQ') return 'success'
+  return 'primary'
+}
+/**
+ * 手册、OBD 等带来源字段的条目才展示出处区块。
+ */
+const hasCite = (type) => ['MANUAL', 'OEM_MANUAL', 'TECH_MANUAL', 'OBD'].includes(type)
+
 
 // ===== 追踪模式 =====
 const repairMode = ref('qa')
@@ -1577,7 +1615,7 @@ const showSourceDetail = (item) => {
   background: #FFF3E8;
   color: #FF7D00;
 }
-/* 来源类型徽标：手册=橙色，案例=蓝色 */
+/* 来源类型徽标：手册=橙色，案例=蓝色，OBD=红色，客服知识=绿色 */
 .chip-source-manual {
   background: #FFF3E8;
   color: #FF7D00;
@@ -1587,6 +1625,16 @@ const showSourceDetail = (item) => {
   background: var(--color-primary-light);
   color: var(--color-primary);
   border: 1px solid var(--color-primary-light);
+}
+.chip-source-obd {
+  background: #FFF0F0;
+  color: #F56C6C;
+  border: 1px solid #FBC4C4;
+}
+.chip-source-faq {
+  background: #E8FFFB;
+  color: #0FC6C2;
+  border: 1px solid #B7F0ED;
 }
 /* 错误码 chip */
 .chip-err {

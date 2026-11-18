@@ -316,22 +316,32 @@ def _pipeline_first_with_rescue(tools: RetrievalTools, query: str,
 
 
 def _to_reference(ref: dict, fault: str = "") -> dict:
-    """把检索结果转为前端参考案例格式；手册条目带 source_type + 出处字段，多故障时带 fault 归属标签"""
-    is_manual = ref.get("manual_code_id") is not None
+    """把检索结果转为前端参考格式，带来源类型和出处字段。"""
+    source_type = (ref.get("source_type") or "").upper()
+    if not source_type:
+        if ref.get("manual_code_id") is not None:
+            source_type = "MANUAL"
+        elif ref.get("obd_id") is not None or ref.get("method", "").startswith("obd_"):
+            source_type = "OBD"
+        elif ref.get("chunk_id") is not None:
+            source_type = "OEM_MANUAL"
+        elif ref.get("faq_id") is not None:
+            source_type = "FAQ"
+        else:
+            source_type = "CASE"
     item = {
-        "knowledge_id": ref.get("knowledge_id") or ref.get("manual_code_id") or ref.get("id", 0),
-        "source_type": "MANUAL" if is_manual else "CASE",   # 来源类型：手册 / 工单案例
+        "knowledge_id": ref.get("knowledge_id") or ref.get("manual_code_id") or ref.get("obd_id") or ref.get("chunk_id") or ref.get("faq_id") or ref.get("id", 0),
+        "source_type": source_type,
         "title": ref.get("title", ""),
         "content": (ref.get("content", "") or "")[:200],
         "device_type": ref.get("device_type", ""),
-        "fault_code": ref.get("fault_code", ""),
+        "fault_code": ref.get("fault_code") or ref.get("error_code") or "",
         "score": round(_effective_score(ref), 4),
         "summary": ref.get("summary", ""),
     }
-    # 手册条目出处：错误码 + 手册名 + 章节 + 页码（前端展示/回溯用）
-    if is_manual:
-        item["error_code"] = ref.get("error_code", "")
-        item["manual_name"] = ref.get("manual_name", "")
+    if source_type in {"MANUAL", "OEM_MANUAL", "TECH_MANUAL", "OBD"}:
+        item["error_code"] = ref.get("error_code", "") or item["fault_code"]
+        item["manual_name"] = ref.get("manual_name", "") or ref.get("standard", "")
         item["chapter"] = ref.get("chapter", "")
         item["page"] = ref.get("page", "")
     if fault:

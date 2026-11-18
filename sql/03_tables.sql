@@ -924,3 +924,189 @@ COMMENT ON COLUMN work_order_import_items.work_order_id IS '确认后生成的�
 CREATE INDEX ix_woi_batch_status ON work_order_import_items (batch_id, status);
 CREATE INDEX ix_work_order_import_items_id ON work_order_import_items (id);
 CREATE INDEX ix_work_order_import_items_batch_id ON work_order_import_items (batch_id);
+
+
+-- ========== 多源 RAG（Alembic d6e7f8a9b0c1）==========
+
+CREATE TABLE rag_sources (
+    id SERIAL PRIMARY KEY,
+    source_kind VARCHAR(40) NOT NULL,
+    title VARCHAR(300) NOT NULL,
+    publisher VARCHAR(200),
+    version VARCHAR(80),
+    applicability JSONB,
+    file_uri TEXT,
+    checksum VARCHAR(64),
+    copyright_note TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    ingested_at TIMESTAMP,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE rag_sources IS '多源 RAG 来源登记：手册、工单、聊天、OBD、图谱等每一批入库数据。';
+COMMENT ON COLUMN rag_sources.source_kind IS 'OEM_MANUAL / TECH_MANUAL / WORK_ORDER / HISTORICAL_WO / CHAT / OBD / GRAPH';
+COMMENT ON COLUMN rag_sources.status IS 'DRAFT / PUBLISHED / DEPRECATED';
+CREATE INDEX ix_rag_sources_source_kind ON rag_sources (source_kind);
+CREATE INDEX ix_rag_sources_status ON rag_sources (status);
+CREATE INDEX ix_rag_sources_id ON rag_sources (id);
+
+CREATE TABLE obd_codes (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(20) NOT NULL,
+    system VARCHAR(1),
+    title VARCHAR(300) NOT NULL,
+    description_zh TEXT NOT NULL,
+    description_en TEXT,
+    typical_causes TEXT,
+    typical_steps TEXT,
+    standard VARCHAR(80) DEFAULT 'SAE J2012',
+    source_id INTEGER REFERENCES rag_sources(id),
+    status VARCHAR(20) NOT NULL DEFAULT 'PUBLISHED',
+    embedding vector(1024),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        obd_search_tsv(code, title, description_zh, typical_causes, typical_steps)
+    ) STORED,
+    point_id VARCHAR(100),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE obd_codes IS 'OBD 标准故障码库，与手册错误码、工单内部对照表分开。';
+COMMENT ON COLUMN obd_codes.code IS '标准码，如 P0300；唯一';
+COMMENT ON COLUMN obd_codes.search_tsv IS '由 obd_search_tsv() 生成，不能直接 UPDATE';
+CREATE UNIQUE INDEX ix_obd_codes_code ON obd_codes (code);
+CREATE UNIQUE INDEX ix_obd_codes_point_id ON obd_codes (point_id);
+CREATE INDEX ix_obd_codes_status ON obd_codes (status);
+CREATE INDEX ix_obd_codes_id ON obd_codes (id);
+
+CREATE TABLE repair_manuals (
+    id SERIAL PRIMARY KEY,
+    source_id INTEGER REFERENCES rag_sources(id),
+    name VARCHAR(300) NOT NULL,
+    manual_type VARCHAR(20) NOT NULL DEFAULT 'OEM',
+    make VARCHAR(100),
+    model VARCHAR(100),
+    year_from INTEGER,
+    year_to INTEGER,
+    language VARCHAR(20) DEFAULT 'zh',
+    version VARCHAR(80),
+    file_uri TEXT,
+    copyright_note TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE repair_manuals IS '原厂或技术手册登记，保留原文件路径。';
+COMMENT ON COLUMN repair_manuals.manual_type IS 'OEM 原厂手册 / TECH 技术手册';
+CREATE INDEX ix_repair_manuals_status ON repair_manuals (status);
+CREATE INDEX ix_repair_manuals_make_model ON repair_manuals (make, model);
+CREATE INDEX ix_repair_manuals_id ON repair_manuals (id);
+
+CREATE TABLE repair_manual_chunks (
+    id SERIAL PRIMARY KEY,
+    manual_id INTEGER NOT NULL REFERENCES repair_manuals(id),
+    chapter VARCHAR(200),
+    section VARCHAR(200),
+    page_from VARCHAR(50),
+    page_to VARCHAR(50),
+    chunk_type VARCHAR(40),
+    title VARCHAR(300) NOT NULL,
+    content TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    embedding vector(1024),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        chunk_search_tsv(title, content, chapter)
+    ) STORED,
+    point_id VARCHAR(100),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE repair_manual_chunks IS '手册章节切片，按章节/页码切分后写入向量和关键词列。';
+COMMENT ON COLUMN repair_manual_chunks.chunk_type IS 'procedure / spec / wiring / maintenance / general';
+CREATE INDEX ix_repair_manual_chunks_manual_id ON repair_manual_chunks (manual_id);
+CREATE UNIQUE INDEX ix_repair_manual_chunks_point_id ON repair_manual_chunks (point_id);
+CREATE INDEX ix_repair_manual_chunks_status ON repair_manual_chunks (status);
+CREATE INDEX ix_repair_manual_chunks_id ON repair_manual_chunks (id);
+
+CREATE TABLE kg_entities (
+    id SERIAL PRIMARY KEY,
+    entity_type VARCHAR(40) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    canonical_key VARCHAR(200) NOT NULL,
+    aliases JSONB,
+    properties JSONB,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE kg_entities IS '知识图谱实体。canonical_key 用于合并同义词，如「刹车有点紧」归到「刹车紧」。';
+COMMENT ON COLUMN kg_entities.entity_type IS 'vehicle_model / system / part / symptom / fault_code / procedure / cause';
+CREATE UNIQUE INDEX ix_kg_entities_canonical_key ON kg_entities (canonical_key);
+CREATE INDEX ix_kg_entities_entity_type ON kg_entities (entity_type);
+CREATE INDEX ix_kg_entities_id ON kg_entities (id);
+
+CREATE TABLE kg_relations (
+    id SERIAL PRIMARY KEY,
+    subject_id INTEGER NOT NULL REFERENCES kg_entities(id),
+    predicate VARCHAR(80) NOT NULL,
+    object_id INTEGER NOT NULL REFERENCES kg_entities(id),
+    properties JSONB,
+    source_kind VARCHAR(40) NOT NULL,
+    source_ref VARCHAR(80) NOT NULL,
+    confidence DOUBLE PRECISION DEFAULT 1.0,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    CONSTRAINT uq_kg_relations_triple_source
+        UNIQUE (subject_id, predicate, object_id, source_kind, source_ref)
+);
+COMMENT ON TABLE kg_relations IS '知识图谱有向关系，必须带来源，问诊时只做一跳扩展。';
+COMMENT ON COLUMN kg_relations.predicate IS 'applies_to / manifests_as / caused_by / has_code / needs_part / suggests_step';
+COMMENT ON COLUMN kg_relations.source_ref IS '来源编号，如 chunk:12 / obd:P0300 / knowledge:3';
+CREATE INDEX ix_kg_relations_subject_pred ON kg_relations (subject_id, predicate);
+CREATE INDEX ix_kg_relations_object_pred ON kg_relations (object_id, predicate);
+CREATE INDEX ix_kg_relations_id ON kg_relations (id);
+
+CREATE TABLE consult_conversations (
+    id SERIAL PRIMARY KEY,
+    channel VARCHAR(40) NOT NULL,
+    store_id INTEGER REFERENCES stores(id),
+    staff_user_id INTEGER REFERENCES users(id),
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE consult_conversations IS '咨询或客服会话头信息，按门店隔离。原始聊天默认不进混合检索。';
+CREATE INDEX ix_consult_conversations_store_id ON consult_conversations (store_id);
+CREATE INDEX ix_consult_conversations_id ON consult_conversations (id);
+
+CREATE TABLE consult_messages (
+    id SERIAL PRIMARY KEY,
+    conversation_id INTEGER NOT NULL REFERENCES consult_conversations(id),
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE consult_messages IS '已脱敏的会话消息，仅用于本会话上下文或质检。';
+COMMENT ON COLUMN consult_messages.role IS 'user / assistant / staff';
+CREATE INDEX ix_consult_messages_conversation_id ON consult_messages (conversation_id);
+CREATE INDEX ix_consult_messages_id ON consult_messages (id);
+
+CREATE TABLE consult_faqs (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(300) NOT NULL,
+    content TEXT NOT NULL,
+    source_conversation_id INTEGER REFERENCES consult_conversations(id),
+    store_id INTEGER REFERENCES stores(id),
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    embedding vector(1024),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        faq_search_tsv(title, content)
+    ) STORED,
+    point_id VARCHAR(100),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+COMMENT ON TABLE consult_faqs IS '从对话中抽取、审核通过后才可检索的客服知识。';
+COMMENT ON COLUMN consult_faqs.status IS 'DRAFT / PUBLISHED / DEPRECATED';
+CREATE UNIQUE INDEX ix_consult_faqs_point_id ON consult_faqs (point_id);
+CREATE INDEX ix_consult_faqs_status ON consult_faqs (status);
+CREATE INDEX ix_consult_faqs_id ON consult_faqs (id);

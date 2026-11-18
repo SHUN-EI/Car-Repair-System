@@ -30,6 +30,11 @@ from app.models.payment import PaymentIntent  # noqa: F401
 from app.models.follow_up import FollowUpReminder  # noqa: F401
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine  # noqa: F401
 from app.models.stock import StockMovement, StorePartStock  # noqa: F401
+from app.models.rag_source import RagSource  # noqa: F401
+from app.models.obd_code import ObdCode  # noqa: F401
+from app.models.repair_manual import RepairManual, RepairManualChunk  # noqa: F401
+from app.models.knowledge_graph import KgEntity, KgRelation  # noqa: F401
+from app.models.consult_faq import ConsultConversation, ConsultMessage, ConsultFaq  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

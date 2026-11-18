@@ -224,3 +224,34 @@ def drop_and_recreate_manual_collection() -> None:
 def flush_manual_vectors() -> None:
     """兼容接口：PostgreSQL 提交即落盘，此处为空操作。"""
     _log_code_store().flush()
+
+
+def upsert_row_embedding(table: str, row_id: int, text_value: str, point_id: str) -> str:
+    """把一段文本编码后写入指定表的 embedding 和 point_id。推理服务不可用时抛错给调用方处理。"""
+    from sqlalchemy import text as _sql
+    from app.core.database import SessionLocal
+    from app.core.vector_store import _vector_literal
+
+    allowed = {
+        "obd_codes": "obd",
+        "repair_manual_chunks": "chunk",
+        "consult_faqs": "faq",
+    }
+    if table not in allowed:
+        raise ValueError(f"不支持为表 {table} 写 embedding")
+    vector = encode_text(text_value)
+    db = SessionLocal()
+    try:
+        db.execute(
+            _sql(
+                f"UPDATE {table} "
+                "SET embedding = CAST(:embedding AS vector), point_id = :point_id "
+                "WHERE id = :id"
+            ),
+            {"embedding": _vector_literal(vector), "point_id": point_id, "id": row_id},
+        )
+        db.commit()
+        return point_id
+    finally:
+        db.close()
+

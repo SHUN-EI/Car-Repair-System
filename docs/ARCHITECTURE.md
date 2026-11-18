@@ -411,7 +411,7 @@ JWT：`ALGORITHM=HS256`，`ACCESS_TOKEN_EXPIRE_MINUTES=30`。生产密钥策略�
 
 ### 4.1 检索漏斗
 
-公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（向量、关键词 `bm25_search`、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。检索协议未改：仍是最多四路召回 → RRF（k=60）→ 粗筛 → `bge-reranker-v2-m3`。
+公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（向量、关键词 `bm25_search`、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。核心漏斗仍是召回 → RRF（k=60）→ 粗筛 → `bge-reranker-v2-m3`。在原有知识库向量/关键词与手册错误码精确/语义四路之外，`retrieve_hybrid` 还会召回 OBD 标准码、已发布手册章节、已审客服知识，并可选做图谱一跳扩展；精确命中的 OBD / 手册错误码会排到融合结果前面。原厂 PDF 全文切片入库和生产级聊天蒸馏尚未实现，设计与代码举例见 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md)。
 
 HTTP 的 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`、`/answer/stream`、`/answer/expert*` 由 `app/api/search.py` 鉴权后交给 `app/rag/search_app.py` 编排；其中 `/answer/stream` 走 `consult_guide_agent.invoke_qa` → `AgentRouter.qa_kind` 分流，故障分支执行 `FAULT_SUBGRAPH`。这条路径不会把工单进度自动转到工单 Agent。其它入口还包括钉钉/MCP `search_knowledge`。
 
@@ -741,7 +741,7 @@ HTTP 检索相关其它端点（均需登录）：
 
 ## 6. 存储设计
 
-表结构以 `backend/app/models/` 与 Alembic 为准。`init-db.sql` 只作历史对照，不要用来建现网库。模型普遍继承 `BaseModel`（`id`、`created_at`、`updated_at`）；部分表自管时间戳。完整建表语句（扩展、函数、枚举、34 张表和额外索引）在仓库 `sql/` 目录，是对照当前模型与 Alembic 头修订 `c4d5e6f7a8b9` 的快照；运行库仍用 Alembic 升级。
+表结构以 `backend/app/models/` 与 Alembic 为准。`init-db.sql` 只作历史对照，不要用来建现网库。模型普遍继承 `BaseModel`（`id`、`created_at`、`updated_at`）；部分表自管时间戳。完整建表语句（扩展、函数、枚举、43 张表和额外索引）在仓库 `sql/` 目录，是对照当前模型与 Alembic 头修订 `d6e7f8a9b0c1` 的快照；运行库仍用 Alembic 升级。
 
 ### 6.1 ER 图（核心关系）
 
@@ -773,7 +773,7 @@ erDiagram
 
 ### 6.2 表结构
 
-下面按主题列出当前模型中的 **34** 张表，每张表现网字段都用表格描述。完整 `CREATE TABLE` 见 [`sql/`](../sql/)。默认值若写「数据库」，表示迁移或模型里有 `server_default`，已写入 `sql/` 的 `DEFAULT`；若写「应用侧」，表示只在 SQLAlchemy 插入时写入，建表语句里没有数据库 `DEFAULT`。
+下面按主题列出当前模型中的 **43** 张表，每张表现网字段都用表格描述。完整 `CREATE TABLE` 见 [`sql/`](../sql/)。默认值若写「数据库」，表示迁移或模型里有 `server_default`，已写入 `sql/` 的 `DEFAULT`；若写「应用侧」，表示只在 SQLAlchemy 插入时写入，建表语句里没有数据库 `DEFAULT`。
 
 `fault_code_mappings`、`fault_phenomenon_categories`、`root_cause_categories` 只在模型里定义，Alembic 没有对应的 `create_table`；只跑迁移的空库不会自动出现这三张表。
 
@@ -1509,6 +1509,79 @@ PDF 导入批次。确认前只写导入表，不写生产 `work_orders`。模�
 - 唯一约束 `uq_leave_req_day_shift`：(`leave_request_id`, `leave_date`, `leave_shift`)
 - 索引 `ix_lrd_date_shift`：(`leave_date`, `leave_shift`)
 
+
+#### 多源 RAG 表（`d6e7f8a9b0c1`）
+
+以下 9 张表在迁移 `d6e7f8a9b0c1` 中新增。检索协议仍走 `retrieve_hybrid`；新表尚未迁移或查询失败时对应路返回空，不打断原有四路。完整 `CREATE TABLE` 见 [`sql/`](../sql/)。
+
+##### `rag_sources`
+
+来源登记：每一批入库数据的种类、版本、原文件和发布状态。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增 | — |
+| `source_kind` | `VARCHAR(40)` | 否 | — | 索引 | `OEM_MANUAL` / `TECH_MANUAL` / `WORK_ORDER` / `HISTORICAL_WO` / `CHAT` / `OBD` / `GRAPH` |
+| `title` | `VARCHAR(300)` | 否 | — | — | 来源标题 |
+| `publisher` | `VARCHAR(200)` | 是 | — | — | 出版社或厂商 |
+| `version` | `VARCHAR(80)` | 是 | — | — | — |
+| `applicability` | `JSONB` | 是 | — | — | 适用车型等 |
+| `file_uri` | `TEXT` | 是 | — | — | 原文件路径或 URI |
+| `checksum` | `VARCHAR(64)` | 是 | — | — | — |
+| `copyright_note` | `TEXT` | 是 | — | — | 原厂手册仅限门店内检索 |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `DRAFT` | 索引 | `DRAFT` / `PUBLISHED` / `DEPRECATED` |
+| `ingested_at` | `TIMESTAMP` | 是 | — | — | 完成入库时间 |
+| `created_at` / `updated_at` | `TIMESTAMP` | 是 | 应用侧 | — | — |
+
+##### `obd_codes`
+
+SAE 风格 P/C/B/U 标准定义，与 `manual_code_entries`、`fault_code_mappings` 分开。`search_tsv` 由 `obd_search_tsv()` 生成。点号为 `pg:o:{id}`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增 | — |
+| `code` | `VARCHAR(20)` | 否 | — | 唯一 | 如 `P0300` |
+| `system` | `VARCHAR(1)` | 是 | — | — | P/C/B/U |
+| `title` | `VARCHAR(300)` | 否 | — | — | 中文短标题 |
+| `description_zh` | `TEXT` | 否 | — | — | 中文含义 |
+| `description_en` | `TEXT` | 是 | — | — | 英文含义 |
+| `typical_causes` / `typical_steps` | `TEXT` | 是 | — | — | 常见原因、常规步骤 |
+| `standard` | `VARCHAR(80)` | 是 | 数据库 `SAE J2012` | — | — |
+| `source_id` | `INTEGER` | 是 | — | 外键 `rag_sources.id` | — |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `PUBLISHED` | 索引 | — |
+| `embedding` | `vector(1024)` | 是 | — | HNSW | bge-m3 |
+| `search_tsv` | `tsvector（生成列）` | 否 | 生成列 | GIN | — |
+| `point_id` | `VARCHAR(100)` | 是 | — | 唯一 | `pg:o:{id}` |
+| `created_at` / `updated_at` | `TIMESTAMP` | 是 | 应用侧 | — | — |
+
+##### `repair_manuals` 与 `repair_manual_chunks`
+
+一本手册的登记及其章节切片。错误码章节仍可写入 `manual_code_entries`；正文按章节/页码切分。切片点号为 `pg:c:{id}`。
+
+| 表 | 关键字段 | 说明 |
+|------|------|------|
+| `repair_manuals` | `name`、`manual_type`（`OEM`/`TECH`）、`make`/`model`/`year_from`/`year_to`、`file_uri`、`copyright_note`、`status`、`source_id` | 须保留原文件路径；默认状态 `DRAFT` |
+| `repair_manual_chunks` | `manual_id`、`chapter`/`section`、`page_from`/`page_to`、`chunk_type`、`title`/`content`、`status`、`embedding`、`search_tsv`、`point_id` | `search_tsv` 由 `chunk_search_tsv()` 生成；已发布的手册与切片才会进入检索 |
+
+##### `kg_entities` 与 `kg_relations`
+
+PostgreSQL 浅层图谱。问诊只做一跳扩展，不在这一期引入 Neo4j 或社区报告。
+
+| 表 | 关键字段 | 说明 |
+|------|------|------|
+| `kg_entities` | `entity_type`、`name`、`canonical_key`（唯一）、`aliases`、`properties` | 「刹车有点紧」归到规范名「刹车紧」 |
+| `kg_relations` | `subject_id`、`predicate`、`object_id`、`properties`、`source_kind`、`source_ref`、`confidence` | 唯一约束 `(subject_id, predicate, object_id, source_kind, source_ref)`；`source_ref` 如 `chunk:12`、`obd:P0300` |
+
+##### `consult_conversations`、`consult_messages` 与 `consult_faqs`
+
+会话可落库，但原始聊天默认不进 `retrieve_hybrid`；只有状态为 `PUBLISHED` 的 `consult_faqs` 可检索。FAQ 点号为 `pg:f:{id}`。生产级自动落库与蒸馏尚未接线。
+
+| 表 | 关键字段 | 说明 |
+|------|------|------|
+| `consult_conversations` | `channel`、`store_id`、`staff_user_id`、`status` | 按门店隔离 |
+| `consult_messages` | `conversation_id`、`role`、`content` | 正文应为脱敏后文本 |
+| `consult_faqs` | `title`、`content`、`source_conversation_id`、`store_id`、`status`、`embedding`、`search_tsv`、`point_id` | `search_tsv` 由 `faq_search_tsv()` 生成 |
+
 ### 6.3 分库分表策略
 
 代码和迁移里**没有**分库分表或按门店拆库。门店隔离是查询条件（`apply_store_column`），不是物理分片。单库即可覆盖现网模型。
@@ -1555,6 +1628,17 @@ PDF 导入批次。确认前只写导入表，不写生产 `work_orders`。模�
 | `milvus_id` | VARCHAR，唯一 | 兼容点号，新值为 `pg:m:{id}` |
 
 `LogCodeVectorStore` 复用同一套写入与距离换算逻辑。编码文本还可能包含 `message_text` 与前 3 条情形信号，那是写入时的拼接规则（`MAX_MANUAL_VECTOR_TEXT_LEN`），不是单独的向量字段。
+
+#### 多源表检索列（`d6e7f8a9b0c1`）
+
+| 表 | 向量列 | 全文列 | 点号 |
+|------|------|------|------|
+| `obd_codes` | `embedding vector(1024)`，HNSW 余弦 | 生成列 `search_tsv`，由 `obd_search_tsv()` 计算 | `pg:o:{id}` |
+| `repair_manual_chunks` | 同上 | 生成列 `search_tsv`，由 `chunk_search_tsv()` 计算 | `pg:c:{id}` |
+| `consult_faqs` | 同上 | 生成列 `search_tsv`，由 `faq_search_tsv()` 计算 | `pg:f:{id}` |
+
+`rag_sources`、`repair_manuals` 和图谱表不建向量列。图谱一跳只提供来源编号，真正送进 RRF 的仍是上述正文或既有案例/手册错误码。
+
 
 ### 6.7 Redis Key 与过期
 
@@ -1743,6 +1827,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - 没有支付渠道、webhook 履约或除 STUB 以外的清算。
 - 没有本仓库内可核对的 k3s / 生产 Ingress 清单。
 - 开源模型后训练方案与执行手册是独立 docs，不表示现网已经换成后训练权重；现网 Chat 走 `CHAT_LLM_MODE`（默认云端 `qwen-plus`，本地可切 vLLM）。
+- 多源 RAG 的表结构和检索挂钩已按 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md) 第一期落地（`rag_sources`、`obd_codes`、手册章节、已审客服知识、PostgreSQL 图谱一跳），但原厂 PDF 全文自动切片入库、咨询会话自动落库与聊天蒸馏尚未实现；空表时对应召回路软失败，不影响原有四路。
 
 ---
 
