@@ -304,8 +304,8 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
     维修场景下，同设备同故障码可能有不同原因和方案，不能仅凭标题相似度判定重复。
     流程：
     1. 故障码+设备类型精确匹配 → 若命中，直接调用 DedupAgent
-    2. 向量检索找到候选条目（阈值 0.55）
-    3. 对相似度 >= 0.65 的候选，调用 DedupAgent 对比原因和方案
+    2. 向量检索找到候选条目（阈值 DEDUP_CANDIDATE_THRESHOLD，默认 0.45；含草稿和审核中）
+    3. 对相似度 >= DEDUP_LLM_THRESHOLD（默认 0.55）的候选，调用 DedupAgent 对比原因和方案
     4. Agent 判定为真重复 → 跳过；判定为相似案例 → 正常收录
     """
     has_dup = False
@@ -389,6 +389,7 @@ def _check_duplicate(extracted, db: Session, exclude_id: Optional[int] = None) -
                 limit=8,
                 device_type=extracted.device_type if extracted.device_type else None,
                 score_threshold=settings.DEDUP_CANDIDATE_THRESHOLD,
+                published_only=False,
             )
 
             for r in results:

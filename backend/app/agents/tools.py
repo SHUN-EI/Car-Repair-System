@@ -3,6 +3,7 @@ import json
 import re
 import time
 from typing import List, Dict, Optional, Callable, Any, Set, Tuple
+from app.rag.source_cite import KEYWORD_SCORE_METHODS
 from dataclasses import dataclass, field
 from loguru import logger
 
@@ -729,7 +730,7 @@ def extract_error_codes(query: str, whitelist: Optional[Set[str]] = None) -> Lis
 def rrf_merge(
     result_sets: List[List[Dict]],
     k: int = 60,
-    top_n: int = 10
+    top_n: Optional[int] = 10
 ) -> List[Dict]:
     """
     Reciprocal Rank Fusion - 融合多个检索结果集
@@ -787,8 +788,9 @@ def rrf_merge(
                     }
             scores[item_id]["rrf"] += rrf_score
 
-            # 记录各路最高分（vector vs bm25 分别保存，供下游兜底算分）
-            if item.get("method") == "bm25_search":
+            # 记录各路最高分（向量余弦 vs 关键词 ts_rank 等，供下游兜底算分）
+            # 新的 OBD / 手册章节 / 客服知识关键词路不能当成向量分，否则粗筛会按 0.45 误杀。
+            if item.get("method") in KEYWORD_SCORE_METHODS:
                 bm25 = item.get("score", 0)
                 if bm25 > scores[item_id]["bm25_score"]:
                     scores[item_id]["bm25_score"] = bm25
@@ -801,12 +803,13 @@ def rrf_merge(
             if item_score > scores[item_id]["item"].get("score", 0):
                 scores[item_id]["item"] = item
 
-    # 按 RRF 得分降序排列
+    # 按 RRF 得分降序排列。top_n 为 None 时不截断，交给调用方先置顶精确命中再截断。
     merged = sorted(scores.values(), key=lambda x: x["rrf"], reverse=True)
-    # 归一化 BM25 原始分（0~1）：BM25路本身是绝对分（如69/37），无法与向量分(0~1)同口径
+    # 归一化关键词原始分（0~1）：ts_rank / 旧 BM25 绝对分无法与向量分(0~1)同口径
     bm25_max = max((e["bm25_score"] for e in merged), default=0.0)
+    ranked = merged if top_n is None else merged[:top_n]
     result = []
-    for entry in merged[:top_n]:
+    for entry in ranked:
         item = entry["item"].copy()
         item["rrf_score"] = round(entry["rrf"], 4)
         # 展示得分：优先向量语义分；纯BM25命中时写入归一化后的BM25分（0~1），避免0%误导
@@ -824,7 +827,7 @@ def rrf_merge(
             (0.35 + 0.62 * (entry["bm25_score"] / bm25_max)) if (bm25_max > 0 and entry["bm25_score"] > 0) else 0.0,
             4,
         )
-        item["rrf_only"] = entry["vector_score"] <= 0  # 标记：无向量语义命中，由 BM25/RRF 带来
+        item["rrf_only"] = entry["vector_score"] <= 0  # 标记：无向量语义命中，由关键词/RRF 带来
         result.append(item)
 
     # 防范措施②：防御性去重——兜底确保返回结果不存在重复 knowledge_id。
@@ -955,6 +958,7 @@ class RetrievalTools:
                         ) AS score
                     FROM knowledge_items
                     WHERE search_tsv @@ to_tsquery('simple', :tsq)
+                        AND status = 'PUBLISHED'
                         AND (:device_filter IS NULL OR device_type = :device_filter)
                         AND (:fault_filter IS NULL OR fault_code LIKE :fault_filter)
                     ORDER BY score DESC, id DESC

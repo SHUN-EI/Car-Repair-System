@@ -141,10 +141,12 @@ class VectorStore:
         device_type: Optional[str] = None,
         fault_code: Optional[str] = None,
         score_threshold: float = 0.3,
+        published_only: bool = True,
     ) -> List[Dict]:
         """按余弦距离检索知识向量，返回相似度分（1 - 距离）及条目字段。
 
         只召回 embedding 非空的行；设备类型精确过滤，故障码仍为包含匹配。
+        问诊检索默认只取已发布条目；知识去重需要把 published_only 设为 False，才能看到草稿和审核中的相似条目。
         """
         vec = self._validate_vector(query_vector)
         max_distance = 1.0 - float(score_threshold or 0.0)
@@ -154,6 +156,8 @@ class VectorStore:
             "max_distance": max_distance,
             "limit": int(limit),
         }
+        if published_only:
+            clauses.append("status = 'PUBLISHED'")
         if device_type:
             clauses.append("device_type = :device_type")
             params["device_type"] = device_type

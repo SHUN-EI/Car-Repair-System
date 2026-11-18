@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.langfuse_tracer import tracer
 from app.rag.rag_service import case_rank_score
+from app.rag.source_cite import format_source_line
 
 
 @dataclass
@@ -58,9 +59,13 @@ class AnswerGenerator:
 
 4. **不提供通用建议**：不要提供检索案例中没有的「通用排查步骤」或「常规注意事项」。不得自行发挥，不得使用案例之外的维修经验或常识。
 
-5. **注明来源**：检索案例会标注来源类型（「手册」= 设备说明书/维修手册，含错误码/章节/页码；「工单案例」= 历史维修工单）。回答引用某案例内容时，在该结论后注明出处：
-   - 手册：`（来源：<手册名>·<章节>·<页码>·错误码 <错误码>）`
+5. **注明来源**：检索结果会标注来源类型。引用某条内容时，在该结论后注明出处：
+   - OBD：`（来源：OBD·<标准>·<故障码>）`
+   - 原厂手册 / 技术手册：`（来源：原厂手册·<手册名>·<章节>·<页码>）`（技术手册同理）
+   - 手册（设备错误码条目）：`（来源：<手册名>·<章节>·<页码>·错误码 <错误码>）`
    - 工单案例：`（来源：工单案例）`
+   - 客服知识：`（来源：客服知识）`
+   不同来源结论冲突时，按优先级取舍：原厂手册与 OBD 标准码最高，技术手册与设备手册错误码次之，店内工单案例再次，已审客服知识最低。采用高优先级结论时仍需注明双方出处。零件价格、工时和套餐以目录或报价规则为准，不得引用检索文本中的价格。
 
 ## 手册条目专用规则（案例含「情形清单」/「严重度」字段时适用）
 
@@ -101,8 +106,9 @@ class AnswerGenerator:
 ## 核心规则
 1. 只使用检索案例里写明的症状、项目和风险。案例没有的零件、价格、工期、保养间隔不要编。
 2. 不输出命中率、置信度或任何系统指标。
-3. 引用案例时注明来源：手册写手册名和错误码，工单案例写「来源：工单案例」。
-4. 案例不足以判断时，直接写知识库未覆盖，并建议到店由技师确认。不要用通用经验补全。
+3. 引用时按条目来源注明出处：OBD、原厂手册、技术手册、设备手册错误码、工单案例或客服知识。
+4. 不同来源结论冲突时，原厂手册与 OBD 优先于工单案例，工单案例优先于客服知识。价格、工时和套餐以目录或报价规则为准。
+5. 检索结果不足以判断时，直接写知识库未覆盖，并建议到店由技师确认。不要用通用经验补全。
 
 ## 输出结构（固定三段）
 1. **症状理解**：用 1-2 句复述车主描述的现象，并对应到案例中的症状。
@@ -477,29 +483,21 @@ class AnswerGenerator:
                 sources_count=len(reference_cases),
             )
 
-    def _generate_answer(self, question: str, cases: List[Dict]):
-        """基于检索案例调用 LLM 生成回答（非流式），返回 (回答文本, 思考过程)"""
-        cases_text = ""
-        for i, c in enumerate(cases[:5], 1):
-            title = c.get("title", "")
-            content = c.get("content", "")[:1500]
-            score = case_rank_score(c)
-            device_type = c.get("device_type", "")
-            fault_code = c.get("fault_code", "")
-            # 来源标注：手册条目带出处（手册名/章节/页码/错误码），工单案例标 CASE
-            if c.get("manual_code_id"):
-                source = "手册"
-                cite = f"（{c.get('manual_name', '')}·{c.get('chapter', '')}·{c.get('page', '')}·错误码 {c.get('error_code', '')}）"
-            else:
-                source = "工单案例"
-                cite = ""
-            # 手册条目：严重度独立成行，防长 content 截断后 LLM 丢失该信息
-            sev_line = ""
-            if c.get("manual_code_id") and c.get("severity"):
-                sev_label = {"EX": "EX 急停级", "OH": "OH 停机级", "INFO": "INFO 提示级"}.get(c.get("severity"), c.get("severity"))
-                sev_line = f"- 严重度: {sev_label}（{c.get('effect', '')}）\n"
-            cases_text += f"""
-### 案例 {i}（相关度: {score:.0%} · 来源: {source} {cite}）
+    @staticmethod
+    def _format_retrieved_item(c: dict, index: int, content_limit: int = 1500) -> str:
+        """把一条检索结果写成带正确来源标注的提示文本。"""
+        title = c.get("title", "")
+        content = (c.get("content") or "")[:content_limit]
+        score = case_rank_score(c)
+        device_type = c.get("device_type", "")
+        fault_code = c.get("fault_code") or c.get("error_code") or ""
+        source = format_source_line(c)
+        sev_line = ""
+        if c.get("manual_code_id") and c.get("severity"):
+            sev_label = {"EX": "EX 急停级", "OH": "OH 停机级", "INFO": "INFO 提示级"}.get(c.get("severity"), c.get("severity"))
+            sev_line = f"- 严重度: {sev_label}（{c.get('effect', '')}）\n"
+        return f"""
+### 参考 {index}（相关度: {score:.0%} · 来源: {source}）
 - 标题: {title}
 - 设备类型: {device_type}
 - 故障码: {fault_code}
@@ -507,6 +505,13 @@ class AnswerGenerator:
 {content}
 
 """
+
+    def _generate_answer(self, question: str, cases: List[Dict]):
+
+        """基于检索案例调用 LLM 生成回答（非流式），返回 (回答文本, 思考过程)"""
+        cases_text = ""
+        for i, c in enumerate(cases[:5], 1):
+            cases_text += self._format_retrieved_item(c, i)
 
         user_prompt = f"""## 用户问题
 {question}
@@ -606,32 +611,7 @@ class AnswerGenerator:
         # 构建 prompt
         cases_text = ""
         for i, c in enumerate(cases[:5], 1):
-            title = c.get("title", "")
-            content = c.get("content", "")[:1500]
-            score = case_rank_score(c)
-            device_type = c.get("device_type", "")
-            fault_code = c.get("fault_code", "")
-            # 来源标注：手册条目带出处（手册名/章节/页码/错误码），工单案例标 CASE
-            if c.get("manual_code_id"):
-                source = "手册"
-                cite = f"（{c.get('manual_name', '')}·{c.get('chapter', '')}·{c.get('page', '')}·错误码 {c.get('error_code', '')}）"
-            else:
-                source = "工单案例"
-                cite = ""
-            # 手册条目：严重度独立成行，防长 content 截断后 LLM 丢失该信息
-            sev_line = ""
-            if c.get("manual_code_id") and c.get("severity"):
-                sev_label = {"EX": "EX 急停级", "OH": "OH 停机级", "INFO": "INFO 提示级"}.get(c.get("severity"), c.get("severity"))
-                sev_line = f"- 严重度: {sev_label}（{c.get('effect', '')}）\n"
-            cases_text += f"""
-### 案例 {i}（相关度: {score:.0%} · 来源: {source} {cite}）
-- 标题: {title}
-- 设备类型: {device_type}
-- 故障码: {fault_code}
-{sev_line}- 内容:
-{content}
-
-"""
+            cases_text += self._format_retrieved_item(c, i)
 
         if consult:
             instruction = """## 回答指令

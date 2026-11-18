@@ -30,6 +30,7 @@ from typing import Dict, List, Optional
 from loguru import logger
 
 from app.core.config import settings
+from app.rag.source_cite import format_case_for_prompt
 from app.core.langfuse_tracer import tracer
 from app.memory.memory_service import (
     EXPERT_REPAIR_SESSION_PREFIX,
@@ -307,9 +308,7 @@ class ExpertRepairAgent:
 
         cases_text = ""
         for i, c in enumerate(cases, 1):
-            cases_text += (f"### 参考案例{i}（相关度: {c.get('score', 0):.0%}）\n"
-                           f"- 标题: {c.get('title', '')}\n"
-                           f"- 内容要点: {(c.get('content', '') or '')[:400]}\n")
+            cases_text += format_case_for_prompt(c, i, content_limit=400, style="detailed")
         if not cases_text:
             cases_text = "（未检索到匹配案例，请如实说明，不得编造排查步骤）"
 

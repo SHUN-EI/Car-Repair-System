@@ -411,7 +411,7 @@ JWT：`ALGORITHM=HS256`，`ACCESS_TOKEN_EXPIRE_MINUTES=30`。生产密钥策略�
 
 ### 4.1 检索漏斗
 
-公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（向量、关键词 `bm25_search`、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。核心漏斗仍是召回 → RRF（k=60）→ 粗筛 → `bge-reranker-v2-m3`。在原有知识库向量/关键词与手册错误码精确/语义四路之外，`retrieve_hybrid` 还会召回 OBD 标准码、已发布手册章节、已审客服知识，并可选做图谱一跳扩展；精确命中的 OBD / 手册错误码会排到融合结果前面。原厂 PDF 全文切片入库和生产级聊天蒸馏尚未实现，设计与代码举例见 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md)。
+公共实现是 `backend/app/rag/retrieval_flow.py`，公开入口是 `backend/app/rag/rag_service.py`。`backend/app/agents/retrieval_flow.py` 只再导出同名符号，保持旧导入可用。检索工具（向量、关键词 `bm25_search`、RRF、手册精确匹配等）仍在 `backend/app/agents/tools.py` 的 `RetrievalTools`，漏斗会调用它，这是现网存量的 RAG → Agent 依赖。核心漏斗仍是召回 → RRF（k=60）→ 粗筛 → `bge-reranker-v2-m3`。在原有知识库向量/关键词与手册错误码精确/语义四路之外，`retrieve_hybrid` 还会召回 OBD 标准码、已发布手册章节、已审客服知识，并可选做图谱一跳扩展。融合时先完整做 RRF，再把精确命中的 OBD / 手册错误码置顶后截断。新的关键词路按关键词分归一化，避免未同步向量时被粗筛误杀。生成层按来源标注出处，并遵循「原厂/OBD 高于案例、案例高于客服知识」的冲突规则。原厂 PDF 全文切片入库和生产级聊天蒸馏尚未实现，设计与代码举例见 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md)。
 
 HTTP 的 `/search/quick`、`/hybrid`、`/agent`、`/manual-lookup`、`/answer/stream`、`/answer/expert*` 由 `app/api/search.py` 鉴权后交给 `app/rag/search_app.py` 编排；其中 `/answer/stream` 走 `consult_guide_agent.invoke_qa` → `AgentRouter.qa_kind` 分流，故障分支执行 `FAULT_SUBGRAPH`。这条路径不会把工单进度自动转到工单 Agent。其它入口还包括钉钉/MCP `search_knowledge`。
 
@@ -430,7 +430,7 @@ flowchart TD
     COARSE --> STRICT["设备 + 故障关键词严格过滤"]
     STRICT -->|非空| RR["精排：bge-reranker-v2-m3 或 weighted_rerank"]
     STRICT -->|空| RESCUE["语义兜底：向量分≥0.60 且排除跨系统同码冲突"]
-    RR --> PIN["错误码精确命中置顶 + 手册情形重排"]
+    RR --> PIN["OBD / 手册错误码精确命中置顶 + 手册情形重排"]
     RESCUE --> PIN
     PIN --> OUT["取 FINAL_TOP_N 默认 10"]
 ```
@@ -451,7 +451,7 @@ flowchart TD
 | `MAX_VECTOR_CONTENT_LEN` | 500 | 知识向量编码文本截断 |
 | `MAX_MANUAL_VECTOR_TEXT_LEN` | 1200 | 手册条目向量文本截断 |
 
-融合去重键优先级：`_dedup_key`（知识 `K:{id}`、手册 `M:{id}`）> `knowledge_id` > `id`。向量路返回的 id 现为兼容点号 `pg:k:{id}` / `pg:m:{id}`（旧数据可能仍是 UUID），关键词路 id 仍是数据库整数，不能用原始 `id` 合并，否则双路命中无法把 `1/(k+r1)+1/(k+r2)` 加在同一条上（`rrf_merge` 注释）。
+融合去重键优先级：`_dedup_key`（知识 `K:{id}`、手册错误码 `M:{id}`、OBD `O:{id}`、手册章节 `C:{id}`、客服知识 `F:{id}`）> `knowledge_id` > `id`。向量路返回的 id 现为兼容点号 `pg:k:{id}` / `pg:m:{id}`（旧数据可能仍是 UUID），关键词路 id 仍是数据库整数，不能用原始 `id` 合并，否则双路命中无法把 `1/(k+r1)+1/(k+r2)` 加在同一条上（`rrf_merge` 注释）。
 
 过滤规则：
 
@@ -459,7 +459,7 @@ flowchart TD
 - 严格过滤在精排之前，先丢掉设备/关键词不匹配的候选。若提取出的设备类型并不在知识库实际设备集合里，设备约束失效，只按故障关键词过滤，避免「日志里写了 PLC、库里没有 PLC 手册」时整路被灭。
 - 严格过滤为空时不做「再塞两条宽松结果」；只保留向量分 ≥ `SEMANTIC_RESCUE_THRESHOLD` 且非跨系统同码冲突的候选。再空则交给回答层如实说未检索到。
 - 手册条目的 `conditions` 用查询 token 与 `signal` 做子串命中重排，命中项加 `[命中]` 前缀，无 LLM。
-- 主路径的向量检索只要求 `embedding IS NOT NULL`，不过滤 `PUBLISHED`；主路径 tsvector/`ts_rank` 也不按 `status` 过滤。ILIKE 回退路径才会限制为已发布。因此草稿、审核中，以及已下架但仍留有向量的条目，可能被主检索召回。
+- 知识库主路径的向量检索和 tsvector/`ts_rank` 默认只召回 `status = PUBLISHED` 的条目（与 ILIKE 回退一致）。知识去重调用向量检索时会关掉这一过滤，以便发现草稿和审核中的相似条目。已审客服知识、OBD 和手册章节本身只检索已发布行；客服知识在传入 `store_id` 时还按门店（含全局条目）过滤。
 
 维修意图阀门（钉钉 `repair_node` 等使用）分三层：① 错误码正则；② 关键词 / 短应答；③ 检索打分。注释中的无关判定线 `REPAIR_INTENT_RELEVANCE_THRESHOLD=0.4`；第三层「相关」默认与粗筛 0.45 对齐。快检已判无关则不跑检索。
 
@@ -1032,7 +1032,7 @@ PDF 导入批次。确认前只写导入表，不写生产 `work_orders`。模�
 
 #### `knowledge_items`
 
-`search_tsv` 是生成列，由 `knowledge_search_tsv()` 计算，不能直接 UPDATE。`milvus_id` 现为兼容点号 `pg:k:{id}`。主检索路径不过滤 `PUBLISHED`，见 [§4.1](#41-检索漏斗)。
+`search_tsv` 是生成列，由 `knowledge_search_tsv()` 计算，不能直接 UPDATE。`milvus_id` 现为兼容点号 `pg:k:{id}`。问诊主检索只召回已发布条目，见 [§4.1](#41-检索漏斗)。本表没有 `store_id`，案例目前全库可见。
 
 | 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
 |------|------|------|--------|------|------|
@@ -1827,7 +1827,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - 没有支付渠道、webhook 履约或除 STUB 以外的清算。
 - 没有本仓库内可核对的 k3s / 生产 Ingress 清单。
 - 开源模型后训练方案与执行手册是独立 docs，不表示现网已经换成后训练权重；现网 Chat 走 `CHAT_LLM_MODE`（默认云端 `qwen-plus`，本地可切 vLLM）。
-- 多源 RAG 的表结构和检索挂钩已按 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md) 第一期落地（`rag_sources`、`obd_codes`、手册章节、已审客服知识、PostgreSQL 图谱一跳），但原厂 PDF 全文自动切片入库、咨询会话自动落库与聊天蒸馏尚未实现；空表时对应召回路软失败，不影响原有四路。
+- 多源 RAG 的表结构和检索挂钩已按 [RAG多源改造技术方案.md](./RAG多源改造技术方案.md) 第一期落地，问诊生成、精确命中置顶和已发布过滤也已对齐。原厂 PDF 全文自动切片入库、咨询会话自动落库与聊天蒸馏、工单发布时自动写图谱边尚未实现；`knowledge_items` 仍无门店字段。空表时对应召回路软失败，不影响原有四路。
 
 ---
 

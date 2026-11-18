@@ -80,15 +80,26 @@ def _keyword_rows(db: Session, table: str, tsv_sql: str, query: str, limit: int)
     return list(db.execute(sql, {"tsq": tsq, "limit": limit, "weights": settings.TS_RANK_WEIGHTS}).fetchall())
 
 
-def _vector_rows(db: Session, table: str, select_sql: str, query_vector: List[float], limit: int, threshold: float) -> list:
+def _vector_rows(
+    db: Session,
+    table: str,
+    select_sql: str,
+    query_vector: List[float],
+    limit: int,
+    threshold: float,
+    extra_params: Optional[dict] = None,
+) -> list:
     """通用 pgvector 检索，分数为 1 - 余弦距离。"""
     max_distance = max(0.0, 1.0 - float(threshold or 0.0))
     _set_ef_search(db)
-    return list(db.execute(text(select_sql), {
+    params = {
         "q": _vector_literal(query_vector),
         "max_distance": max_distance,
         "limit": limit,
-    }).fetchall())
+    }
+    if extra_params:
+        params.update(extra_params)
+    return list(db.execute(text(select_sql), params).fetchall())
 
 
 # ---------- OBD ----------
@@ -361,8 +372,8 @@ def _faq_item(row, *, score: float, method: str) -> dict:
     }
 
 
-def search_faq_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
-    """已审客服知识的关键词检索。"""
+def search_faq_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = None, store_id: Optional[int] = None) -> List[dict]:
+    """已审客服知识的关键词检索。传入 store_id 时只返回该门店或全局（store_id 为空）条目。"""
     session, owned = _session(db)
     try:
         raw = (query or "").strip()
@@ -377,10 +388,11 @@ def search_faq_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = N
             FROM consult_faqs
             WHERE search_tsv @@ to_tsquery('simple', :tsq)
               AND status = 'PUBLISHED'
+              AND (:store_id IS NULL OR store_id IS NULL OR store_id = :store_id)
             ORDER BY score DESC, id DESC
             LIMIT :limit
         """)
-        rows = session.execute(sql, {"tsq": tsq, "limit": top_k, "weights": settings.TS_RANK_WEIGHTS}).fetchall()
+        rows = session.execute(sql, {"tsq": tsq, "limit": top_k, "weights": settings.TS_RANK_WEIGHTS, "store_id": store_id}).fetchall()
         return [_faq_item(row, score=float(row.score), method="faq_keyword_search") for row in rows]
     except Exception as exc:
         logger.warning(f"[MultiSource] 客服知识关键词检索失败: {exc}")
@@ -390,23 +402,29 @@ def search_faq_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = N
             session.close()
 
 
-def search_faq_vector(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
-    """已审客服知识的向量检索；编码失败时退回关键词。"""
+def search_faq_vector(query: str, *, top_k: int = 10, db: Optional[Session] = None, store_id: Optional[int] = None) -> List[dict]:
+    """已审客服知识的向量检索；编码失败时退回关键词。传入 store_id 时只返回该门店或全局条目。"""
     vector = _encode_or_none(query)
     if not vector:
-        return search_faq_keyword(query, top_k=top_k, db=db)
+        return search_faq_keyword(query, top_k=top_k, db=db, store_id=store_id)
     session, owned = _session(db)
     try:
+        store_clause = ""
+        extra_params = {}
+        if store_id is not None:
+            store_clause = " AND (store_id IS NULL OR store_id = :store_id)"
+            extra_params["store_id"] = store_id
         sql = """
             SELECT id, (embedding <=> CAST(:q AS vector)) AS distance
             FROM consult_faqs
             WHERE embedding IS NOT NULL
               AND status = 'PUBLISHED'
               AND embedding <=> CAST(:q AS vector) <= :max_distance
+        """ + store_clause + """
             ORDER BY embedding <=> CAST(:q AS vector)
             LIMIT :limit
         """
-        hits = _vector_rows(session, "consult_faqs", sql, vector, top_k, settings.RETRIEVAL_VECTOR_THRESHOLD)
+        hits = _vector_rows(session, "consult_faqs", sql, vector, top_k, settings.RETRIEVAL_VECTOR_THRESHOLD, extra_params=extra_params)
         if not hits:
             return []
         from app.models.consult_faq import ConsultFaq

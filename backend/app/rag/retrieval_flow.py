@@ -30,6 +30,7 @@ from app.core.database import SessionLocal
 from app.core.vector_store import vector_store
 from app.core.embeddings import encode_text
 from app.core.reranker import rerank_cases
+from app.rag.source_cite import EXACT_METHODS, pin_exact_hits
 from app.agents.tools import (
     RetrievalTools,
     rrf_merge,
@@ -58,6 +59,7 @@ def retrieve_hybrid(
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     expand_graph: bool = True,
+    store_id: Optional[int] = None,
 ) -> Tuple[List[dict], List[str], RetrievalTools]:
     """多源混合检索：原有知识库与手册错误码路，加上手册章节、OBD、已审客服知识，可选图谱一跳。
 
@@ -66,8 +68,10 @@ def retrieve_hybrid(
     不打断原有四路。
 
     Args:
-        top_k: 各路召回条数（默认 settings.RECALL_TOP_K），RRF 融合后候选池同值
+        top_k: 各路召回条数（默认 settings.RECALL_TOP_K），融合后先置顶精确命中再截到该值
         expand_graph: 是否按症状/故障码做图谱一跳，并把关联条目并入融合
+        store_id: 若传入，已审客服知识只召回该门店或 store_id 为空的全局条目；
+            不传则不过滤门店。问诊入口目前尚未把当前门店传进来。
 
     Returns:
         (merged, error_codes, tools): RRF 融合结果 / 识别出的错误码 / 检索工具集
@@ -147,10 +151,10 @@ def retrieve_hybrid(
         if chunk_kw:
             result_sets.append(chunk_kw)
 
-        faq_vec = search_faq_vector(query, top_k=top_k)
+        faq_vec = search_faq_vector(query, top_k=top_k, store_id=store_id)
         if faq_vec:
             result_sets.append(faq_vec)
-        faq_kw = search_faq_keyword(query, top_k=top_k)
+        faq_kw = search_faq_keyword(query, top_k=top_k, store_id=store_id)
         if faq_kw:
             result_sets.append(faq_kw)
 
@@ -168,13 +172,9 @@ def retrieve_hybrid(
         if graph_db is not None:
             graph_db.close()
 
-    merged = rrf_merge(result_sets, top_n=top_k) if result_sets else []
-    # 精确命中的 OBD / 手册错误码排在前面，其余保持 RRF 顺序
-    if merged:
-        exact_methods = {"obd_code_exact", "manual_code_exact"}
-        exact = [m for m in merged if m.get("method") in exact_methods]
-        rest = [m for m in merged if m.get("method") not in exact_methods]
-        merged = exact + rest
+    # 先完整融合再置顶精确命中，避免 top_k 截断把 OBD / 手册精确命中挤出候选池。
+    merged = rrf_merge(result_sets, top_n=None) if result_sets else []
+    merged = pin_exact_hits(merged, top_k)
     return merged, error_codes, tools
 
 
@@ -305,7 +305,7 @@ def filter_rerank_cases(
         top_n: 最终返回条数（默认 settings.FINAL_TOP_N=10）
         require_device: 非空时，案例 device_type 必须精确匹配该设备（剔除跨设备案例）
         require_keywords: 非空时，案例 title/content/error_code 必须命中至少一个故障词
-        error_codes: 非空时，手册错误码精确命中条目（manual_code_exact）置顶
+        error_codes: 非空时，手册错误码与 OBD 精确命中条目置顶
 
     降级模式：merged 全部为 rrf_only（向量路不可用，纯 BM25）时跳过
     0.15 分数阈值——没有向量分可依，按 RRF 名次排序后走严格过滤。
@@ -417,28 +417,31 @@ def filter_rerank_cases(
 
     strict.sort(key=_sort_key, reverse=True)
 
-    # 错误码精确命中（手册权威标准处理）置顶：RRF 只按名次融合，exact 单路名次吃亏
-    if error_codes:
-        strict.sort(key=lambda x: (
-            0 if x.get("method") == "manual_code_exact" else 1,
-            -_sort_key(x),
-        ))
+    # 错误码精确命中置顶：RRF 只按名次融合，exact 单路名次吃亏
+    strict.sort(key=lambda x: (
+        0 if x.get("method") in EXACT_METHODS else 1,
+        -_sort_key(x),
+    ))
 
     # 手册条目情形排序：按日志/提问中的伴随信号匹配度重排 conditions（三路返回统一生效）
     strict = rank_manual_conditions(strict, query)
 
     if bm25_only_degraded:
-        return strict[:top_n]   # 降级模式无向量分，不做 0.15 二次过滤
+        return pin_exact_hits(strict, top_n)  # 降级模式无向量分，不做分数二次过滤
     # 末段二次过滤：用 _sort_key（rerank_score>向量分>rrf）统一口径
     # 修复：BM25/手册精确路命中的案例向量分可能为0，但经Reranker精排后 rerank_score 很高，之前纯按 score 过滤会被误杀
-    # 注意：错误码权威命中（manual_code_exact）作为最高优先级标准，无论分数多低都必须保留，
-    #       避免降级/超时路径下 rrf 或加权分过低被二次过滤误拦（SV0401 "伺服位置偏差过大报警" 场景）。
-    result = [
+    # 注意：错误码权威命中（手册 + OBD）无论分数多低都必须保留，
+    #       避免降级/超时路径下 rrf 或加权分过低被二次过滤误拦。
+    kept = [
         m for m in strict
-        if m.get("method") == "manual_code_exact"
+        if m.get("method") in EXACT_METHODS
         or _sort_key(m) >= settings.RETRIEVAL_COARSE_THRESHOLD
     ]
-    return result[:top_n]
+    exact = [m for m in kept if m.get("method") in EXACT_METHODS]
+    rest = [m for m in kept if m.get("method") not in EXACT_METHODS]
+    if len(exact) >= top_n:
+        return exact
+    return exact + rest[: top_n - len(exact)]
 
 
 def evaluate_retrieval_quality(results: List[dict]) -> dict:

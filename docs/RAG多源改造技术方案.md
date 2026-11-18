@@ -3,7 +3,7 @@
 - **仓库**：[SHUN-EI/Car-Repair-System](https://github.com/SHUN-EI/Car-Repair-System)
 - **编写日期**：2026-11-18（Asia/Shanghai）
 - **依据版本**：对照当前工作区代码（主分支已含 pgvector / tsvector 混合检索与双 Agent 收口）
-- **状态**：第一期已落地（来源登记、OBD 库、手册章节与已审客服知识表、PostgreSQL 图谱一跳，并接入 `retrieve_hybrid`）。原厂 PDF 自动切片入库、咨询会话自动落库与聊天蒸馏尚未实现。现网表结构以 [ARCHITECTURE.md](./ARCHITECTURE.md) 和 Alembic `d6e7f8a9b0c1` 为准；本文与代码不一致时，以代码为准。
+- **状态**：第一期已落地，并已补齐问诊链路：来源登记、OBD 库、手册章节与已审客服知识表接入 `retrieve_hybrid`；生成层按来源标注并遵守出处优先级；RRF 把新的关键词路按关键词分归一化；精确命中在截断前置顶；知识库主检索只召回已发布条目。原厂 PDF 自动切片入库、咨询会话自动落库与聊天蒸馏、工单发布时自动写图谱边尚未实现。现网表结构以 [ARCHITECTURE.md](./ARCHITECTURE.md) 和 Alembic `d6e7f8a9b0c1` 为准；本文与代码不一致时，以代码为准。
 - **目标**：让现有 RAG 同时支撑非结构化维修文档（原厂维修手册、技术手册、完工工单、历史工单、用户与客服聊天记录）、结构化知识图谱（实体-关系-属性三元组）和 OBD 故障码库。
 - **原则**：不换检索引擎；按来源分表；图谱用 PostgreSQL 实体表和关系表，不先引入 Neo4j；不新增第三个业务 Agent；不编造召回率或准确率。
 
@@ -221,7 +221,7 @@ flowchart TD
 
 - 店员问诊可以使用已发布的全部来源。
 - 若以后开放车主问诊，默认只给 OBD 通用解释和经过允许的手册摘录，不能看到他人的工单或聊天；原厂全文仍受版权限制。车主问诊本身不在本方案的实施范围内，只预留权限边界。
-- 案例和聊天按门店隔离。
+- 案例和聊天按门店隔离（设计如此）。`consult_faqs` 检索已支持按 `store_id` 过滤（含全局条目）；问诊入口尚未传入当前门店。`knowledge_items` 仍没有门店字段，案例暂时全库可见。
 - 入库、发布、作废由管理员或指定审核人操作。
 
 ---
@@ -234,7 +234,7 @@ flowchart TD
 | 二 | 原厂 / 技术手册 PDF 入库、章节检索和出处展示；手册错误码挂到 OBD | 「刹车有点紧」能引用手册制动章节和页码，而不只靠案例 | **部分落地**：`repair_manuals` / `repair_manual_chunks` 与章节检索已接通；样例写入制动章节。PDF 自动切片入库未做 |
 | 三 | 补强完工和历史工单链路，已发布案例关联 OBD、手册和图谱实体 | 发布刹车相关工单后，案例能挂到「刹车紧」等实体 | 尚未自动从发布工单写图谱边；样例把既有「发动机怠速抖动」案例链到 P0300 |
 | 四 | 咨询和客服对话持久化、脱敏、抽取与审核 | 原始聊天不进检索；已审客服知识可被召回并带来源 | **部分落地**：会话表和 `consult_faqs` 检索已接通，并有一条已审样例。问诊通道尚未自动写会话，蒸馏未做 |
-| 五 | 实体表、关系表、规范名合并和一跳扩展；分来源评测集 | 「刹车有点紧」能经图谱扩展后再检索，回答遵守出处优先级 | **部分落地**：`kg_entities` / `kg_relations` 与一跳扩展已接通，样例含「刹车紧」「P0300」。分来源评测集未做 |
+| 五 | 实体表、关系表、规范名合并和一跳扩展；分来源评测集 | 「刹车有点紧」能经图谱扩展后再检索，回答遵守出处优先级 | **部分落地**：图谱一跳已接通；问诊提示词与参考文本已写入出处优先级（原厂/OBD 高于案例，案例高于客服知识）。分来源评测集未做 |
 
 需要启用时：先执行 `alembic upgrade head`（修订 `d6e7f8a9b0c1`），再在 `backend` 目录运行 `python scripts/seed_rag_multisource.py`；推理服务可用时加上 `--sync` 回写向量。新表未迁移时，对应召回路会记日志并返回空，不打断原有四路。
 
@@ -314,14 +314,13 @@ if expand_graph and parsed.canonical_keys:
     if linked:
         result_sets.append(linked)
 
-merged = rrf_merge(result_sets, top_n=top_k) if result_sets else []
-# 精确命中的 OBD / 手册错误码排在前面，其余保持 RRF 顺序
-exact_methods = {"obd_code_exact", "manual_code_exact"}
-exact = [m for m in merged if m.get("method") in exact_methods]
-rest = [m for m in merged if m.get("method") not in exact_methods]
-merged = exact + rest
+# 先完整融合，再把 OBD / 手册错误码精确命中置顶后截断，避免先截断丢掉权威命中
+merged = rrf_merge(result_sets, top_n=None) if result_sets else []
+merged = pin_exact_hits(merged, top_k)
 return merged, error_codes, tools
 ```
+
+客服知识检索在传入 `store_id` 时，只返回该门店或 `store_id` 为空的全局条目。
 
 去重键必须带来源前缀，避免和知识库、手册错误码的自增主键撞车：案例 `K:{id}`、手册错误码 `M:{id}`、OBD `O:{id}`、手册章节 `C:{id}`、客服知识 `F:{id}`。
 
@@ -365,3 +364,11 @@ relations = db.query(KgRelation).filter(
 - 图谱：`刹车紧`（别名含「刹车有点紧」）→ `caused_by` 卡钳回位不良，并挂上手册章节；`怠速抖动` → `has_code` `P0300`
 
 因此迁移并执行种子脚本后，「刹车有点紧」应能引用手册章节和已审客服知识，「读到 P0300」应能引用标准码含义。向量列需推理服务可用时加 `--sync` 才写入；未同步时关键词路仍可用。
+
+### 11.6 来源标注、关键词融合与已发布过滤
+
+生成层不再只区分「手册错误码 / 工单案例」。`app.rag.source_cite` 按 `source_type` 写出 OBD、原厂手册、技术手册、设备手册、工单案例和客服知识的出处；智能问答、追踪维修和专家模式注入模型的参考文本都走同一套标注。提示词要求冲突时按「原厂手册 / OBD > 技术手册与设备手册错误码 > 工单案例 > 客服知识」取舍，价格仍以目录为准。
+
+`rrf_merge` 把 `obd_keyword_search`、`manual_chunk_keyword`、`faq_keyword_search` 与原来的 `bm25_search` 一样当作关键词分并打上 `rrf_only`，未同步向量时这些结果不会因为 `ts_rank` 低于 0.45 被粗筛丢掉。`filter_rerank_cases` 对 `obd_code_exact` 与 `manual_code_exact` 同等置顶和低分豁免。
+
+知识库主检索（`vector_store.search` 与 tsvector 关键词路）默认只召回 `status = PUBLISHED` 的条目。知识去重仍会把 `published_only=False` 传进去，以便看到草稿和审核中的相似条目。

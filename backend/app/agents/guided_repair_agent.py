@@ -35,6 +35,7 @@ from app.rag.rag_service import (
     repair_intent_check as _repair_intent_check,
     REPAIR_IRRELEVANT_REPLY as _IRRELEVANT_REPLY,
 )
+from app.rag.source_cite import format_case_for_prompt
 
 
 def _is_repair_irrelevant(message: str) -> bool:
@@ -252,12 +253,7 @@ class GuidedRepairAgent:
         # 构建案例文本
         cases_text = ""
         for i, c in enumerate(cases, 1):
-            cases_text += f"""
-### 参考案例 {i}（相关度: {c.get('score', 0):.0%}）
-- 标题: {c.get('title', '')}
-- 故障码: {c.get('fault_code', '')}
-- 内容: {(c.get('content', '') or '')[:800]}
-"""
+            cases_text += format_case_for_prompt(c, i, content_limit=800, style="detailed")
 
         user_prompt = f"""## 设备故障描述
 {description}
@@ -378,7 +374,7 @@ class GuidedRepairAgent:
 
         cases_text = ""
         for i, c in enumerate(cases, 1):
-            cases_text += f"### 参考案例 {i}: {c.get('title', '')}\n{(c.get('content', '') or '')[:600]}\n\n"
+            cases_text += format_case_for_prompt(c, i, content_limit=600, style="compact")
 
         user_prompt = f"""## 设备信息
 初始故障: {session['initial_symptoms']}
@@ -585,8 +581,7 @@ class GuidedRepairAgent:
         # 构建案例文本（缩短内容，只取关键信息，避免 LLM 复制完整流程）
         cases_text = ""
         for i, c in enumerate(cases, 1):
-            content = (c.get('content', '') or '')[:600]
-            cases_text += f"\n【参考案例{i}】{c.get('title', '')}\n故障原因: （从案例中提取）\n处理要点: {content}\n"
+            cases_text += format_case_for_prompt(c, i, content_limit=600, style="brief")
 
         # 构建对话历史（历史过长时已压缩成摘要，优先注入摘要 + 保留最近原文）
         history_text = ""
@@ -676,8 +671,7 @@ class GuidedRepairAgent:
         # 构建案例文本（缩短内容，只取关键信息）
         cases_text = ""
         for i, c in enumerate(cases, 1):
-            content = (c.get('content', '') or '')[:600]
-            cases_text += f"\n【参考案例{i}】{c.get('title', '')}\n故障原因: （从案例中提取）\n处理要点: {content}\n"
+            cases_text += format_case_for_prompt(c, i, content_limit=600, style="brief")
 
         # 构建对话历史（历史过长时已压缩成摘要，优先注入摘要 + 保留最近原文）
         history_text = ""

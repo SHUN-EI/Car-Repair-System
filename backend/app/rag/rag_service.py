@@ -91,6 +91,7 @@ def search_knowledge_vectors(
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     score_threshold: float = 0.3,
+    published_only: bool = True,
 ) -> List[dict]:
     """对查询文本编码后检索知识库向量（knowledge 集合）。"""
     query_vector = encode_text(query)
@@ -100,6 +101,7 @@ def search_knowledge_vectors(
         device_type=device_type,
         fault_code=fault_code,
         score_threshold=score_threshold,
+        published_only=published_only,
     )
 
 
@@ -110,6 +112,7 @@ def search_knowledge_vectors_by_embedding(
     device_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     score_threshold: float = 0.3,
+    published_only: bool = True,
 ) -> List[dict]:
     """已有查询向量时检索知识库（供批量编码后再逐条检索的脚本使用）。"""
     return _knowledge_store().search(
@@ -118,6 +121,7 @@ def search_knowledge_vectors_by_embedding(
         device_type=device_type,
         fault_code=fault_code,
         score_threshold=score_threshold,
+        published_only=published_only,
     )
 
 
