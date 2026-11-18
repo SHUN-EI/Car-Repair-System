@@ -210,7 +210,7 @@ sequenceDiagram
 |-----------|------|
 | `frontend/` | Vue 3 页面、路由、axios 封装；不含独立状态库 |
 | `backend/app/api/` | HTTP 路由：鉴权、参数校验、SSE/JSON 组装；检索编排在 `rag/search_app`，工单流转在 `domain/work_order_transition` |
-| `backend/app/agents/` | 两个第一类 Agent 门面、`AgentRouter`、问答/钉钉/导入图与内部能力；`retrieval_flow.py` 只是兼容 shim |
+| `backend/app/agents/` | 两个第一类 Agent 门面、`AgentRouter`、`intent_classifier`、故障检索子图、钉钉函数分发、导入 DAG 与内部能力；`retrieval_flow.py` 只是兼容 shim |
 | `backend/app/rag/` | 检索公开入口 `rag_service`、漏斗实现 `retrieval_flow`、搜索编排 `search_app` |
 | `backend/app/memory/` | Agent 记忆门面 `memory_service`：短期 Redis 会话与摘要入口；不托管工单/库存等业务表 |
 | `backend/app/domain/` | 工单状态机、状态迁移、门店范围、报价规则、套餐排序、库存流水、预约、车主档案映射 |
@@ -277,7 +277,7 @@ FastAPI lifespan 会调用 `assert_production_secrets()`，并探测推理服务
 |------|----------------|
 | `ConsultGuideAgent` | 把问答、引导、专家、库存只读收成一个对外门面，不碰工单写路径 |
 | `WorkOrderAgent` | 把理解、导入草稿、生命周期写入口、报价套餐、知识沉淀收成一个对外门面 |
-| `AgentRouter` | 每个请求只选一个主责任方；显式 HTTP 路径不再按文本二次分类 |
+| `AgentRouter` | 每个请求只选一个主责任方；显式 HTTP / MCP 入口一般不再按文本二次分类。`/answer/stream` 例外：实现走 `qa_kind` 做库存/闲聊/故障分流，见 [§5.1](#51-双门面与-agentrouter) |
 | `rag_service` / `retrieval_flow` / `search_app` | 双库召回与过滤精排只有一份实现；HTTP 搜索路由不再内嵌检索步骤 |
 | `memory_service` | Agent 会话与摘要的 Redis 读写只在一处拼 key、设 TTL |
 | `domain.work_order_status` | 工业车道与汽修车道共用枚举，不能拆掉旧边 |
@@ -375,14 +375,13 @@ cloud 未配密钥、或 local 未配地址/模型时，启动日志提示「未
 
 Embedding 客户端超时 30 秒，失败重试 2 次。Reranker 超时 60 秒，文档截断 500 字，按 8 条分块，避免一次 30 条长文本把服务端注意力矩阵打满（模块注释写明 CPU 上曾出现 3.3~4.8GB 分配失败）。连续失败 3 次进入 60 秒冷却，期间直接返回 `None`。健康探测超时 2 秒。日志类输入跳过模型精排，按向量分排序，原因写在 `retrieval_flow._rerank_or_fallback`：跨语言精排收益低，且 CPU 上单块可能超过 60 秒。
 
-README 架构示意图里曾出现 `Qwen3-Embed-4B`，与现网默认模型不符，以 `EMBEDDING_MODEL_NAME` 为准。
 
 #### 3.4.4 对比与推荐理由
 
 代码和配置里写明的理由，不是外部评测结论：
 
 - 把推理拆出 uvicorn，是为了主链路启动不加载模型，推理挂掉时检索可降级而不是整个 API 起不来（`embeddings.py`、`main.py` lifespan、`retrieval_flow.py` 降级注释）。
-- 用 bge-m3 1024 维 dense，是当前集合维度和编码实现的既定选择；更换模型要重建索引。文档未写与其它 embedding 的对比实验，本文也不编。
+- 用 bge-m3 1024 维 dense，是当前向量维度和编码实现的既定选择；更换模型要重建索引。文档未写与其它 embedding 的对比实验，本文也不编。
 - 精排与粗筛职责分开：Reranker「只排序、不过滤」，过滤仍由向量阈值和设备/关键词硬约束负责（`reranker.py` 模块说明）。
 
 ### 3.5 观测与限流
@@ -460,6 +459,7 @@ flowchart TD
 - 严格过滤在精排之前，先丢掉设备/关键词不匹配的候选。若提取出的设备类型并不在知识库实际设备集合里，设备约束失效，只按故障关键词过滤，避免「日志里写了 PLC、库里没有 PLC 手册」时整路被灭。
 - 严格过滤为空时不做「再塞两条宽松结果」；只保留向量分 ≥ `SEMANTIC_RESCUE_THRESHOLD` 且非跨系统同码冲突的候选。再空则交给回答层如实说未检索到。
 - 手册条目的 `conditions` 用查询 token 与 `signal` 做子串命中重排，命中项加 `[命中]` 前缀，无 LLM。
+- 主路径的向量检索只要求 `embedding IS NOT NULL`，不过滤 `PUBLISHED`；主路径 tsvector/`ts_rank` 也不按 `status` 过滤。ILIKE 回退路径才会限制为已发布。因此草稿、审核中，以及已下架但仍留有向量的条目，可能被主检索召回。
 
 维修意图阀门（钉钉 `repair_node` 等使用）分三层：① 错误码正则；② 关键词 / 短应答；③ 检索打分。注释中的无关判定线 `REPAIR_INTENT_RELEVANCE_THRESHOLD=0.4`；第三层「相关」默认与粗筛 0.45 对齐。快检已判无关则不跑检索。
 
@@ -741,7 +741,7 @@ HTTP 检索相关其它端点（均需登录）：
 
 ## 6. 存储设计
 
-表结构以 `backend/app/models/` 与 Alembic 为准。`init-db.sql` 只作历史对照。模型普遍继承 `BaseModel`（`id`、`created_at`、`updated_at`）；部分表自管时间戳。
+表结构以 `backend/app/models/` 与 Alembic 为准。`init-db.sql` 只作历史对照，不要用来建现网库。模型普遍继承 `BaseModel`（`id`、`created_at`、`updated_at`）；部分表自管时间戳。完整建表语句（扩展、函数、枚举、34 张表和额外索引）在仓库 `sql/` 目录，是对照当前模型与 Alembic 头修订 `c4d5e6f7a8b9` 的快照；运行库仍用 Alembic 升级。
 
 ### 6.1 ER 图（核心关系）
 
@@ -773,69 +773,741 @@ erDiagram
 
 ### 6.2 表结构
 
-下列只列对架构有约束的字段，不是全部列的逐字拷贝。完整定义看对应模型文件。
+下面按主题列出当前模型中的 **34** 张表，每张表现网字段都用表格描述。完整 `CREATE TABLE` 见 [`sql/`](../sql/)。默认值若写「数据库」，表示迁移或模型里有 `server_default`，已写入 `sql/` 的 `DEFAULT`；若写「应用侧」，表示只在 SQLAlchemy 插入时写入，建表语句里没有数据库 `DEFAULT`。
+
+`fault_code_mappings`、`fault_phenomenon_categories`、`root_cause_categories` 只在模型里定义，Alembic 没有对应的 `create_table`；只跑迁移的空库不会自动出现这三张表。
+
+#### 组织与账号
 
 #### `users`
 
-`username` 唯一；`employee_id` 唯一可空；`password_hash`；`real_name`；`role` 字符串，默认技师；`is_active`；钉钉 `dingtalk_userid` / `union_id` / `name` / `bound_at`；`store_id` 可空；`skills` 旧逗号标签与 `skills_json` 熟练度并存。现网角色取值包括 `ADMIN`、`SUPERVISOR`、`TECHNICIAN`、`WORKER`、`OWNER`（见 `store_scope`、`owner_access` 与前端路由守卫）。
+现网角色取值包括 `ADMIN`、`SUPERVISOR`、`TECHNICIAN`、`WORKER`、`OWNER`（字符串列，不是 PostgreSQL 枚举）。`skills` 与 `skills_json` 并存。
 
-#### `stores` / `bays`
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `username` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `employee_id` | `VARCHAR(50)` | 是 | — | 唯一 | 工号，唯一 |
+| `password_hash` | `VARCHAR(255)` | 否 | — | — | — |
+| `real_name` | `VARCHAR(100)` | 否 | — | — | — |
+| `email` | `VARCHAR(200)` | 是 | — | — | — |
+| `phone` | `VARCHAR(20)` | 是 | — | — | — |
+| `role` | `VARCHAR(20)` | 否 | 应用侧 `TECHNICIAN` | — | 取值 `ADMIN` / `SUPERVISOR` / `TECHNICIAN` / `WORKER` / `OWNER` |
+| `is_active` | `BOOLEAN` | 是 | 应用侧 `true` | — | — |
+| `dingtalk_userid` | `VARCHAR(100)` | 是 | — | 唯一 | — |
+| `dingtalk_name` | `VARCHAR(100)` | 是 | — | — | 钉钉账号昵称 |
+| `dingtalk_union_id` | `VARCHAR(100)` | 是 | — | 索引 | 钉钉 unionId（跨应用唯一，机器人识别用） |
+| `dingtalk_bound_at` | `TIMESTAMP` | 是 | — | — | 钉钉账号绑定时间 |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | 所属门店，空表示未绑定 |
+| `department` | `VARCHAR(200)` | 是 | — | — | — |
+| `title` | `VARCHAR(100)` | 是 | — | — | — |
+| `skills` | `VARCHAR(500)` | 是 | — | — | 旧:技能标签(逗号分隔),保留1个月 |
+| `skills_json` | `JSONB` | 是 | — | — | 技能熟练度字典 {类型: 1-5} |
+| `current_workload_count` | `INTEGER` | 否 | 数据库 `0` | — | 当前未完成工单数(冗余) |
+| `last_online_at` | `TIMESTAMP` | 是 | — | — | 最近在线时间 |
+| `last_login_at` | `TIMESTAMP` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
-门店与工位。工位隶属门店。预约和工单可占用工位。
+#### `sys_configs`
 
-#### `customers` / `vehicles`
+系统配置键值表。
 
-客户无 `store_id`。车辆有 `owner_id`（客户）、品牌车系年款发动机等适配字段。车主登录用户通过 `customers.user_id` 关联。
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `key` | `VARCHAR(100)` | 否 | — | 唯一 | 配置键 |
+| `value` | `TEXT` | 否 | — | — | 配置值（字符串，按需要解析） |
+| `description` | `VARCHAR(500)` | 是 | — | — | 说明 |
+| `created_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+
+#### `notifications`
+
+站内通知。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `user_id` | `INTEGER` | 否 | — | 索引；外键 → `users.id` | — |
+| `type` | `VARCHAR(50)` | 否 | 数据库 `'work_order'` | — | — |
+| `title` | `VARCHAR(200)` | 否 | — | — | — |
+| `content` | `TEXT` | 否 | — | — | — |
+| `work_order_id` | `INTEGER` | 是 | — | 索引 | — |
+| `is_read` | `BOOLEAN` | 否 | 数据库 `false` | 索引 | — |
+| `extra` | `TEXT` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+
+#### 门店、客户与车辆
+
+#### `stores`
+
+门店主数据。预约、工单、报价、库存等通过 `store_id` 关联。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `code` | `VARCHAR(50)` | 否 | — | 唯一 | 门店编码 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 门店名称 |
+| `address` | `VARCHAR(300)` | 是 | — | — | 地址 |
+| `phone` | `VARCHAR(20)` | 是 | — | — | 联系电话 |
+| `is_active` | `BOOLEAN` | 否 | 数据库 `true` | — | 是否营业 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `bays`
+
+工位隶属门店。预约和工单可占用工位。同店工位编码唯一。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `store_id` | `INTEGER` | 否 | — | 索引；外键 → `stores.id` ON DELETE CASCADE | 所属门店 |
+| `code` | `VARCHAR(50)` | 否 | — | — | 工位编码，门店内唯一 |
+| `name` | `VARCHAR(100)` | 否 | — | — | 工位名称 |
+| `bay_type` | `VARCHAR(30)` | 是 | 应用侧 `通用` | — | 工位类型：通用/机电/钣喷 |
+| `is_active` | `BOOLEAN` | 否 | 数据库 `true` | — | 是否可用 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+表级约束与额外索引：
+
+- 唯一约束 `uq_bays_store_code`：(`store_id`, `code`)
+
+#### `customers`
+
+客户档案没有 `store_id`。车主登录用户通过 `user_id` 关联。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `name` | `VARCHAR(100)` | 否 | — | — | 客户姓名 |
+| `phone` | `VARCHAR(20)` | 是 | — | 索引 | 手机号 |
+| `email` | `VARCHAR(200)` | 是 | — | — | 邮箱 |
+| `id_no` | `VARCHAR(30)` | 是 | — | — | 证件号占位，Phase 0 不校验格式 |
+| `remark` | `TEXT` | 是 | — | — | 备注 |
+| `user_id` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | 可选关联系统用户（客户本人有账号时） |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `vehicles`
+
+车辆通过 `owner_id` 指向客户；字段为品牌、车型、年款。套餐适配另读套餐上的品牌/车系/里程条件。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `plate` | `VARCHAR(20)` | 否 | — | 唯一 | 车牌号 |
+| `vin` | `VARCHAR(17)` | 是 | — | 唯一 | 车架号 VIN，可空 |
+| `make` | `VARCHAR(50)` | 是 | — | — | 品牌 |
+| `model` | `VARCHAR(80)` | 是 | — | — | 车型 |
+| `year` | `INTEGER` | 是 | — | — | 年款 |
+| `owner_id` | `INTEGER` | 是 | — | 索引；外键 → `customers.id` ON DELETE SET NULL | 车主，关联客户 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+
+#### 工单与导入
 
 #### `work_orders`
 
-`work_order_no` 唯一。可关联 `device_id`、`vehicle_id`、`store_id`、`customer_id`、`bay_id`、`appointment_id`。故障描述、现象/原因级联、媒体与附件、`used_parts` JSON、人员（`technician_id` / `assignee_id` / `reporter_id` / `created_by`）、`priority`、`status`（PostgreSQL 枚举 `workorderstatus`）、AI `confidence` 与 `analysis_result`、`dispatch_score`、`completion_report`。设备日志类字段：`device_error_code`、`log_text`。
+工业维修可以没有车辆/门店；汽修工单通常带 `vehicle_id`、`store_id` 或 `appointment_id`。`status` 是 PostgreSQL 枚举 `workorderstatus`（20 个取值，见 `sql/02_enums.sql`）。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `work_order_no` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `device_id` | `INTEGER` | 是 | — | 外键 → `devices.id` | — |
+| `device_code` | `VARCHAR(50)` | 是 | — | — | — |
+| `fault_code` | `TEXT` | 是 | — | — | 故障码，多个用逗号分隔 |
+| `device_error_code` | `VARCHAR(200)` | 是 | — | — | 设备运行日志/屏幕报警的错误码（如 SV0436 / 6401），仅带错误码的机电设备填，多个用逗号分隔 |
+| `log_text` | `TEXT` | 是 | — | — | 设备日志/屏幕原文（错误码录入模式粘贴，供知识抽取抠码与溯源） |
+| `fault_description` | `TEXT` | 否 | — | — | — |
+| `fault_category` | `VARCHAR(100)` | 是 | — | — | 故障大类 |
+| `fault_phenomenon_type` | `VARCHAR(200)` | 是 | — | — | 故障具体现象（级联二级） |
+| `fault_phenomenon` | `TEXT` | 是 | — | — | 故障现象补充描述 |
+| `fault_media` | `JSONB` | 是 | — | — | 移动端上报的图片/语音文件URL列表 |
+| `attachments` | `JSONB` | 是 | — | — | 附件列表 [{url, name, type}] |
+| `root_cause_category` | `VARCHAR(100)` | 是 | — | — | 根本原因大类 |
+| `root_cause_type` | `VARCHAR(200)` | 是 | — | — | 根本原因具体类型（级联二级） |
+| `root_cause` | `TEXT` | 是 | — | — | 根本原因补充说明 |
+| `solution_steps` | `TEXT` | 是 | — | — | — |
+| `solution_ref_knowledge_id` | `INTEGER` | 是 | — | — | 引用的知识条目ID |
+| `repair_result` | `VARCHAR(20)` | 是 | — | — | 维修结果: PERMANENT_FIX / TEMPORARY_FIX / UNABLE_FIX |
+| `follow_up_plan` | `TEXT` | 是 | — | — | 临时措施后续计划 |
+| `work_hours` | `FLOAT` | 是 | — | — | 工时（小时） |
+| `used_parts` | `JSONB` | 是 | — | — | — |
+| `start_time` | `TIMESTAMP` | 是 | — | — | — |
+| `end_time` | `TIMESTAMP` | 是 | — | — | — |
+| `technician_id` | `INTEGER` | 是 | — | 外键 → `users.id` | 指派的维修人员 ID |
+| `assignee_id` | `INTEGER` | 是 | — | 外键 → `users.id` | 当前处理人 ID |
+| `reporter_id` | `INTEGER` | 是 | — | 外键 → `users.id` | 上报人员 ID（移动端提交） |
+| `priority` | `VARCHAR(10)` | 是 | 应用侧 `MEDIUM` | — | 优先级: LOW/MEDIUM/HIGH/CRITICAL |
+| `location` | `VARCHAR(200)` | 是 | — | — | 故障设备位置 |
+| `status` | `workorderstatus` | 否 | 应用侧 `DRAFT` | — | 枚举 `workorderstatus`，20 个取值，见 `sql/02_enums.sql` |
+| `tags` | `JSONB` | 是 | — | — | — |
+| `confidence` | `FLOAT` | 是 | — | — | AI 分析置信度 (0-1) |
+| `analysis_result` | `JSONB` | 是 | — | — | AI 分析结果完整记录 |
+| `dispatch_score` | `JSONB` | 是 | — | — | 派工评分详情 |
+| `completion_report` | `JSONB` | 是 | — | — | 维修完成报告（工时/备件/照片） |
+| `created_by` | `INTEGER` | 是 | — | 外键 → `users.id` | 创建者 ID，仅创建者可编辑 |
+| `vehicle_id` | `INTEGER` | 是 | — | 索引；外键 → `vehicles.id` ON DELETE SET NULL | 关联车辆 |
+| `customer_id` | `INTEGER` | 是 | — | 索引；外键 → `customers.id` ON DELETE SET NULL | 关联客户 |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | 服务门店 |
+| `bay_id` | `INTEGER` | 是 | — | 外键 → `bays.id` ON DELETE SET NULL | 占用工位 |
+| `appointment_id` | `INTEGER` | 是 | — | 外键 → `appointments.id` ON DELETE SET NULL | 来源预约 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
 #### `work_order_progress_logs`
 
-状态迁移流水：`from_status` / `to_status`、操作者、来源、备注、位置、附件。索引 `(work_order_id, created_at)`。
+状态迁移流水。组合索引 `(work_order_id, created_at)` 服务看板查询。`created_at` 在模型里覆盖了基类字段，数据库默认为 `now()`。
 
-#### `work_order_import_batches` / `work_order_import_items`
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `work_order_id` | `INTEGER` | 否 | — | 索引；外键 → `work_orders.id` ON DELETE CASCADE | — |
+| `from_status` | `workorderstatus` | 是 | — | — | 枚举 `workorderstatus` |
+| `to_status` | `workorderstatus` | 否 | — | — | 枚举 `workorderstatus` |
+| `operator_id` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `operator_name` | `VARCHAR(100)` | 是 | — | — | — |
+| `source` | `VARCHAR(30)` | 否 | 数据库 `'WEB'` | — | WEB / MOBILE / DINGTALK_CARD / SYSTEM |
+| `remark` | `TEXT` | 是 | — | — | — |
+| `location` | `VARCHAR(200)` | 是 | — | — | — |
+| `attachments` | `JSONB` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
-批次号、计数、`report` JSON。明细含原文、抽取 JSON、校验警告、确认后的 `work_order_id`。这两张表未出现在 `models/__init__.py` 的 `__all__` 里，但模型文件与迁移存在。
+表级约束与额外索引：
 
-#### `knowledge_items` / `manual_code_entries`
+- 索引 `ix_progress_logs_woid_created`：(`work_order_id`, `created_at`)
 
-知识：`embedding vector(1024)`，生成列 `search_tsv`，`milvus_id` 仍唯一（兼容点号），`title` / `content`，`device_type`，`fault_code`，`fault_tags`，`source_type` / `source_id`，`status`（`DRAFT` / `UNDER_REVIEW` / `PUBLISHED` / `DEPRECATED` / `ARCHIVED`），`version`，审核与抽取元数据。
+#### `work_order_import_batches`
 
-手册错误码：`embedding vector(1024)`，`error_code`、`manual_name`、`device_type`、`title`、`description`、`message_text`、`severity` / `effect`、`conditions` JSON（`[{signal, cause, steps}]`）、`related_codes`、章节页码；`milvus_id` 同样保留为兼容点号。旧的 `causes` / `solutions` 文本字段标注为过渡期兼容。
+PDF 导入批次。确认前只写导入表，不写生产 `work_orders`。模型已定义，但未列入 `models/__init__.py` 的 `__all__`。
 
-#### `devices` / `fault_code_mappings` / 分类表
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `batch_no` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `status` | `VARCHAR(20)` | 否 | 应用侧 `PROCESSING` | — | PROCESSING / DONE / PARTIAL |
+| `file_count` | `INTEGER` | 否 | 应用侧 `0` | — | — |
+| `total_count` | `INTEGER` | 否 | 应用侧 `0` | — | 抽取成功进入待确认数 |
+| `success_count` | `INTEGER` | 否 | 应用侧 `0` | — | 确认入库数 |
+| `failed_count` | `INTEGER` | 否 | 应用侧 `0` | — | 解析/抽取失败数 |
+| `report` | `JSONB` | 是 | — | — | 每份 PDF 的处理结果摘要 |
+| `created_by` | `INTEGER` | 是 | — | 外键 → `users.id` | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
-设备有运行状态、心跳、故障标签、外部同步字段，**无** `store_id`。故障码映射表按码唯一。另有故障现象分类、根因分类、通用 `categories`。
+#### `work_order_import_items`
 
-#### `spare_parts` / `part_skus` / `store_part_stocks` / `stock_movements`
+批次中的一条抽取草稿。确认后才写入 `work_order_id`。模型已定义，但未列入 `models/__init__.py` 的 `__all__`。
 
-备件主数据含安全库存与当前库存。SKU 目录有指导价/成本价占位。门店库存与流水在 `store_part_stocks`、`stock_movements`。采购单 `purchase_orders` 状态 `ORDERED` / `PARTIAL` / `RECEIVED` / `CANCELLED`。
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `batch_id` | `INTEGER` | 否 | — | 索引；外键 → `work_order_import_batches.id` ON DELETE CASCADE | — |
+| `file_name` | `VARCHAR(255)` | 否 | — | — | — |
+| `file_path` | `VARCHAR(500)` | 是 | — | — | — |
+| `status` | `VARCHAR(20)` | 否 | 应用侧 `PENDING` | — | PENDING(待确认) / CONFIRMED(已入库) / REJECTED(已拒绝) / ERROR(解析失败) |
+| `error_message` | `TEXT` | 是 | — | — | 解析/抽取失败原因 |
+| `extracted_text` | `TEXT` | 是 | — | — | PDF 提取的原始文本（供人工核对） |
+| `extracted_data` | `JSONB` | 是 | — | — | LLM 抽取的系统工单字段（待人工确认） |
+| `validate_warnings` | `JSONB` | 是 | — | — | 校验警告（设备/维修员/工单号等） |
+| `work_order_id` | `INTEGER` | 是 | — | 外键 → `work_orders.id` | 确认后生成的工单 id |
+| `confirmed_at` | `TIMESTAMP` | 是 | — | — | — |
+| `confirmed_by` | `INTEGER` | 是 | — | 外键 → `users.id` | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
-#### `service_packages` / `service_skus`
+表级约束与额外索引：
 
-套餐与服务项目：品牌、车系、里程区间、症状关键词、`list_price` / `base_price`、`is_active`。SKU 可挂到套餐。
+- 索引 `ix_woi_batch_status`：(`batch_id`, `status`)
 
-#### `quotes` / `quote_lines`
 
-见 [§4.3](#43-报价与套餐)。明细类型 `PART` / `LABOR` / `PACKAGE`，`source` 区分工单、问诊、套餐或手工。
+#### 知识与手册
+
+#### `knowledge_items`
+
+`search_tsv` 是生成列，由 `knowledge_search_tsv()` 计算，不能直接 UPDATE。`milvus_id` 现为兼容点号 `pg:k:{id}`。主检索路径不过滤 `PUBLISHED`，见 [§4.1](#41-检索漏斗)。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `milvus_id` | `VARCHAR(100)` | 是 | — | 唯一 | — |
+| `embedding` | `vector(1024)` | 是 | — | — | bge-m3，1024 维；HNSW 余弦索引 |
+| `search_tsv` | `tsvector（生成列）` | 否 | 生成列，无 DEFAULT | 生成列 STORED | 由 `knowledge_search_tsv(title, content, fault_code, fault_tags)` 生成；标题与故障码权重 A，正文 B，标签 C |
+| `title` | `VARCHAR(300)` | 否 | — | — | — |
+| `content` | `TEXT` | 否 | — | — | — |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | — |
+| `fault_code` | `TEXT` | 是 | — | — | 故障码，多个用逗号分隔 |
+| `fault_tags` | `JSONB` | 是 | — | — | — |
+| `source_type` | `VARCHAR(20)` | 是 | — | — | — |
+| `source_id` | `INTEGER` | 是 | — | — | — |
+| `status` | `knowledgestatus` | 否 | 应用侧 `DRAFT` | — | 枚举 `knowledgestatus`：`DRAFT` / `UNDER_REVIEW` / `PUBLISHED` / `DEPRECATED` / `ARCHIVED` |
+| `version` | `INTEGER` | 是 | 应用侧 `1` | — | — |
+| `review_comment` | `TEXT` | 是 | — | — | 审核备注（驳回原因/修改建议） |
+| `extraction_meta` | `JSONB` | 是 | — | — | 提取元数据（去重分数/关联工单/关联知识等） |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+表级约束与额外索引：
+
+- HNSW 索引 `idx_knowledge_items_embedding_hnsw`：`embedding vector_cosine_ops`（m=16, ef_construction=64）
+- GIN 索引 `idx_knowledge_items_search_tsv`：`search_tsv`
+- `pg_trgm` GIN 索引 `idx_knowledge_title_trgm` / `idx_knowledge_content_trgm`：供 ILIKE 回退
+
+#### `manual_code_entries`
+
+手册错误码权威映射。有 `embedding`，不建 `search_tsv`；关键词路仍走精确错误码。`causes` / `solutions` 为过渡期兼容字段。`milvus_id` 新值为 `pg:m:{id}`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `milvus_id` | `VARCHAR(100)` | 是 | — | 唯一 | 兼容字段：现为 pg:m:{id}，不再指向 Milvus |
+| `embedding` | `vector(1024)` | 是 | — | — | bge-m3 1024 维向量，未同步时为空；bge-m3，1024 维；HNSW 余弦索引 |
+| `manual_name` | `VARCHAR(200)` | 否 | — | — | 设备说明书/手册名称，如 KUKA KR210 维修手册 |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | 设备类型（机械臂/数控机床等） |
+| `error_code` | `VARCHAR(100)` | 否 | — | 索引 | 错误码/报警码，如 SV0436 / ALM-6401 |
+| `title` | `VARCHAR(300)` | 否 | — | — | 错误码标题（如：主轴过流） |
+| `description` | `TEXT` | 否 | — | — | 错误含义/触发条件（说明书原文） |
+| `message_text` | `TEXT` | 是 | — | — | 屏幕/日志原文（用户看到的报警原文，逐字照抄，检索锚点） |
+| `severity` | `VARCHAR(20)` | 是 | — | — | 报警等级: EX急停 / OH停机 / INFO提示 |
+| `effect` | `VARCHAR(50)` | 是 | — | — | 对设备的影响（展示向）：急停 / 停机 / 仅提示 |
+| `conditions` | `JSONB` | 是 | 应用侧 `list` | — | 情形数组 [{signal, cause, steps}]：按日志可观察信号拆分的原因与排查步骤 |
+| `related_codes` | `JSONB` | 是 | 应用侧 `list` | — | 伴随报警交叉引用（错误码字符串数组） |
+| `causes` | `TEXT` | 是 | — | — | 可能原因（说明书原文）[deprecated: 结构化后由 conditions 承载，过渡期兼容] |
+| `solutions` | `TEXT` | 是 | — | — | 处理步骤/排查方向（说明书原文）[deprecated: 结构化后由 conditions 承载，过渡期兼容] |
+| `chapter` | `VARCHAR(200)` | 是 | — | — | 所属章节（出处回溯） |
+| `page` | `VARCHAR(50)` | 是 | — | — | 页码（出处回溯） |
+| `version` | `INTEGER` | 是 | 应用侧 `1` | — | 条目版本 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+表级约束与额外索引：
+
+- HNSW 索引 `idx_manual_code_entries_embedding_hnsw`：`embedding vector_cosine_ops`（m=16, ef_construction=64）
+
+
+#### 设备与分类
+
+#### `devices`
+
+工业维修车道的设备台账，**无** `store_id`。曾有 `health_score`，已在迁移 `59fa4817b5b4` 删除。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `device_code` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `device_name` | `VARCHAR(200)` | 否 | — | — | — |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | — |
+| `model` | `VARCHAR(100)` | 是 | — | — | — |
+| `manufacturer` | `VARCHAR(200)` | 是 | — | — | — |
+| `location` | `VARCHAR(200)` | 是 | — | — | — |
+| `purchase_date` | `DATE` | 是 | — | — | — |
+| `warranty_expiry` | `DATE` | 是 | — | — | — |
+| `remark` | `TEXT` | 是 | — | — | — |
+| `run_status` | `VARCHAR(20)` | 是 | 应用侧 `UNKNOWN` | — | 运行状态 ONLINE/OFFLINE/ALARM/FAULT/UNKNOWN |
+| `last_heartbeat` | `TIMESTAMP` | 是 | — | — | 最后心跳时间 |
+| `fault_tags` | `JSONB` | 是 | — | — | 故障标签数组 [{'code','name','level'}] |
+| `ext_system_id` | `VARCHAR(100)` | 是 | — | — | 外部监控系统关联ID（唯一） |
+| `status_source` | `VARCHAR(50)` | 是 | — | — | 状态来源：manual 手动/external 外部系统/auto 自动推断 |
+| `status_reason` | `VARCHAR(200)` | 是 | — | — | 状态原因/证据说明（证据链，便于反推） |
+| `last_sync_time` | `TIMESTAMP` | 是 | — | — | 与外部系统最后同步时间 |
+| `monitor_extra` | `JSONB` | 是 | — | — | 监控扩展字段，对接外部系统时按需写入 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `fault_code_mappings`
+
+故障码映射，`fault_code` 唯一。此表在当前模型中有定义，但 Alembic 迁移链没有 `create_table`（历史 `init-db.sql` 里有建表语句）。只跑迁移的空库不会自动出现这张表。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `fault_code` | `VARCHAR(100)` | 否 | — | 唯一 | 故障码 |
+| `fault_description` | `TEXT` | 否 | — | — | 故障描述/现象 |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | 设备类型（可选） |
+| `source` | `VARCHAR(20)` | 是 | 应用侧 `system` | — | 来源: system(工单自动生成)/seed(种子数据)/manual(手动) |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `fault_phenomenon_categories`
+
+故障现象分类。同样只在模型中定义，Alembic 没有对应 `create_table`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `parent_id` | `INTEGER` | 是 | — | — | 父级ID，NULL=大类 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 分类名称 |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | 关联设备类型，NULL=通用 |
+| `description` | `TEXT` | 是 | — | — | 分类描述 |
+| `sort_order` | `INTEGER` | 是 | 应用侧 `0` | — | 排序 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `root_cause_categories`
+
+根本原因分类。同样只在模型中定义，Alembic 没有对应 `create_table`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `parent_id` | `INTEGER` | 是 | — | — | 父级ID，NULL=大类 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 分类名称 |
+| `description` | `TEXT` | 是 | — | — | 分类描述 |
+| `sort_order` | `INTEGER` | 是 | 应用侧 `0` | — | 排序 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `categories`
+
+通用分类树，可用于设备类型、故障类型等；`parent_id` 自关联。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `name` | `VARCHAR(100)` | 否 | — | — | — |
+| `code` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `parent_id` | `INTEGER` | 是 | — | 外键 → `categories.id` | — |
+| `category_type` | `VARCHAR(30)` | 否 | — | 索引 | — |
+| `sort_order` | `INTEGER` | 是 | 应用侧 `0` | — | — |
+| `description` | `VARCHAR(500)` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+
+#### 备件、库存与采购
+
+#### `part_skus`
+
+备件 SKU 目录，含指导价/成本价占位。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `code` | `VARCHAR(50)` | 否 | — | 唯一 | SKU 编码 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 配件名称 |
+| `brand` | `VARCHAR(100)` | 是 | — | — | 品牌 |
+| `unit` | `VARCHAR(20)` | 是 | 应用侧 `个` | — | 单位 |
+| `list_price` | `FLOAT` | 是 | 应用侧 `0.0` | — | 指导价占位 |
+| `cost_price` | `FLOAT` | 是 | 应用侧 `0.0` | — | 成本价占位 |
+| `specification` | `VARCHAR(200)` | 是 | — | — | 规格 |
+| `is_active` | `BOOLEAN` | 否 | 数据库 `true` | — | 是否在售 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `spare_parts`
+
+备件主数据，含安全库存、当前库存与适配规则 `fitment`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `part_code` | `VARCHAR(50)` | 否 | — | 唯一 | — |
+| `part_name` | `VARCHAR(200)` | 否 | — | — | — |
+| `specification` | `VARCHAR(200)` | 是 | — | — | — |
+| `unit` | `VARCHAR(20)` | 是 | 应用侧 `个` | — | — |
+| `stock_quantity` | `INTEGER` | 是 | 应用侧 `0` | — | — |
+| `safety_stock` | `INTEGER` | 是 | 应用侧 `0` | — | — |
+| `unit_price` | `FLOAT` | 是 | 应用侧 `0.0` | — | — |
+| `device_type` | `VARCHAR(100)` | 是 | — | — | — |
+| `location` | `VARCHAR(200)` | 是 | — | — | — |
+| `supplier` | `VARCHAR(200)` | 是 | — | — | — |
+| `sku_id` | `INTEGER` | 是 | — | 索引；外键 → `part_skus.id` ON DELETE SET NULL | 关联配件目录 SKU |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | 归属门店，空表示未分店 |
+| `fitment` | `JSONB` | 是 | — | — | 适配规则 [{brand, series, year_from, year_to, engine}]，空字段表示该维不限 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `store_part_stocks`
+
+门店维度库存。`(store_id, spare_part_id)` 唯一。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `store_id` | `INTEGER` | 否 | — | 索引；外键 → `stores.id` ON DELETE CASCADE | — |
+| `spare_part_id` | `INTEGER` | 否 | — | 索引；外键 → `spare_parts.id` ON DELETE CASCADE | — |
+| `quantity` | `INTEGER` | 否 | 数据库 `0` | — | 本店结存 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+表级约束与额外索引：
+
+- 唯一约束 `uq_store_part_stock`：(`store_id`, `spare_part_id`)
+
+#### `stock_movements`
+
+库存流水。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | — |
+| `spare_part_id` | `INTEGER` | 是 | — | 索引；外键 → `spare_parts.id` ON DELETE SET NULL | — |
+| `part_code` | `VARCHAR(50)` | 否 | — | — | — |
+| `qty_delta` | `INTEGER` | 否 | — | — | 正数入库，负数出库 |
+| `movement_type` | `VARCHAR(30)` | 否 | — | — | PO_RECEIVE/IMPORT/ISSUE |
+| `ref_type` | `VARCHAR(30)` | 是 | — | — | purchase_order/work_order/import |
+| `ref_id` | `INTEGER` | 是 | — | — | — |
+| `balance_after` | `INTEGER` | 是 | — | — | 变动后的总库存 |
+| `store_balance_after` | `INTEGER` | 是 | — | — | 变动后的本店结存 |
+| `operator_id` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `note` | `TEXT` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `purchase_orders`
+
+采购单，状态取值见模型/API：`ORDERED` / `PARTIAL` / `RECEIVED` / `CANCELLED`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `po_no` | `VARCHAR(40)` | 否 | — | 唯一 | 采购单号 |
+| `store_id` | `INTEGER` | 否 | — | 索引；外键 → `stores.id` ON DELETE RESTRICT | — |
+| `supplier` | `VARCHAR(200)` | 是 | — | — | 供应商 |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `'ORDERED'` | 索引 | ORDERED/PARTIAL/RECEIVED/CANCELLED |
+| `note` | `TEXT` | 是 | — | — | — |
+| `created_by` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `purchase_order_lines`
+
+采购单明细。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `purchase_order_id` | `INTEGER` | 否 | — | 索引；外键 → `purchase_orders.id` ON DELETE CASCADE | — |
+| `spare_part_id` | `INTEGER` | 是 | — | 外键 → `spare_parts.id` ON DELETE SET NULL | — |
+| `part_code` | `VARCHAR(50)` | 否 | — | — | 备件编码 |
+| `part_name` | `VARCHAR(200)` | 否 | — | — | 备件名称 |
+| `qty_ordered` | `INTEGER` | 否 | — | — | — |
+| `qty_received` | `INTEGER` | 否 | 数据库 `0` | — | — |
+| `unit_price` | `FLOAT` | 否 | 数据库 `0` | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+
+#### 套餐、报价与支付
+
+#### `service_packages`
+
+保养/服务套餐：品牌、车系、里程区间、症状关键词是排序条件，见 [§4.3](#43-报价与套餐)。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `code` | `VARCHAR(50)` | 否 | — | 唯一 | 套餐编码 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 套餐名称 |
+| `description` | `TEXT` | 是 | — | — | 说明 |
+| `brand` | `VARCHAR(50)` | 是 | — | — | 适用品牌，空为不限 |
+| `series` | `VARCHAR(80)` | 是 | — | — | 适用车系，空为不限 |
+| `mileage_from` | `INTEGER` | 是 | — | — | 里程下限 km，空为不限 |
+| `mileage_to` | `INTEGER` | 是 | — | — | 里程上限 km，空为不限 |
+| `symptom_keywords` | `JSONB` | 是 | — | — | 症状关键词 |
+| `list_price` | `FLOAT` | 否 | 数据库 `0` | — | 套餐价 |
+| `is_active` | `BOOLEAN` | 否 | 数据库 `true` | — | 是否在售 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `service_skus`
+
+服务项目，可挂到套餐。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `code` | `VARCHAR(50)` | 否 | — | 唯一 | 项目编码 |
+| `name` | `VARCHAR(200)` | 否 | — | — | 项目名称 |
+| `labor_minutes` | `INTEGER` | 否 | 数据库 `0` | — | 工时分钟 |
+| `base_price` | `FLOAT` | 否 | 数据库 `0` | — | 基础价 |
+| `package_id` | `INTEGER` | 是 | — | 索引；外键 → `service_packages.id` ON DELETE SET NULL | 所属套餐 |
+| `category` | `VARCHAR(50)` | 是 | — | — | 类别：保养/维修/检测 |
+| `symptom_keywords` | `JSONB` | 是 | — | — | 症状关键词 |
+| `brand` | `VARCHAR(50)` | 是 | — | — | 适用品牌，空为不限 |
+| `series` | `VARCHAR(80)` | 是 | — | — | 适用车系，空为不限 |
+| `mileage_from` | `INTEGER` | 是 | — | — | 里程下限 km |
+| `mileage_to` | `INTEGER` | 是 | — | — | 里程上限 km |
+| `is_active` | `BOOLEAN` | 否 | 数据库 `true` | — | 是否在售 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `quotes`
+
+报价单状态机见 [§4.3](#43-报价与套餐)。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `quote_no` | `VARCHAR(50)` | 否 | — | 唯一 | 报价单号 |
+| `work_order_id` | `INTEGER` | 是 | — | 索引；外键 → `work_orders.id` ON DELETE SET NULL | — |
+| `vehicle_id` | `INTEGER` | 是 | — | 索引；外键 → `vehicles.id` ON DELETE SET NULL | — |
+| `customer_id` | `INTEGER` | 是 | — | 索引；外键 → `customers.id` ON DELETE SET NULL | — |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | — |
+| `status` | `VARCHAR(30)` | 否 | 数据库 `'DRAFT'` | 索引 | DRAFT/STAFF_CONFIRMED/CUSTOMER_CONFIRMED/REJECTED/CANCELLED |
+| `customer_confirm` | `BOOLEAN` | 否 | 数据库 `false` | — | 车主是否已确认 |
+| `total` | `FLOAT` | 否 | 数据库 `0` | — | 合计 |
+| `mileage` | `INTEGER` | 是 | — | — | 生成报价时的里程 km |
+| `symptoms` | `TEXT` | 是 | — | — | 症状原文 |
+| `consult_text` | `TEXT` | 是 | — | — | 问诊建议原文 |
+| `note` | `TEXT` | 是 | — | — | 生成说明 |
+| `created_by` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `staff_confirmed_by` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `customer_confirmed_at` | `TIMESTAMP` | 是 | — | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `quote_lines`
+
+明细类型 `PART` / `LABOR` / `PACKAGE`；`source` 区分工单、问诊、套餐或手工。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `quote_id` | `INTEGER` | 否 | — | 索引；外键 → `quotes.id` ON DELETE CASCADE | — |
+| `line_no` | `INTEGER` | 否 | 数据库 `1` | — | — |
+| `line_type` | `VARCHAR(20)` | 否 | 数据库 `'LABOR'` | — | PART/LABOR/PACKAGE |
+| `name` | `VARCHAR(200)` | 否 | — | — | — |
+| `code` | `VARCHAR(50)` | 是 | — | — | — |
+| `qty` | `FLOAT` | 否 | 数据库 `1` | — | — |
+| `unit_price` | `FLOAT` | 否 | 数据库 `0` | — | — |
+| `amount` | `FLOAT` | 否 | 数据库 `0` | — | — |
+| `source` | `VARCHAR(30)` | 是 | — | — | work_order/consult/package/manual |
+| `ref_id` | `INTEGER` | 是 | — | — | 来源配件、项目或套餐 id |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
 #### `payment_intents`
 
-见 [§4.7](#47-支付占位与其它业务域)。`currency` 默认 `CNY`。
+支付意向占位单，见 [§4.7](#47-支付占位与其它业务域)。`currency` 默认 `CNY`。
 
-#### `appointments` / `follow_up_reminders`
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `intent_no` | `VARCHAR(40)` | 否 | — | 唯一 | 意向单号 |
+| `quote_id` | `INTEGER` | 是 | — | 索引；外键 → `quotes.id` ON DELETE SET NULL | — |
+| `work_order_id` | `INTEGER` | 是 | — | 索引；外键 → `work_orders.id` ON DELETE SET NULL | — |
+| `amount` | `FLOAT` | 否 | 数据库 `0` | — | 金额，来自报价合计 |
+| `currency` | `VARCHAR(8)` | 否 | 数据库 `'CNY'` | — | — |
+| `channel` | `VARCHAR(20)` | 否 | 数据库 `'STUB'` | — | 固定 STUB，未接渠道 |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `'CREATED'` | 索引 | CREATED/CANCELLED |
+| `note` | `VARCHAR(200)` | 否 | 数据库 `'占位订单，未接入清算'` | — | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
 
-预约状态 `PENDING` / `CONFIRMED` / `CANCELLED` / `COMPLETED`。回访 `kind` 为 `REVISIT` / `RATING`，状态 `SCHEDULED` / `SENT` / `CANCELLED` / `SKIPPED`。
 
-#### `duty_schedules` / `leave_requests` / `leave_requests_details`
+#### 预约与回访
 
-排班按日期+班次+用户。请假主从表，可关联钉钉 OA。
+#### `appointments`
 
-#### 其它
+预约不是工单状态。核销后工单落到 `INTAKE`。状态 `PENDING` / `CONFIRMED` / `CANCELLED` / `COMPLETED`。
 
-`notifications`（模型提取时未读到 `__tablename__` 字面量，迁移名为 notifications，以迁移与 API 为准）、`sys_configs`。
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `store_id` | `INTEGER` | 否 | — | 索引；外键 → `stores.id` ON DELETE RESTRICT | 预约门店 |
+| `bay_id` | `INTEGER` | 是 | — | 外键 → `bays.id` ON DELETE SET NULL | 预约工位，可空 |
+| `customer_id` | `INTEGER` | 是 | — | 索引；外键 → `customers.id` ON DELETE SET NULL | 客户 |
+| `vehicle_id` | `INTEGER` | 是 | — | 索引；外键 → `vehicles.id` ON DELETE SET NULL | 车辆 |
+| `scheduled_at` | `TIMESTAMP` | 否 | — | — | 预约到店时间 |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `'PENDING'` | — | PENDING/CONFIRMED/CANCELLED/COMPLETED |
+| `remark` | `TEXT` | 是 | — | — | 备注 |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+#### `follow_up_reminders`
+
+`kind` 为 `REVISIT` / `RATING`；状态 `SCHEDULED` / `SENT` / `CANCELLED` / `SKIPPED`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `store_id` | `INTEGER` | 是 | — | 索引；外键 → `stores.id` ON DELETE SET NULL | — |
+| `work_order_id` | `INTEGER` | 否 | — | 索引；外键 → `work_orders.id` ON DELETE CASCADE | — |
+| `customer_id` | `INTEGER` | 是 | — | 外键 → `customers.id` ON DELETE SET NULL | — |
+| `vehicle_id` | `INTEGER` | 是 | — | 外键 → `vehicles.id` ON DELETE SET NULL | — |
+| `kind` | `VARCHAR(20)` | 否 | — | — | REVISIT 回访 / RATING 评价 |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `'SCHEDULED'` | 索引 | SCHEDULED/SENT/CANCELLED/SKIPPED |
+| `scheduled_at` | `TIMESTAMP` | 否 | — | 索引 | 计划发送时间 |
+| `sent_at` | `TIMESTAMP` | 是 | — | — | — |
+| `channel_result` | `JSONB` | 是 | — | — | 短信/钉钉/站内的发送结果 |
+| `note` | `TEXT` | 是 | — | — | — |
+| `created_by` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | — |
+| `created_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+
+#### 排班与请假
+
+#### `duty_schedules`
+
+排班按日期+班次+用户。班次取值 `MORNING` / `AFTERNOON` / `NIGHT`。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `date` | `DATE` | 否 | — | 索引 | — |
+| `shift` | `VARCHAR(20)` | 否 | 数据库 `'MORNING'` | — | — |
+| `user_id` | `INTEGER` | 否 | — | 索引；外键 → `users.id` ON DELETE CASCADE | — |
+| `schedule_type` | `VARCHAR(30)` | 否 | 数据库 `'MANUAL'` | — | WEEKLY_ROUTINE / MANUAL / LEAVE / SUBSTITUTE |
+| `note` | `VARCHAR(200)` | 是 | — | — | — |
+| `leave_type` | `VARCHAR(30)` | 是 | — | — | — |
+| `leave_status` | `VARCHAR(20)` | 否 | 数据库 `'APPROVED'` | — | — |
+| `source_leave_request_id` | `INTEGER` | 是 | — | 外键 → `leave_requests.id` ON DELETE SET NULL | 生成这条排班记录的请假申请 ID；便于追溯/撤销 |
+| `source_substitute_for_id` | `INTEGER` | 是 | — | — | 若 schedule_type=SUBSTITUTE 时，顶替的是哪个请假申请 id（冗余） |
+| `created_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 应用侧 `datetime.utcnow` | — | — |
+
+表级约束与额外索引：
+
+- 索引 `ix_duty_date_shift`：(`date`, `shift`)
+
+#### `leave_requests`
+
+请假主表，可关联钉钉 OA（`correlation_id` 做幂等）。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `requester_id` | `INTEGER` | 否 | — | 索引；外键 → `users.id` ON DELETE CASCADE | 申请人 user_id（维修师傅） |
+| `requester_name` | `VARCHAR(100)` | 否 | — | — | 冗余姓名，卡片展示用 |
+| `leave_type` | `VARCHAR(30)` | 否 | 数据库 `'ANNUAL'` | — | 假别：ANNUAL/SICK/PERSONAL/COMPENSATION/MARRIAGE/MATERNITY/FUNERAL/OTHER |
+| `leave_reason` | `TEXT` | 是 | — | — | 请假理由（师傅填） |
+| `status` | `VARCHAR(20)` | 否 | 数据库 `'PENDING'` | 索引 | PENDING / APPROVED / REJECTED / CANCELLED |
+| `approver_id` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | 审批人（主管）user_id |
+| `approver_comment` | `TEXT` | 是 | — | — | 拒绝必填理由 / 同意备注 |
+| `substitute_user_id` | `INTEGER` | 是 | — | 外键 → `users.id` ON DELETE SET NULL | 人数不足时主管强制指定的顶岗人 user_id，生成排班时用 |
+| `correlation_id` | `VARCHAR(100)` | 否 | — | 唯一 | 钉钉 outTrackId / processInstanceId，唯一索引做幂等，防钉钉重试重复提交 |
+| `submitted_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | 师傅提交时间 |
+| `handled_at` | `TIMESTAMP` | 是 | — | — | 主管审批/拒绝时间 |
+| `created_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+
+#### `leave_requests_details`
+
+请假明细（某一天的班次）。`(leave_request_id, leave_date, leave_shift)` 唯一。
+
+| 字段 | 类型 | 可空 | 默认值 | 约束 | 说明 |
+|------|------|------|--------|------|------|
+| `id` | `INTEGER` | 否 | — | 主键；自增；索引 | — |
+| `leave_request_id` | `INTEGER` | 否 | — | 索引；外键 → `leave_requests.id` ON DELETE CASCADE | — |
+| `leave_date` | `DATE` | 否 | — | 索引 | 具体某一天 |
+| `leave_shift` | `VARCHAR(20)` | 否 | 数据库 `'ALL_DAY'` | — | ALL_DAY / MORNING / AFTERNOON |
+| `created_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+| `updated_at` | `TIMESTAMP` | 否 | 数据库 `now()` | — | — |
+
+表级约束与额外索引：
+
+- 唯一约束 `uq_leave_req_day_shift`：(`leave_request_id`, `leave_date`, `leave_shift`)
+- 索引 `ix_lrd_date_shift`：(`leave_date`, `leave_shift`)
 
 ### 6.3 分库分表策略
 
@@ -928,6 +1600,7 @@ Car-Repair-System/
 │   ├── src/main.js                 # Vue + Element Plus，无 Pinia
 │   ├── vite.config.js              # :4173，代理 /api、/dingtalk
 │   └── package.json
+├── sql/                            # 现网表结构建表语句（对照模型与 Alembic 的快照）
 ├── docs/                           # 本文、HARNESS 契约与方案/启用说明
 ├── 项目说明/                       # 操作指南与讲解稿，不是现网合同
 ├── docker-compose.dev.yml          # 本机数据面
@@ -1042,8 +1715,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 ### 9.3 文档与仓库卫生
 
 - `README.md` 技术栈仍写 **Pinia**，`frontend/package.json` 与 `main.js` 没有这个依赖。
-- README 架构示意图出现 **Qwen3-Embed-4B**，现网默认是 **BAAI/bge-m3**。同节表格是对的，示意图是错的。
-- README 写「21 个路由模块」、目录树漏 `domain/`、把 Redis 端口画成 7379。代码里路由多于 21 个；7379 只出现在 `.env.example`，compose 与 `config.py` 默认是 6379。
+- README 写「21 个路由模块」、目录树漏 `domain/`、把 Redis 端口画成 7379。`main.py` 当前 `include_router` 为 33 路；7379 出现在 `backend/.env.example` 和 README 示意图，compose 与 `config.py` 默认是 6379。
 - `init-db.sql` 自己声明不要用来建库，工单枚举过时。
 - `docker-compose.yml` 是 RAGFlow 模板，依赖可能不在本仓库的 `docker-compose-base.yml`。不要把它当成一键拉起本系统数据面的文件。
 - 旧的 `DEEPSEEK_*` 仅在 `CHAT_LLM_MODE=deepseek` 时生效；默认 cloud 走百炼 `qwen-plus`，local 走本机 `Qwen2.5-7B-Instruct`。
@@ -1057,6 +1729,7 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 - `app/rag/retrieval_flow.py` 仍依赖 `app.agents.tools.RetrievalTools`（RAG → Agent）。
 - `dispatch.py` 从 `work_orders` 再导出 shim 取 `_add_progress_log` / `_update_workload`，属于 API 内部兼容。
 - 质量阀门阈值 0.45 / 0.6 / 0.7 仍按原 Qwen3-Reranker 标定，尚未按 `bge-reranker-v2-m3` 重标，排序与「结果是否充足」的判断可能变化。
+- 主检索路径（pgvector 与 tsvector）不过滤知识 `status=PUBLISHED`；只有关键词 ILIKE 回退会过滤。已下架但仍留 embedding 的条目也可能被召回。
 - 导入 DAG 在抽取质量一般时仍 `save_draft`，只附警告，没有质量失败边，也没有按文件并行的图内实现（并行若存在，应在 API 批量层，不在这张单文件图里）。
 - 缓存与限流在 Redis 不可用或多副本时行为会漂：缓存退回进程内存，限流各算各的。
 - JWT 只有 30 分钟 access token，代码里未见 refresh token。
@@ -1073,4 +1746,4 @@ README 目录树曾漏写 `app/domain/`，且仍把路由模块数写成 21；`m
 
 ---
 
-本文结束。阈值、集合名、状态机和门面边界若再变更，应先改代码，再改本文，而不是以方案稿覆盖实现。
+本文结束。阈值、检索字段、状态机和门面边界若再变更，应先改代码，再改本文，而不是以方案稿覆盖实现。
