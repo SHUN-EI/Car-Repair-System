@@ -1,6 +1,6 @@
 # Smart-Repair-System 系统总体架构文档
 
-> 本文以仓库**当前代码**为唯一事实来源（截至 2026-11-18，对照当前工作区，含图与路由收口）。方案类 docs（如 `docs/双Agent精简技术方案.md`、`docs/汽修-Agent-平台改造方案.md`、后训练方案）只解释取舍；与代码冲突时以仓库实现为准。分层与依赖方向的契约见 `docs/HARNESS.md`，本文写现网结构与流程，不重复抄写契约全文。`README.md` 是入口页；阈值和已知偏差以本文为准。
+> 本文以仓库**当前代码**为唯一事实来源（截至 2026-11-19，对照当前 main，含 LangGraph 图拓扑）。方案类 docs（如 `docs/双Agent精简技术方案.md`、`docs/汽修-Agent-平台改造方案.md`、后训练方案）只解释取舍；与代码冲突时以仓库实现为准。分层与依赖方向的契约见 `docs/HARNESS.md`，本文写现网结构与流程，不重复抄写契约全文。`README.md` 是入口页；阈值和已知偏差以本文为准。
 
 ---
 
@@ -10,7 +10,7 @@
 2. [模块划分与依赖关系](#2-模块划分与依赖关系)（含 [2.4 各模块要解决的问题](#24-各模块要解决的问题)）
 3. [第三方依赖、中间件与模型底座](#3-第三方依赖中间件与模型底座)
 4. [核心模块详细设计](#4-核心模块详细设计)
-5. [Agent 设计](#5-agent-设计)
+5. [Agent 设计](#5-agent-设计)（含 [5.2 图拓扑与函数分发](#52-图拓扑与函数分发)）
 6. [存储设计](#6-存储设计)
 7. [项目结构与代码组织](#7-项目结构与代码组织)
 8. [系统亮点与设计决策](#8-系统亮点与设计决策)
@@ -558,7 +558,7 @@ flowchart TD
 
 校验失败只记 `warnings`，仍然进入 `save_draft`，没有「抽取质量不足则失败」的条件边。人工确认在图外，由 `api/work_order_imports.py` 完成。草稿落在 `work_order_import_batches` / `work_order_import_items`，抽取原文截断到 4000 字。
 
-闲聊、库存查询和钉钉工单号查询已改为普通函数，不再编译成子图。现网会编译的 LangGraph 图只剩故障检索子图和本导入 DAG。
+闲聊、库存查询和钉钉工单号查询已改为普通函数，不再编译成子图。现网会编译的 LangGraph 图只剩故障检索子图和本导入 DAG，节点、条件边与总览见 [§5.2](#52-图拓扑与函数分发)。
 
 ### 4.5 门店隔离与车主范围
 
@@ -619,53 +619,117 @@ MCP：
 
 ### 5.2 图拓扑与函数分发
 
-现网会编译的 LangGraph 图只有两张，都是固定拓扑：故障检索子图，以及导入 DAG。闲聊、库存和钉钉渠道动作改为函数分发。
+现网会 `StateGraph.compile()` 的 LangGraph 图只有两张，都是单次 `invoke` 的固定拓扑，不使用 LangGraph checkpoint，状态不跨请求保留：
 
-#### 问答入口 `qa_graph.py`
+| 编译对象 | 定义 | 图入口 | 状态 | 调用链 |
+| --- | --- | --- | --- | --- |
+| `FAULT_SUBGRAPH` | `backend/app/agents/qa_graph.py` | `set_entry_point("compound_check")` | `QaState` | `ConsultGuideAgent.invoke_qa` → `invoke_qa`；仅当 `AgentRouter.qa_kind` 为 `fault` 时 `FAULT_SUBGRAPH.invoke` |
+| `WO_IMPORT_GRAPH` | `backend/app/agents/work_order_importer.py` 中 `build_import_graph()` | `set_entry_point("parse")` | `ImportState` | `api/work_order_imports.py` 上传 PDF → `WorkOrderAgent.import_pdf` → `invoke_import_pdf` → `WO_IMPORT_GRAPH.invoke` |
+
+`invoke_qa` 本身不是编译图：它先用函数分流，只有故障分支才进入子图。`robot_graph.py` 也不再编译 `StateGraph`。追踪维修与专家模式是 Redis 状态机，不上图。
+
+#### 总览：编译图在门面中的位置
 
 ```mermaid
-flowchart TD
-    K[AgentRouter.qa_kind] -->|inventory| INV[inventory_node 函数]
-    K -->|chat| CHAT[chat_node 函数]
-    K -->|fault| F[FAULT_SUBGRAPH]
-    INV --> END([返回])
-    CHAT --> END
-    F --> END
-    subgraph fault [FAULT_SUBGRAPH]
-        C[compound_check 零 LLM] --> RV[retrieve]
-        RV --> FL[filter]
+flowchart TB
+    subgraph ch [渠道]
+        SSE["POST /api/v1/search/answer/stream"]
+        PDF["历史工单 PDF 导入接口"]
+        DT["钉钉文本 / 其它 HTTP 与 MCP"]
     end
+
+    SSE --> CGA["ConsultGuideAgent.invoke_qa"]
+    CGA --> QK["AgentRouter.qa_kind<br/>use_llm=False，不传 entry"]
+    QK -->|inventory| INV["inventory_node 函数"]
+    QK -->|chat| CHAT["chat_node 函数"]
+    QK -->|fault| FS["FAULT_SUBGRAPH"]
+    INV --> RET(["返回 QaState"])
+    CHAT --> RET
+    FS --> RET
+
+    PDF --> WOA["WorkOrderAgent.import_pdf"]
+    WOA --> IG["WO_IMPORT_GRAPH"]
+    IG --> IMP(["返回草稿或错误记录"])
+
+    DT --> CLS["AgentRouter.classify 或显式 entry"]
+    CLS --> FAC["ConsultGuideAgent / WorkOrderAgent<br/>或 robot_graph 函数分发"]
 ```
 
-`AgentRouter.qa_kind`：调用 `route(..., use_llm=False)`。`inventory_read` 走库存函数；`help` / `chitchat` / `feature_intro` 走闲聊函数；其余再看 `answer_generator._is_technical_query`，非技术走闲聊，否则走故障子图。不启用 LLM，也不传入 `entry="answer/stream"`。故障子图：复合故障规则预检（连接词 + 多故障信号，不调用 LLM，命中则 `suggest_expert=True`）→ `retrieve_hybrid` → `filter_rerank_cases`。
+上图里只有 `FAULT_SUBGRAPH` 和 `WO_IMPORT_GRAPH` 是 LangGraph 编译结果，其余是普通函数调用。
 
-#### 钉钉适配器 `robot_graph.py`
+#### `FAULT_SUBGRAPH`
+
+三节点直线图，没有条件边。`set_entry_point("compound_check")` 从 `START` 进入，随后固定走到 `retrieve`、`filter`，再到 `END`。
 
 ```mermaid
 flowchart TD
-    R[AgentRouter.classify] --> H[help]
-    R --> C[create 提示去系统开单]
-    R --> T[todo]
-    R --> I[inventory]
-    R --> D[duty]
-    R --> P[repair]
-    R --> N[none]
-    R --> W[workorder_node]
-    H --> END([返回])
-    C --> END
-    T --> END
-    I --> END
-    D --> END
-    P --> END
-    N --> END
-    W --> END
+    START([START]) --> CC["compound_check"]
+    CC --> RV["retrieve"]
+    RV --> FL["filter"]
+    FL --> FIN([END])
 ```
 
-本模块不再编译 `StateGraph`。`workorder_node` 在同一个函数里提取并规范化工单号，再查询。`none` 只返回未识别说明。钉钉路径上的短备件名库存兜底在 `AgentRouter`，见 [§4.6](#46-钉钉与-mcp-渠道)。
+节点职责与 `qa_graph.py` 一致：
 
-#### 导入 DAG
+- `compound_check`：调用 `fault_decomposer._looks_compound` 做多故障规则预检（连接词 + 多故障信号词，不调用 LLM）。命中则写 `suggest_expert=True`，供 SSE 发切换专家模式的提示；无论是否命中都继续检索，没有为此分叉的条件边。预检异常只记日志，并写 `suggest_expert=False`。
+- `retrieve`：调用公共漏斗 `retrieve_hybrid`（知识库向量与 tsvector、手册错误码及其它已接入源，再做 RRF 融合），结果写入 `payload.cases` / `error_codes` / `tools`。失败时写入空列表，不把异常抛出图外。
+- `filter`：若 `tools` 可用，走 `extract_device_and_fault` 与 `filter_rerank_cases`（含精确命中置顶）；否则去掉 `rrf_only` 后按粗阈值截到 `FINAL_TOP_N`。`invoke_qa` 在子图返回后补写 `kind="fault"`。
 
-见 [§4.4](#44-导入-dag)。两张编译图都不使用 LangGraph checkpoint 做跨请求会话。
+`qa_kind` 的分流规则：调用 `route(..., use_llm=False)`。`inventory_read` 走库存函数；`help` / `chitchat` / `feature_intro` 走闲聊函数；其余再看 `answer_generator._is_technical_query`，非技术走闲聊，否则走故障子图。不传入 `entry="answer/stream"`，否则所有问题都会被钉成故障咨询。这条路径不会把「查工单进度」改派到工单 Agent。
+
+#### `WO_IMPORT_GRAPH`
+
+五节点 DAG。`parse`、`extract` 之后各有一条条件边，路由函数分别是 `_parse_success` 和 `_extract_success`。`validate` 没有失败边：校验问题只写入 `warnings`，一定进入 `save_draft`。
+
+```mermaid
+flowchart TD
+    START([START]) --> P["parse"]
+    P -->|"_parse_success：无 error"| E["extract"]
+    P -->|有 error| SE["save_error"]
+    E -->|"_extract_success：有 extracted"| V["validate"]
+    E -->|无 extracted| SE
+    V --> SD["save_draft"]
+    SD --> FIN([END])
+    SE --> FIN
+```
+
+节点职责与 `work_order_importer.py` 一致：
+
+- `parse`：用 pdfplumber 抽文本，无文本页回退 RapidOCR。解析失败、文本不足 20 字，或可能是加密/纯图片且 OCR 不可用时写 `error`；成功则截断到 12000 字。
+- `extract`：对话模型按工单 JSON Schema 抽字段，失败再重试 1 次；空结果写 `error`。会把 OCR 常见的 `W0-` 误识修正为 `WO-`。
+- `validate`：检查工单号是否已存在、设备编码能否匹配设备库、维修员和报修人姓名能否对上系统用户；只记警告，不创建正式工单。
+- `save_draft`：写入 `work_order_import_items`，状态 `PENDING`，抽取原文截断到 4000 字。
+- `save_error`：写入同表，状态 `ERROR`。
+
+图在人工确认之前结束。确认入库在图外，由 `api/work_order_imports.py` 建成已归档工单，并可走知识收录，见 [§4.4](#44-导入-dag)。
+
+#### 明确不上 LangGraph 的部分
+
+- 闲聊 `chat_node`、库存 `inventory_node`：普通函数，更新同一份 `QaState` 后直接返回。
+- 钉钉适配器 `robot_graph.py`：按 `AgentRouter.classify(..., entry="dingtalk")` 的 `channel_action` 分发到处理函数。`workorder_node` 在同一个函数里提取并规范化工单号，再查询。`none` 只返回未识别说明。钉钉路径上的短备件名库存兜底在 `AgentRouter`，见 [§4.6](#46-钉钉与-mcp-渠道)。
+
+```mermaid
+flowchart TD
+    R["AgentRouter.classify"] --> H["help"]
+    R --> C["create 提示去系统开单"]
+    R --> T["todo"]
+    R --> I["inventory"]
+    R --> D["duty"]
+    R --> P["repair"]
+    R --> N["none"]
+    R --> W["workorder_node"]
+    H --> ENDR(["返回回复"])
+    C --> ENDR
+    T --> ENDR
+    I --> ENDR
+    D --> ENDR
+    P --> ENDR
+    N --> ENDR
+    W --> ENDR
+```
+
+- 追踪维修 `guided_repair_agent`、专家模式 `expert_repair_agent`：Redis 状态机（TTL 24 小时、最多 30 步），跨请求、步数在运行时才确定，不上图，见 [§5.4](#54-多轮会话下图redis-状态机)。
+- `RetrievalAssistantAgent` 的有上限 ReAct 循环、工单理解 `ticket_agent`、知识抽取与去重：门面后的内部能力，源码中不编译 `StateGraph`。
 
 ### 5.3 状态
 

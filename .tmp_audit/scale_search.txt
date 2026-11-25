@@ -1,0 +1,753 @@
+================================================================================
+backend/app/core/vector_store.py  (452 lines)
+================================================================================
+  19|    cosine_distance_to_similarity,
+  26|def _session():
+  31|class VectorStore:
+  38|    def __init__(self, collection_name: Optional[str] = None, fields: Optional[List] = None,
+  42|        self.vector_size = settings.VECTOR_DIM
+  45|    def _set_ef_search(self, db) -> None:
+  46|        """在当前事务内设置 HNSW ef_search，只影响本连接。"""
+  47|        ef = int(getattr(settings, "PGVECTOR_EF_SEARCH", 64) or 64)
+  48|        db.execute(text("SELECT set_config('hnsw.ef_search', :ef, true)"), {"ef": str(ef)})
+  50|    def _validate_vector(self, vector: List[float]) -> List[float]:
+  58|    def insert(
+  76|    def update(
+  92|    def _upsert_knowledge(self, knowledge_id: int, vector: List[float], point_id: Optional[str] = None) -> str:
+ 102|                    "WHERE id = :id "
+ 118|    def _resolve_knowledge_id(self, point_id: str) -> Optional[int]:
+ 126|                text("SELECT id FROM knowledge_items WHERE milvus_id = :pid"),
+ 133|    def flush(self) -> None:
+ 137|    def search(
+ 143|        score_threshold: float = 0.3,
+ 144|        published_only: bool = True,
+ 149|        问诊检索默认只取已发布条目；知识去重需要把 published_only 设为 False，才能看到草稿和审核中的相似条目。
+ 152|        max_distance = 1.0 - float(score_threshold or 0.0)
+ 153|        clauses = ["embedding IS NOT NULL", "embedding <=> CAST(:q AS vector) <= :max_distance"]
+ 159|        if published_only:
+ 170|            "       (embedding <=> CAST(:q AS vector)) AS distance "
+ 172|            f"WHERE {' AND '.join(clauses)} "
+ 173|            "ORDER BY embedding <=> CAST(:q AS vector) "
+ 178|            self._set_ef_search(db)
+ 182|                score = cosine_distance_to_similarity(row.distance)
+ 198|    def delete(self, point_id: str) -> bool:
+ 205|    def delete_by_knowledge_id(self, knowledge_id: int) -> bool:
+ 213|                    "WHERE id = :id "
+ 226|    def get_by_id(self, point_id: str) -> Optional[Dict]:
+ 236|                    "FROM knowledge_items WHERE id = :id"
+ 254|    def count(self) -> int:
+ 258|            row = db.execute(text("SELECT COUNT(*) AS n FROM knowledge_items WHERE embedding IS NOT NULL")).fetchone()
+ 263|    def drop_collection(self) -> None:
+ 277|class LogCodeVectorStore(VectorStore):
+ 280|    def __init__(self, collection_name: Optional[str] = None):
+ 286|    def insert(
+ 308|                    "WHERE id = :id "
+ 324|    def _resolve_manual_id(self, point_id: str) -> Optional[int]:
+ 332|                text("SELECT id FROM manual_code_entries WHERE milvus_id = :pid"),
+ 339|    def delete(self, point_id: str) -> bool:
+ 350|                    "WHERE id = :id "
+ 363|    def drop_collection(self) -> None:
+ 376|    def count(self) -> int:
+ 381|                text("SELECT COUNT(*) AS n FROM manual_code_entries WHERE embedding IS NOT NULL")
+ 387|    def search(
+ 393|        score_threshold: float = 0.0,
+ 397|        max_distance = 1.0 - float(score_threshold or 0.0)
+ 398|        clauses = ["embedding IS NOT NULL", "embedding <=> CAST(:q AS vector) <= :max_distance"]
+ 414|            "       (embedding <=> CAST(:q AS vector)) AS distance "
+ 416|            f"WHERE {' AND '.join(clauses)} "
+ 417|            "ORDER BY embedding <=> CAST(:q AS vector) "
+ 422|            self._set_ef_search(db)
+ 426|                score = cosine_distance_to_similarity(row.distance)
+ 445|def _vector_literal(vector: List[float]) -> str:
+
+================================================================================
+backend/app/rag/multisource_search.py  (505 lines)
+================================================================================
+  16|from app.rag.lexical import build_or_tsquery, cosine_distance_to_similarity, tokenize_repair_text
+  19|def obd_point_id(obd_id: int) -> str:
+  24|def chunk_point_id(chunk_id: int) -> str:
+  29|def faq_point_id(faq_id: int) -> str:
+  34|def _session(db: Optional[Session]) -> tuple[Session, bool]:
+  41|def _set_ef_search(db: Session) -> None:
+  42|    """在当前事务内设置 HNSW ef_search，只影响本连接。"""
+  44|        text("SELECT set_config('hnsw.ef_search', :ef, true)"),
+  45|        {"ef": str(settings.PGVECTOR_EF_SEARCH)},
+  49|def _vector_literal(vector: Sequence[float]) -> str:
+  54|def _encode_or_none(query: str) -> Optional[List[float]]:
+  64|def _keyword_rows(db: Session, table: str, tsv_sql: str, query: str, limit: int) -> list:
+  75|        WHERE search_tsv @@ to_tsquery('simple', :tsq)
+  83|def _vector_rows(
+  89|    threshold: float,
+  93|    max_distance = max(0.0, 1.0 - float(threshold or 0.0))
+  94|    _set_ef_search(db)
+ 107|def _obd_item(row, *, score: float, method: str) -> dict:
+ 135|def search_obd_exact(codes: Sequence[str], *, db: Optional[Session] = None, top_k: int = 10) -> List[dict]:
+ 152|            .filter(ObdCode.code.in_(wanted), ObdCode.status == "PUBLISHED")
+ 165|def search_obd_semantic(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
+ 173|def _search_obd_vector(query: str, *, top_k: int, db: Optional[Session]) -> List[dict]:
+ 181|            SELECT id, (embedding <=> CAST(:q AS vector)) AS distance
+ 183|            WHERE embedding IS NOT NULL
+ 185|              AND embedding <=> CAST(:q AS vector) <= :max_distance
+ 186|            ORDER BY embedding <=> CAST(:q AS vector)
+ 189|        hits = _vector_rows(session, "obd_codes", sql, vector, top_k, settings.RETRIEVAL_VECTOR_THRESHOLD)
+ 193|        by_id = {row.id: row for row in session.query(ObdCode).filter(ObdCode.id.in_([h.id for h in hits])).all()}
+ 199|            results.append(_obd_item(row, score=cosine_distance_to_similarity(hit.distance), method="obd_vector_search"))
+ 209|def search_obd_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
+ 218|        # _keyword_rows 会再拼 WHERE search_tsv，这里先把 status 放进 tsv_sql 不方便。
+ 229|            WHERE search_tsv @@ to_tsquery('simple', :tsq)
+ 246|def _chunk_item(row, *, score: float, method: str, manual=None) -> dict:
+ 281|def search_manual_chunks_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
+ 296|            JOIN repair_manuals m ON m.id = c.manual_id
+ 297|            WHERE c.search_tsv @@ to_tsquery('simple', :tsq)
+ 313|def search_manual_chunks_vector(query: str, *, top_k: int = 10, db: Optional[Session] = None) -> List[dict]:
+ 321|            SELECT c.id, (c.embedding <=> CAST(:q AS vector)) AS distance
+ 323|            JOIN repair_manuals m ON m.id = c.manual_id
+ 324|            WHERE c.embedding IS NOT NULL
+ 327|              AND c.embedding <=> CAST(:q AS vector) <= :max_distance
+ 328|            ORDER BY c.embedding <=> CAST(:q AS vector)
+ 331|        hits = _vector_rows(session, "repair_manual_chunks", sql, vector, top_k, settings.RETRIEVAL_VECTOR_THRESHOLD)
+ 335|        chunks = session.query(RepairManualChunk).filter(RepairManualChunk.id.in_([h.id for h in hits])).all()
+ 336|        manuals = {m.id: m for m in session.query(RepairManual).filter(RepairManual.id.in_({c.manual_id for c in chunks})).all()}
+ 345|                score=cosine_distance_to_similarity(hit.distance),
+ 360|def _faq_item(row, *, score: float, method: str) -> dict:
+ 375|def search_faq_keyword(query: str, *, top_k: int = 10, db: Optional[Session] = None, store_id: Optional[int] = None) -> List[dict]:
+ 376|    """已审客服知识的关键词检索。传入 store_id 时只返回该门店或全局（store_id 为空）条目。"""
+ 389|            WHERE search_tsv @@ to_tsquery('simple', :tsq)
+ 391|              AND (:store_id IS NULL OR store_id IS NULL OR store_id = :store_id)
+ 395|        rows = session.execute(sql, {"tsq": tsq, "limit": top_k, "weights": settings.TS_RANK_WEIGHTS, "store_id": store_id}).fetchall()
+ 405|def search_faq_vector(query: str, *, top_k: int = 10, db: Optional[Session] = None, store_id: Optional[int] = None) -> List[dict]:
+ 406|    """已审客服知识的向量检索；编码失败时退回关键词。传入 store_id 时只返回该门店或全局条目。"""
+ 409|        return search_faq_keyword(query, top_k=top_k, db=db, store_id=store_id)
+ 414|        if store_id is not None:
+ 415|            store_clause = " AND (store_id IS NULL OR store_id = :store_id)"
+ 416|            extra_params["store_id"] = store_id
+ 418|            SELECT id, (embedding <=> CAST(:q AS vector)) AS distance
+ 420|            WHERE embedding IS NOT NULL
+ 422|              AND embedding <=> CAST(:q AS vector) <= :max_distance
+ 424|            ORDER BY embedding <=> CAST(:q AS vector)
+ 427|        hits = _vector_rows(session, "consult_faqs", sql, vector, top_k, settings.RETRIEVAL_VECTOR_THRESHOLD, extra_params=extra_params)
+ 431|        by_id = {row.id: row for row in session.query(ConsultFaq).filter(ConsultFaq.id.in_([h.id for h in hits])).all()}
+ 437|            results.append(_faq_item(row, score=cosine_distance_to_similarity(hit.distance), method="faq_vector_search"))
+ 447|def fetch_linked_sources(source_refs: Sequence[Dict[str, str]], *, db: Optional[Session] = None) -> List[dict]:
+ 469|                    row = session.query(RepairManualChunk).filter(RepairManualChunk.id == int(value)).first()
+ 471|                        manual = session.query(RepairManual).filter(RepairManual.id == row.manual_id).first()
+ 475|                    row = session.query(ObdCode).filter(ObdCode.code == value.upper()).first()
+ 479|                    row = session.query(ConsultFaq).filter(ConsultFaq.id == int(value)).first()
+ 483|                    row = session.query(KnowledgeItem).filter(KnowledgeItem.id == int(value)).first()
+
+================================================================================
+backend/app/rag/retrieval_flow.py  (630 lines)
+================================================================================
+  15|- filter_rerank_cases(): 粗筛 → 模型精排（bge-reranker-v2-m3）/规则降级 → 严格过滤 → 错误码置顶 → 取前 N 条
+  47|def make_tools() -> RetrievalTools:
+  56|def retrieve_hybrid(
+  62|    store_id: Optional[int] = None,
+  67|    由 filter_rerank_cases 识别并跳过分数阈值。新表尚未迁移或查询失败时，对应路返回空，
+  71|        top_k: 各路召回条数（默认 settings.RECALL_TOP_K），融合后先置顶精确命中再截到该值
+  73|        store_id: 若传入，已审客服知识只召回该门店或 store_id 为空的全局条目；
+  79|    top_k = top_k or settings.RECALL_TOP_K
+  88|        fault_code=fault_code, score_threshold=0.0,
+ 154|        faq_vec = search_faq_vector(query, top_k=top_k, store_id=store_id)
+ 157|        faq_kw = search_faq_keyword(query, top_k=top_k, store_id=store_id)
+ 181|def extract_device_and_fault(tools: RetrievalTools, query: str) -> Tuple[str, List[str]]:
+ 208|def _rerank_or_fallback(tools: RetrievalTools, filtered: List[dict], query: str) -> List[dict]:
+ 219|        return sorted(filtered, key=lambda m: m.get("score", 0) or 0, reverse=True)
+ 220|    if settings.RERANKER_ENABLED and len(filtered) > 1:
+ 222|        head, tail = filtered[: settings.RERANKER_CANDIDATES], filtered[settings.RERANKER_CANDIDATES:]
+ 228|    return weighted_rerank(filtered, query,
+ 233|def _sort_key(m: dict) -> float:
+ 242|def case_rank_score(item: dict) -> float:
+ 247|def rank_manual_conditions(items: List[dict], query: str) -> List[dict]:
+ 293|def filter_rerank_cases(
+ 305|        top_n: 最终返回条数（默认 settings.FINAL_TOP_N=10）
+ 313|    top_n = top_n or settings.FINAL_TOP_N
+ 326|            if m.get("rrf_only", False) or m.get("score", 0) >= settings.RETRIEVAL_COARSE_THRESHOLD
+ 342|        def _searchable(m: dict) -> str:
+ 395|    # 兜底规则：严格过滤为空时，保留向量语义分≥SEMANTIC_RESCUE_THRESHOLD 的粗筛候选，
+ 406|            if (m.get("score", 0) or 0) >= settings.SEMANTIC_RESCUE_THRESHOLD
+ 412|                f"语义兜底保留{len(rescue)}条（向量分≥{settings.SEMANTIC_RESCUE_THRESHOLD}，已排除跨系统同码冲突）"
+ 438|        or _sort_key(m) >= settings.RETRIEVAL_COARSE_THRESHOLD
+ 447|def evaluate_retrieval_quality(results: List[dict]) -> dict:
+ 472|#        阈值 REPAIR_INTENT_RELEVANCE_THRESHOLD=0.4 以下 → 最终判无关
+ 516|def _extract_error_codes_fast(message: str) -> List[str]:
+ 532|def repair_intent_fast_check(message: str) -> dict:
+ 573|def repair_intent_check(message: str,
+ 576|                        threshold: Optional[float] = None,
+ 581|    ①②未命中→跑检索：cases 空或 max_score < threshold → decision=irrelevant
+ 587|        threshold: 第三层"相关"判定阈值，默认与粗筛阈值一致（RETRIEVAL_COARSE_THRESHOLD=0.45），
+ 598|    if threshold is None:
+ 599|        threshold = settings.RETRIEVAL_COARSE_THRESHOLD
+ 604|        # 放行：按正常流程跑一次 retrieve_hybrid + filter_rerank_cases，把 cases 返回给调用方复用
+ 607|        cases = filter_rerank_cases(
+ 621|    cases = filter_rerank_cases(
+ 626|    if cases and max_score >= threshold:
+
+================================================================================
+backend/app/rag/rag_service.py  (261 lines)
+================================================================================
+  13|    is_server_available, encode_text, encode_texts, get_vector_dimension
+  26|    filter_rerank_cases, case_rank_score, rank_manual_conditions
+  37|    get_vector_dimension as _get_vector_dimension,
+  46|    filter_rerank_cases,
+  55|def is_server_available() -> bool:
+  60|def encode_text(text: str, max_length: int = 512) -> List[float]:
+  65|def encode_texts(texts: List[str], max_length: int = 512) -> List[List[float]]:
+  70|def get_vector_dimension() -> int:
+  72|    return _get_vector_dimension()
+  75|def _knowledge_store():
+  81|def _log_code_store():
+  87|def search_knowledge_vectors(
+  93|    score_threshold: float = 0.3,
+  94|    published_only: bool = True,
+ 103|        score_threshold=score_threshold,
+ 104|        published_only=published_only,
+ 108|def search_knowledge_vectors_by_embedding(
+ 114|    score_threshold: float = 0.3,
+ 115|    published_only: bool = True,
+ 123|        score_threshold=score_threshold,
+ 124|        published_only=published_only,
+ 128|def sync_knowledge_item(item: Any) -> None:
+ 150|def resync_knowledge_item(item: Any) -> None:
+ 173|def flush_knowledge_vectors() -> None:
+ 178|def count_knowledge_vectors() -> int:
+ 183|def search_manual_vectors(
+ 189|    score_threshold: float = 0.0,
+ 197|        score_threshold=score_threshold,
+ 201|def insert_manual_vector(manual_code_id: int, data: dict) -> str:
+ 218|def delete_manual_vector(point_id: str) -> bool:
+ 223|def drop_and_recreate_manual_collection() -> None:
+ 228|def flush_manual_vectors() -> None:
+ 233|def upsert_row_embedding(table: str, row_id: int, text_value: str, point_id: str) -> str:
+ 253|                "WHERE id = :id"
+
+================================================================================
+backend/app/rag/lexical.py  (129 lines)
+================================================================================
+  16|def tokenize_repair_text(text: str) -> List[str]:
+  32|    def _add(token: str) -> None:
+  51|def escape_tsquery_term(term: str) -> str:
+  57|def tokens_to_or_tsquery(tokens: Sequence[str]) -> str:
+  67|def build_or_tsquery(text: str) -> str:
+  72|def cosine_distance_to_similarity(distance: float) -> float:
+  73|    """把 pgvector 余弦距离（`<=>`）转成与历史 Milvus COSINE 分同一刻度的相似度。
+  89|def knowledge_point_id(knowledge_id: int) -> str:
+  94|def manual_point_id(manual_code_id: int) -> str:
+  99|def obd_point_id(obd_id: int) -> str:
+ 104|def chunk_point_id(chunk_id: int) -> str:
+ 109|def faq_point_id(faq_id: int) -> str:
+ 114|def parse_point_id(point_id: str) -> tuple[str, int] | None:
+
+================================================================================
+backend/app/agents/tools.py  (1390 lines)
+================================================================================
+  12|class ToolResult:
+  19|    def to_dict(self) -> dict:
+  54|def get_device_terms() -> set:
+  65|            rows = db.query(KnowledgeItem.device_type).filter(
+  83|def get_kb_device_types() -> set:
+ 100|            s = {r[0].strip() for r in db.query(KnowledgeItem.device_type).filter(
+ 103|            s |= {r[0].strip() for r in db.query(ManualCodeEntry.device_type).filter(
+ 164|def parse_log_query(query: str):
+ 325|def clean_query_for_retrieval(query: str) -> str:
+ 400|def _clean_chinese_subspan(span: str) -> str:
+ 454|def _classify_keywords(tokens: Set[str]) -> Tuple[Set[str], Set[str]]:
+ 483|def _manual_exact_device_conflict(item: dict, query_device: str) -> bool:
+ 503|def weighted_rerank(
+ 593|        # filter_rerank_cases 中强约束，此处为一致性防护（device_kw 白名单提取可能为空）。
+ 650|def _load_error_code_whitelist() -> Set[str]:
+ 673|def extract_error_codes(query: str, whitelist: Optional[Set[str]] = None) -> List[str]:
+ 730|def rrf_merge(
+ 849|class RetrievalTools:
+ 852|    def __init__(self, db_session_factory, vector_store, embedding_fn):
+ 863|    def vector_search(
+ 869|        score_threshold: Optional[float] = None,
+ 879|            score_threshold: 相似度阈值（None 时取配置 RETRIEVAL_VECTOR_THRESHOLD）
+ 881|        if score_threshold is None:
+ 883|            score_threshold = settings.RETRIEVAL_VECTOR_THRESHOLD
+ 893|                score_threshold=score_threshold,
+ 908|    def bm25_search(
+ 945|                    "device_filter": device_type or None,
+ 946|                    "fault_filter": f"%{fault_code}%" if fault_code else None,
+ 960|                    WHERE search_tsv @@ to_tsquery('simple', :tsq)
+ 962|                        AND (:device_filter IS NULL OR device_type = :device_filter)
+ 963|                        AND (:fault_filter IS NULL OR fault_code LIKE :fault_filter)
+ 997|                    query_filter = db.query(KnowledgeItem).filter(
+1001|                        query_filter = query_filter.filter(
+1006|                        query_filter = query_filter.filter(KnowledgeItem.device_type == device_type)
+1008|                        query_filter = query_filter.filter(KnowledgeItem.fault_code.like(f"%{fault_code}%"))
+1009|                    items = query_filter.limit(top_k).all()
+1037|    def _manual_row_to_dict(row) -> Dict:
+1062|    def manual_code_search(
+1092|                q = db.query(ManualCodeEntry).filter(stored.in_(wanted))
+1094|                    q = q.filter(ManualCodeEntry.device_type == device_type)
+1114|    def manual_vector_search(
+1119|        score_threshold: float = 0.0,
+1130|            score_threshold: 相似度阈值
+1144|                score_threshold=score_threshold,
+1159|                    rows = db.query(ManualCodeEntry).filter(ManualCodeEntry.id.in_(ids)).all()
+1187|    def conditional_query(
+1209|                query_obj = db.query(KnowledgeItem).filter(
+1213|                    query_obj = query_obj.filter(KnowledgeItem.device_type == device_type)
+1215|                    query_obj = query_obj.filter(KnowledgeItem.fault_code.like(f"%{fault_code}%"))
+1217|                    query_obj = query_obj.filter(
+1226|                    filtered = []
+1230|                            filtered.append(item)
+1231|                    items = filtered[:top_k]
+1257|    def rewrite_query(
+1333|    def graph_query(
+1353|                query_obj = db.query(KnowledgeItem).filter(
+1357|                    query_obj = query_obj.filter(KnowledgeItem.device_type == device_type)
+1359|                    query_obj = query_obj.filter(KnowledgeItem.fault_code.like(f"%{fault_code}%"))
+1361|                    query_obj = query_obj.filter(~KnowledgeItem.id.in_(exclude_ids))
+
+================================================================================
+backend/app/agents/inventory_tools.py  (181 lines)
+================================================================================
+  10|def query_inventory(
+  39|        query = query.filter(SparePart.device_type == device_type)
+  43|        query = query.filter(
+  53|        query = query.filter(SparePart.device_type.ilike(f"%{code_prefix}%"))
+  75|            "fitment": sp.fitment,
+  92|def list_compatible_parts(
+ 102|    """按适配规则筛备件。没有 fitment 的库存不会被算进适配结果。"""
+ 103|    from app.domain.fitment import part_matches
+ 108|        query = query.filter(
+ 115|        if part_matches(part.fitment, brand=brand, series=series, year=year, engine=engine):
+ 122|def resolve_fitment_spec(
+ 145|        vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+ 149|        vehicle = db.query(Vehicle).filter(Vehicle.plate == spec["plate"]).first()
+ 156|            spec["brand"] = vehicle.make or ""
+ 158|            spec["series"] = vehicle.model or ""
+ 164|def format_compatible_text(spec: dict, parts) -> str:
+ 166|    from app.domain.fitment import fitment_brief
+ 179|            f"单价 {part.unit_price}。适配：{fitment_brief(part.fitment) or '-'}"
+
+================================================================================
+backend/app/core/config.py  (241 lines)
+================================================================================
+  11|class Settings(BaseSettings):
+  37|    VECTOR_DIM: int = 1024
+  38|    # 兼容旧配置名：历史代码与文档曾用 MILVUS_VECTOR_SIZE，与 VECTOR_DIM 同值
+  40|    # 向量检索时 HNSW 的 ef_search（越大召回越稳，延迟略增）
+  41|    PGVECTOR_EF_SEARCH: int = 64
+ 116|    RECALL_TOP_K: int = 30        # 各路召回 top-k（向量/BM25），RRF 融合后候选池
+ 117|    FINAL_TOP_N: int = 10         # 重排后最终送 LLM 的条数
+ 118|    RETRIEVAL_COARSE_THRESHOLD: float = 0.45   # 粗筛：RRF 融合后向量相似度下限（bge-m3 实测分布标定：无关~0.35、英文日志≥0.495）
+ 119|    SEMANTIC_RESCUE_THRESHOLD: float = 0.6     # 语义兜底：词法严格过滤为空时，保留向量语义分≥此值的候选（保住英文日志→中文手册的跨语言语义命中）
+ 120|    RETRIEVAL_VECTOR_THRESHOLD: float = 0.3    # 单路向量检索阈值（quick/knowledge 搜索）
+ 121|    DEDUP_CANDIDATE_THRESHOLD: float = 0.45    # 去重：向量候选召回阈值
+ 122|    DEDUP_LLM_THRESHOLD: float = 0.55          # 去重：触发 LLM 判定阈值
+ 148|    def __init__(self, **kwargs):
+ 159|    def _detect_public_url(self) -> str:
+ 172|    def _normalize_chat_llm_mode(raw: str) -> str:
+ 184|    def chat_llm_mode(self) -> str:
+ 189|    def chat_llm_base_url(self) -> str:
+ 199|    def chat_llm_model(self) -> str:
+ 209|    def chat_llm_api_key(self) -> str:
+ 219|    def chat_llm_configured(self) -> bool:
+ 232|def assert_production_secrets() -> None:
+
+================================================================================
+backend/app/schemas.py  (1067 lines)
+================================================================================
+  14|class DeviceCreate(BaseModel):
+  19|    model: Optional[str] = None
+  33|class DeviceUpdate(BaseModel):
+  37|    model: Optional[str] = None
+  53|class DeviceResponse(BaseModel):
+  59|    model: Optional[str]
+  80|class WorkOrderCreate(BaseModel):
+ 115|    store_id: Optional[int] = None
+ 120|class WorkOrderUpdate(BaseModel):
+ 152|    store_id: Optional[int] = None
+ 157|class WorkOrderResponse(BaseModel):
+ 202|    store_id: Optional[int] = None
+ 212|class WorkOrderTransition(BaseModel):
+ 221|class WorkOrderFromAppointment(BaseModel):
+ 229|class WorkOrderDispatchCreate(BaseModel):
+ 245|class WorkOrderProgressLogResponse(BaseModel):
+ 263|class TicketAnalysisResponse(BaseModel):
+ 288|class WorkOrderReviewRequest(BaseModel):
+ 294|class WorkOrderReviewResponse(BaseModel):
+ 303|class KnowledgeCreate(BaseModel):
+ 315|class KnowledgeUpdate(BaseModel):
+ 325|class KnowledgeResponse(BaseModel):
+ 347|class KnowledgeExtractRequest(BaseModel):
+ 352|class KnowledgeDedupResult(BaseModel):
+ 359|class KnowledgeExtractResponse(BaseModel):
+ 367|class KnowledgeReviewRequest(BaseModel):
+ 373|class KnowledgeReviewResponse(BaseModel):
+ 382|class FitmentRule(BaseModel):
+ 386|    year_from: Optional[int] = Field(None, ge=1900, le=2100)
+ 387|    year_to: Optional[int] = Field(None, ge=1900, le=2100)
+ 391|class SparePartCreate(BaseModel):
+ 392|    """新增配件库存的请求体。part_code 必填且唯一；可带安全库存、单价、适配规则 fitment 和所属门店。"""
+ 404|    fitment: Optional[List[FitmentRule]] = None
+ 405|    store_id: Optional[int] = None
+ 408|class SparePartUpdate(BaseModel):
+ 420|    fitment: Optional[List[FitmentRule]] = None
+ 423|class SparePartResponse(BaseModel):
+ 437|    fitment: Optional[List[FitmentRule]] = None
+ 438|    store_id: Optional[int] = None
+ 447|class UserCreate(BaseModel):
+ 456|    store_id: Optional[int] = None
+ 459|class UserUpdate(BaseModel):
+ 469|    store_id: Optional[int] = None
+ 472|class UserResponse(BaseModel):
+ 482|    store_id: Optional[int] = None
+ 490|class CategoryCreate(BaseModel):
+ 500|class CategoryUpdate(BaseModel):
+ 508|class CategoryResponse(BaseModel):
+ 525|class DutyScheduleCreate(BaseModel):
+ 536|class DutyScheduleResponse(BaseModel):
+ 556|class LeaveRequestDetailCreate(BaseModel):
+ 562|class LeaveRequestSubmit(BaseModel):
+ 579|class LeaveRequestApprove(BaseModel):
+ 585|class LeaveRequestReject(BaseModel):
+ 590|class LeaveRequestQuery(BaseModel):
+ 600|class LeaveRequestDetailResponse(BaseModel):
+ 610|class LeaveRequestResponse(BaseModel):
+ 637|class CustomerCreate(BaseModel):
+ 647|class CustomerUpdate(BaseModel):
+ 657|class CustomerResponse(BaseModel):
+ 672|class StoreCreate(BaseModel):
+ 681|class StoreUpdate(BaseModel):
+ 689|class StoreResponse(BaseModel):
+ 703|class BayCreate(BaseModel):
+ 705|    store_id: int
+ 712|class BayUpdate(BaseModel):
+ 720|class BayResponse(BaseModel):
+ 723|    store_id: int
+ 734|class VehicleCreate(BaseModel):
+ 735|    """创建车辆档案的请求体。车牌必填，可写 VIN、品牌车系年款和车主客户 ID。"""
+ 737|    vin: Optional[str] = Field(None, max_length=17)
+ 738|    make: Optional[str] = Field(None, max_length=50)
+ 739|    model: Optional[str] = Field(None, max_length=80)
+ 744|class VehicleUpdate(BaseModel):
+ 747|    vin: Optional[str] = Field(None, max_length=17)
+ 748|    make: Optional[str] = Field(None, max_length=50)
+ 749|    model: Optional[str] = Field(None, max_length=80)
+ 754|class VehicleResponse(BaseModel):
+ 758|    vin: Optional[str] = None
+ 759|    make: Optional[str] = None
+ 760|    model: Optional[str] = None
+ 770|class AppointmentCreate(BaseModel):
+ 772|    store_id: int
+ 780|class AppointmentUpdate(BaseModel):
+ 790|class AppointmentResponse(BaseModel):
+ 793|    store_id: int
+ 807|class PartSkuCreate(BaseModel):
+ 819|class PartSkuUpdate(BaseModel):
+ 830|class PartSkuResponse(BaseModel):
+ 847|class ServicePackageCreate(BaseModel):
+ 861|class ServicePackageUpdate(BaseModel):
+ 874|class ServicePackageResponse(BaseModel):
+ 893|class ServiceSkuCreate(BaseModel):
+ 909|class ServiceSkuUpdate(BaseModel):
+ 924|class ServiceSkuResponse(BaseModel):
+ 945|class ServiceRecommendRequest(BaseModel):
+ 955|class QuoteSuggestionIn(BaseModel):
+ 965|class QuoteDraftRequest(BaseModel):
+ 977|class QuoteLineCreate(BaseModel):
+ 987|class QuoteLineResponse(BaseModel):
+1003|class QuoteResponse(BaseModel):
+1010|    store_id: Optional[int] = None
+1027|class QuoteActionResponse(QuoteResponse):
+1032|class CustomerConfirmRequest(BaseModel):
+1037|class PaymentIntentCreate(BaseModel):
+1042|class PaymentIntentResponse(BaseModel):
+1062|class PaginatedResponse(BaseModel, Generic[T]):
+
+================================================================================
+backend/app/agents/work_order_agent.py  (283 lines)
+================================================================================
+  41|    "ARCHIVING": "待归档",
+  57|def _status_cn(status) -> str:
+  63|def _normalize_work_order_no(raw: str) -> str:
+  76|class WorkOrderAgent:
+  81|    def claim_write(self, action: str) -> str:
+  88|    def analyze_ticket(self, work_order_data: Dict[str, Any]):
+  94|    def import_pdf(self, pdf_path: str, file_name: str, batch_id: int) -> dict:
+ 100|    def extract_knowledge(self, work_order_data: Dict):
+ 105|    def check_dedup(self, new_item: dict, existing_item: dict, title_similarity: float = 0.0):
+ 111|    def query_inventory(self, *args, **kwargs):
+ 116|    def list_compatible_parts(self, *args, **kwargs):
+ 121|    def resolve_fitment_spec(self, *args, **kwargs):
+ 123|        from app.agents.inventory_tools import resolve_fitment_spec
+ 124|        return resolve_fitment_spec(*args, **kwargs)
+ 127|    def recommend_packages(self, db, **kwargs) -> dict:
+ 132|    def format_recommendation(self, result: dict) -> str:
+ 137|    def create_draft_quote(self, db, **kwargs):
+ 142|    def apply_quote(self, db, **kwargs):
+ 147|    def apply_package(self, db, **kwargs) -> dict:
+ 153|    def query_work_order(self, work_order_no: str) -> str:
+ 163|            wo = db.query(WorkOrder).filter(WorkOrder.work_order_no == no).first()
+ 169|                tech = db.query(User).filter(User.id == wo.technician_id).first()
+ 187|    def query_my_work_orders(self, staff_id: str) -> str:
+ 201|            WorkOrderStatus.ARCHIVING,
+ 210|            user = db.query(User).filter(User.dingtalk_userid == staff_id).first()
+ 215|                .filter(WorkOrder.technician_id == user.id, WorkOrder.status.in_(active))
+ 234|    def create_work_order(self, work_order_data: Optional[Dict] = None, *, persist=None):
+ 241|    def transition_status(self, work_order_id: Any = None, *, persist=None, **kwargs):
+ 248|    def approve_work_order(self, work_order_id: Any = None, *, persist=None, **kwargs):
+ 255|    def complete_work_order(self, work_order_data: Optional[Dict] = None, *, persist=None):
+ 275|    def deduct_spare_parts(self, *, persist=None, **kwargs):
+
+================================================================================
+backend/app/agents/answer_generator.py  (787 lines)
+================================================================================
+  25|class ReferenceCase:
+  37|class AnswerResult:
+  47|class AnswerGenerator:
+ 121|    SCORE_THRESHOLD = settings.RETRIEVAL_COARSE_THRESHOLD
+ 148|    def __init__(self):
+ 153|    def llm(self) -> ChatOpenAI:
+ 171|    def is_inventory_query(self, question: str) -> bool:
+ 188|    def handle_inventory_query(self, question: str, db: Session) -> AnswerResult:
+ 191|        from app.domain.fitment import looks_like_fitment_question, parse_fitment_question, spec_is_empty
+ 194|        if looks_like_fitment_question(q):
+ 196|                format_compatible_text, list_compatible_parts, resolve_fitment_spec,
+ 198|            parsed = parse_fitment_question(q)
+ 199|            spec, error = resolve_fitment_spec(
+ 244|        def _search_by_terms(terms: list) -> list:
+ 255|            return db.query(SparePart).filter(or_(*conditions)).all()
+ 307|            from app.domain.fitment import fitment_brief
+ 308|            brief = fitment_brief(getattr(sp, "fitment", None))
+ 321|    def _extract_part_keywords(self, question: str) -> list:
+ 387|    def _is_technical_query(self, question: str) -> bool:
+ 409|    def answer(self, question: str, cases: List[Dict]) -> AnswerResult:
+ 442|        if max_score < self.SCORE_THRESHOLD:
+ 487|    def _format_retrieved_item(c: dict, index: int, content_limit: int = 1500) -> str:
+ 509|    def _generate_answer(self, question: str, cases: List[Dict]):
+ 542|    def _answer_non_technical(self, question: str) -> str:
+ 569|    def stream_answer(self, question: str, cases: List[Dict], emit_done: bool = True, scene: str = ""):
+ 605|        if max_score < self.SCORE_THRESHOLD:
+ 667|    def stream_answer_multi(self, question: str, faults: List[Dict], emit_done: bool = True):
+ 689|        if not all_cases or max_score < self.SCORE_THRESHOLD:
+ 758|    def _generate_case_summary(self, case: Dict) -> str:
+ 774|    def _estimate_confidence(self, cases: List[Dict]) -> float:
+
+================================================================================
+backend/app/mcp/tools.py  (737 lines)
+================================================================================
+  34|    "ARCHIVING": "待归档",
+  57|    WorkOrderStatus.ARCHIVING,
+  66|def _status_cn(status) -> str:
+  72|def _normalize_work_order_no(raw: str) -> str:
+  88|def search_knowledge(query: str) -> str:
+ 108|def guided_repair_chat(staff_id: str, message: str) -> str:
+ 158|def _get_parser_llm():
+ 171|def _map_option(raw: str, current_options: List[Dict]) -> str:
+ 185|def _split_action_status(rest: str) -> tuple:
+ 199|def _llm_parse_feedback(message: str, current_options: List[Dict]) -> Optional[Dict]:
+ 225|def _parse_action_feedback(message: str, current_options: List[Dict]) -> Optional[Dict]:
+ 250|def _render_guided_step_text(step) -> str:
+ 279|def guided_repair_track(staff_id: str, message: str) -> str:
+ 339|def query_work_order(work_order_no: str) -> str:
+ 345|def query_my_workorders(staff_id: str) -> str:
+ 351|def _parse_duty_date(text: str) -> date:
+ 374|def query_duty_schedule(staff_id: str, text: str = "") -> str:
+ 381|            user = db.query(User).filter(User.dingtalk_userid == staff_id).first()
+ 388|                .filter(
+ 422|            .filter(DutySchedule.date == target)
+ 450|def query_inventory(question: str) -> str:
+ 461|def get_user_by_staff(staff_id: str) -> str:
+ 467|        user = db.query(User).filter(User.dingtalk_userid == staff_id).first()
+ 486|def get_device_list(keyword: str = "") -> str:
+ 496|            query = query.filter(or_(
+ 500|                Device.model.ilike(like),
+ 517|def get_knowledge_stats() -> str:
+ 522|        published = db.query(KnowledgeItem).filter(KnowledgeItem.status == "PUBLISHED").count()
+ 523|        draft = db.query(KnowledgeItem).filter(KnowledgeItem.status == "DRAFT").count()
+ 524|        reviewing = db.query(KnowledgeItem).filter(KnowledgeItem.status == "UNDER_REVIEW").count()
+ 533|def get_workorder_stats() -> str:
+ 538|        active = db.query(WorkOrder).filter(WorkOrder.status.in_(ACTIVE_STATUS)).count()
+ 539|        completed = db.query(WorkOrder).filter(WorkOrder.status == WorkOrderStatus.COMPLETED).count()
+ 548|def query_compatible_parts(
+ 559|    from app.domain.fitment import spec_is_empty
+ 563|        spec, error = work_order_agent.resolve_fitment_spec(
+ 589|def recommend_service(
+ 614|def draft_quote(
+
+================================================================================
+backend/app/models/knowledge_graph.py  (43 lines)
+================================================================================
+   8|class KgEntity(BaseModel):
+  18|    def __repr__(self):
+  23|class KgRelation(BaseModel):
+  41|    def __repr__(self):
+
+================================================================================
+backend/app/models/spare_part.py  (28 lines)
+================================================================================
+   8|class SparePart(BaseModel):
+   9|    """配件库存记录。stock_quantity 是仓库总库存；fitment 存放适配规则 JSON；store_id 用于历史分店数据，现网门店结存以后者分表为准。"""
+  23|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="归属门店，空表示未分店")
+  24|    fitment = Column(JSONB, comment="适配规则 [{brand, series, year_from, year_to, engine}]，空字段表示该维不限")
+  26|    def __repr__(self):
+
+================================================================================
+backend/app/models/rag_source.py  (25 lines)
+================================================================================
+   8|class RagSource(BaseModel):
+  16|    applicability = Column(JSONB, comment="适用车型等，如 {make, model, year_from, year_to}")
+  23|    def __repr__(self):
+
+================================================================================
+backend/app/models/repair_manual.py  (56 lines)
+================================================================================
+  11|class RepairManual(BaseModel):
+  18|    make = Column(String(100), comment="厂牌")
+  19|    model = Column(String(100), comment="车型")
+  20|    year_from = Column(Integer, comment="适用起始年款")
+  21|    year_to = Column(Integer, comment="适用结束年款")
+  30|    def __repr__(self):
+  35|class RepairManualChunk(BaseModel):
+  48|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True)
+  54|    def __repr__(self):
+
+================================================================================
+backend/app/api/spare_parts.py  (577 lines)
+================================================================================
+  13|from app.agents.inventory_tools import format_compatible_text, list_compatible_parts, resolve_fitment_spec
+  14|from app.domain.fitment import normalize_fitment, spec_is_empty
+  26|def _sp_to_dict(s: SparePart) -> dict:
+  29|    if data.get("fitment") is not None:
+  31|            data["fitment"] = normalize_fitment(data["fitment"])
+  33|            data["fitment"] = data["fitment"]
+  37|def _requested_store(store_id: Optional[int], x_store_id: Optional[str]) -> Optional[int]:
+  39|    if store_id:
+  40|        return store_id
+  41|    if x_store_id and str(x_store_id).strip().isdigit():
+  42|        return int(str(x_store_id).strip())
+  46|def _part_scope(user: User, store_id: Optional[int] = None, x_store_id: Optional[str] = None):
+  49|        return resolve_store_scope(user, _requested_store(store_id, x_store_id))
+  54|def _scope_part_query(query, db: Session, scope):
+  57|        return query.filter(SparePart.store_id.is_(None))
+  59|        stock_ids = db.query(StorePartStock.spare_part_id).filter(StorePartStock.store_id == scope.store_id)
+  60|        return query.filter(or_(SparePart.store_id == scope.store_id, SparePart.id.in_(stock_ids)))
+  64|def _stock_map(db: Session, part_ids, store_id: Optional[int]):
+  66|    if not part_ids or not store_id:
+  70|        .filter(StorePartStock.store_id == store_id, StorePartStock.spare_part_id.in_(part_ids))
+  76|def _present_part(part: SparePart, scope, stock_row=None) -> dict:
+  84|        elif part.store_id == scope.store_id:
+  89|def _part_visible(part: SparePart, scope, stock_row) -> bool:
+  94|        return part.store_id is None
+  95|    return part.store_id == scope.store_id or stock_row is not None
+  98|def _fitment_payload(data):
+ 101|    if "fitment" in payload:
+ 103|            payload["fitment"] = normalize_fitment(payload.get("fitment"))
+ 110|class PurchaseItem(BaseModel):
+ 124|class PurchaseImportRequest(BaseModel):
+ 127|    store_id: Optional[int] = None
+ 130|class PurchaseImportResult(BaseModel):
+ 142|def list_spare_parts(
+ 148|    store_id: Optional[int] = None,
+ 149|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 154|    scope = _part_scope(current_user, store_id, x_store_id)
+ 157|        query = query.filter(SparePart.device_type == device_type)
+ 159|        query = query.filter(
+ 165|        query = query.filter(
+ 170|        query = query.filter(SparePart.stock_quantity <= 0)
+ 174|    stocks = _stock_map(db, [item.id for item in items], scope.store_id)
+ 184|def get_stock_alerts(
+ 185|    store_id: Optional[int] = None,
+ 186|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 191|    scope = _part_scope(current_user, store_id, x_store_id)
+ 192|    cache_key = f"stock_alerts:{scope.mode}:{scope.store_id or 'none'}"
+ 201|            .filter(StorePartStock.store_id == scope.store_id)
+ 210|        low_parts = query.filter(
+ 214|        out_parts = _scope_part_query(db.query(SparePart), db, scope).filter(SparePart.stock_quantity <= 0).all()
+ 230|def check_stock_alerts(
+ 233|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 239|    scope = _part_scope(current_user, None, x_store_id)
+ 241|    def _filter(query):
+ 246|    result = check_and_notify_stock_alerts(db, query_filter=_filter)
+ 251|def list_compatible(
+ 260|    store_id: Optional[int] = None,
+ 261|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 265|    """给定车辆或品牌/车系/年款/发动机，只返回 fitment 命中的备件和库存。"""
+ 266|    spec, error = resolve_fitment_spec(
+ 288|    scope = _part_scope(current_user, store_id, x_store_id)
+ 289|    stocks = _stock_map(db, [part.id for part in parts], scope.store_id)
+ 308|def get_spare_part(
+ 321|    part = db.query(SparePart).filter(SparePart.id == part_id).first()
+ 325|    if scope.store_id:
+ 328|            .filter(StorePartStock.store_id == scope.store_id, StorePartStock.spare_part_id == part.id)
+ 341|def create_spare_part(
+ 347|    existing = db.query(SparePart).filter(SparePart.part_code == data.part_code).first()
+ 350|    payload = _fitment_payload(data)
+ 352|        stamped = ensure_writable_store(current_user, payload.get("store_id"))
+ 356|        payload["store_id"] = stamped
+ 366|def update_spare_part(
+ 371|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 374|    part = db.query(SparePart).filter(SparePart.id == part_id).first()
+ 377|    scope = _part_scope(current_user, None, x_store_id)
+ 378|    stock_row = _stock_map(db, [part.id], scope.store_id).get(part.id)
+ 381|    changes = _fitment_payload(data)
+ 388|        if key == "store_id":
+ 402|def delete_spare_part(
+ 406|    x_store_id: Optional[str] = Header(None, alias="X-Store-Id"),
+ 409|    part = db.query(SparePart).filter(SparePart.id == part_id).first()
+ 412|    scope = _part_scope(current_user, None, x_store_id)
+ 413|    stock_row = _stock_map(db, [part.id], scope.store_id).get(part.id)
+ 425|class SparePartIssueRequest(BaseModel):
+ 433|def issue_spare_part(
+ 447|    work_order = db.query(WorkOrder).filter(WorkOrder.id == data.work_order_id).first()
+ 448|    if not work_order or not row_in_scope(resolve_store_scope(current_user), work_order.store_id):
+ 455|    spare = db.query(SparePart).filter(SparePart.part_code == code).first()
+ 464|            store_id=work_order.store_id,
+ 496|def import_purchase_orders(
+ 505|    带 store_id 时同时记门店结存和库存流水。
+ 508|        store_id = ensure_writable_store(current_user, req.store_id)
+ 515|        existing = db.query(SparePart).filter(SparePart.part_code == item.part_code).first()
+ 540|                store_id=store_id,
+ 551|                store_id=store_id,
+
+================================================================================
+backend/app/domain/fitment.py  (212 lines)
+================================================================================
+   3|fitment 是 JSON 数组，每条规则：
+   4|brand / series / year_from / year_to / engine。
+  14|_FITMENT_KEYS = ("brand", "series", "year_from", "year_to", "engine")
+  21|def _clean_str(value: Any) -> Optional[str]:
+  29|def _norm(value: Any) -> str:
+  34|def _as_int(value: Any) -> Optional[int]:
+  44|def iter_rules(fitment: Any) -> List[dict]:
+  49|    if not fitment:
+  51|    if isinstance(fitment, dict):
+  52|        raw = [fitment]
+  53|    elif isinstance(fitment, list):
+  54|        raw = fitment
+  60|def normalize_fitment(rules: Any) -> Optional[List[dict]]:
+  72|        year_from = _as_int(rule.get("year_from"))
+  73|        year_to = _as_int(rule.get("year_to"))
+  74|        if year_from is not None and year_to is not None and year_from > year_to:
+  79|            "year_from": year_from,
+  80|            "year_to": year_to,
+  86|def rule_matches(
+ 102|    year_from = _as_int(rule.get("year_from"))
+ 103|    year_to = _as_int(rule.get("year_to"))
+ 105|    if year_from is not None or year_to is not None:
+ 108|        if year_from is not None and vehicle_year < year_from:
+ 110|        if year_to is not None and vehicle_year > year_to:
+ 117|def part_matches(fitment: Any, **vehicle) -> bool:
+ 119|    rules = iter_rules(fitment)
+ 125|def fitment_brief(fitment: Any, limit: int = 2) -> str:
+ 130|    rules = iter_rules(fitment)
+ 136|        year_from = rule.get("year_from")
+ 137|        year_to = rule.get("year_to")
+ 138|        if year_from and year_to:
+ 139|            bits.append(f"{year_from}-{year_to}")
+ 140|        elif year_from:
+ 141|            bits.append(f"{year_from}起")
+ 142|        elif year_to:
+ 143|            bits.append(f"至{year_to}")
+ 154|def looks_like_fitment_question(text: str) -> bool:
+ 160|def parse_fitment_question(text: str) -> Dict[str, Any]:
+ 192|def spec_is_empty(spec: Dict[str, Any]) -> bool:
+ 202|def public_rule(rule: dict) -> dict:
+ 203|    """只保留对外可展示的适配字段（_FITMENT_KEYS），去掉内部多余键后再返回。"""
+ 204|    return {key: rule.get(key) for key in _FITMENT_KEYS}
+ 207|def public_fitment(fitment: Any) -> Optional[List[dict]]:
+ 209|    rules = iter_rules(fitment)

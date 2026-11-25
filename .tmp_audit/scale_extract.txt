@@ -1,0 +1,935 @@
+================================================================================
+backend/app/models/__init__.py
+================================================================================
+   6|from app.models.device import Device
+   7|from app.models.work_order import WorkOrder, WorkOrderStatus
+   8|from app.models.knowledge import KnowledgeItem, KnowledgeStatus
+   9|from app.models.user import User, UserRole
+  10|from app.models.spare_part import SparePart
+  11|from app.models.category import Category
+  12|from app.models.fault_code import FaultCodeMapping
+  13|from app.models.fault_phenomenon_category import FaultPhenomenonCategory
+  14|from app.models.root_cause_category import RootCauseCategory
+  15|from app.models.progress_log import WorkOrderProgressLog
+  16|from app.models.duty_schedule import DutySchedule, ShiftType
+  17|from app.models.leave_request import (
+  21|from app.models.sys_config import SysConfig
+  22|from app.models.notification import Notification
+  23|from app.models.manual_code import ManualCodeEntry
+  24|from app.models.customer import Customer
+  25|from app.models.store import Store, Bay
+  26|from app.models.vehicle import Vehicle
+  27|from app.models.appointment import Appointment
+  28|from app.models.part_sku import PartSku
+  29|from app.models.service_catalog import ServicePackage, ServiceSku
+  30|from app.models.quote import Quote, QuoteLine
+  31|from app.models.payment import PaymentIntent
+  32|from app.models.follow_up import FollowUpReminder
+  33|from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine
+  34|from app.models.stock import StockMovement, StorePartStock
+  35|from app.models.rag_source import RagSource
+  36|from app.models.obd_code import ObdCode
+  37|from app.models.repair_manual import RepairManual, RepairManualChunk
+  38|from app.models.knowledge_graph import KgEntity, KgRelation
+  39|from app.models.consult_faq import ConsultConversation, ConsultMessage, ConsultFaq
+  59|    "Vehicle",
+
+================================================================================
+backend/app/models/appointment.py
+================================================================================
+   4|from app.models.base import BaseModel
+   7|class Appointment(BaseModel):
+  10|    __tablename__ = "appointments"
+  12|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False, index=True, comment="预约门店")
+  13|    bay_id = Column(Integer, ForeignKey("bays.id", ondelete="SET NULL"), nullable=True, comment="预约工位，可空")
+  14|    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True, comment="客户")
+  15|    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True, comment="车辆")
+  16|    scheduled_at = Column(DateTime, nullable=False, comment="预约到店时间")
+  17|    status = Column(String(20), nullable=False, default="PENDING", comment="PENDING/CONFIRMED/CANCELLED/COMPLETED")
+  18|    remark = Column(Text, comment="备注")
+
+================================================================================
+backend/app/models/base.py
+================================================================================
+   9|class BaseModel(Base):
+  13|    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+  14|    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+  15|    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+  18|    def __tablename__(cls):
+  19|        """默认表名为类名小写再加 s。子类若要使用其它表名，直接覆盖 __tablename__ 字符串即可。"""
+
+================================================================================
+backend/app/models/category.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class Category(BaseModel):
+  10|    __tablename__ = "categories"
+  12|    name = Column(String(100), nullable=False)
+  13|    code = Column(String(50), unique=True, nullable=False, index=True)
+  14|    parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+  15|    category_type = Column(String(30), nullable=False, index=True)  # DEVICE_TYPE / FAULT_TYPE / KNOWLEDGE_TYPE
+  16|    sort_order = Column(Integer, default=0)
+  17|    description = Column(String(500))
+
+================================================================================
+backend/app/models/consult_faq.py
+================================================================================
+   7|from app.models.base import BaseModel
+  11|class ConsultConversation(BaseModel):
+  13|    __tablename__ = "consult_conversations"
+  15|    channel = Column(String(40), nullable=False, comment="pc_consult / dingtalk / owner_h5 等")
+  16|    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True, index=True)
+  17|    staff_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+  18|    status = Column(String(20), nullable=False, default="OPEN", comment="OPEN / CLOSED")
+  27|class ConsultMessage(BaseModel):
+  29|    __tablename__ = "consult_messages"
+  31|    conversation_id = Column(Integer, ForeignKey("consult_conversations.id"), nullable=False, index=True)
+  32|    role = Column(String(20), nullable=False, comment="user / assistant / staff")
+  33|    content = Column(Text, nullable=False, comment="脱敏后的正文")
+  42|class ConsultFaq(BaseModel):
+  44|    __tablename__ = "consult_faqs"
+  46|    title = Column(String(300), nullable=False)
+  47|    content = Column(Text, nullable=False)
+  48|    source_conversation_id = Column(Integer, ForeignKey("consult_conversations.id"), nullable=True)
+  49|    store_id = Column(Integer, ForeignKey("stores.id"), nullable=True)
+  50|    status = Column(String(20), nullable=False, default="DRAFT", comment="DRAFT / PUBLISHED / DEPRECATED")
+  51|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True)
+  52|    search_tsv = Column(TSVECTOR, nullable=True)
+  53|    point_id = Column(String(100), unique=True, index=True, comment="稳定点号 pg:f:{id}")
+
+================================================================================
+backend/app/models/customer.py
+================================================================================
+   4|from app.models.base import BaseModel
+   7|class Customer(BaseModel):
+  10|    __tablename__ = "customers"
+  12|    name = Column(String(100), nullable=False, comment="客户姓名")
+  13|    phone = Column(String(20), index=True, comment="手机号")
+  14|    email = Column(String(200), comment="邮箱")
+  15|    id_no = Column(String(30), comment="证件号占位，Phase 0 不校验格式")
+  16|    remark = Column(Text, comment="备注")
+  17|    user_id = Column(
+
+================================================================================
+backend/app/models/device.py
+================================================================================
+   6|from app.models.base import BaseModel
+   9|class Device(BaseModel):
+  11|    __tablename__ = "devices"
+  13|    device_code = Column(String(50), unique=True, nullable=False, index=True)
+  14|    device_name = Column(String(200), nullable=False)
+  15|    device_type = Column(String(100))
+  16|    model = Column(String(100))
+  17|    manufacturer = Column(String(200))
+  18|    location = Column(String(200))
+  19|    purchase_date = Column(Date)
+  20|    warranty_expiry = Column(Date)
+  21|    remark = Column(Text)
+  26|    run_status = Column(String(20), default="UNKNOWN", comment="运行状态 ONLINE/OFFLINE/ALARM/FAULT/UNKNOWN")
+  27|    last_heartbeat = Column(TIMESTAMP, comment="最后心跳时间")
+  28|    fault_tags = Column(JSONB, comment="故障标签数组 [{'code','name','level'}]")
+  29|    ext_system_id = Column(String(100), comment="外部监控系统关联ID（唯一）")
+  30|    status_source = Column(String(50), comment="状态来源：manual 手动/external 外部系统/auto 自动推断")
+  31|    status_reason = Column(String(200), comment="状态原因/证据说明（证据链，便于反推）")
+  32|    last_sync_time = Column(TIMESTAMP, comment="与外部系统最后同步时间")
+  33|    monitor_extra = Column(JSONB, comment="监控扩展字段，对接外部系统时按需写入")
+
+================================================================================
+backend/app/models/duty_schedule.py
+================================================================================
+   5|from app.models.base import BaseModel
+   9|class ShiftType(str, enum.Enum):
+  16|class DutySchedule(BaseModel):
+  18|    __tablename__ = "duty_schedules"
+  20|    date = Column(Date, nullable=False, index=True)
+  21|    shift = Column(String(20), nullable=False, server_default=ShiftType.MORNING.value)
+  22|    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+  23|    schedule_type = Column(String(30), nullable=False, server_default="MANUAL",
+  25|    note = Column(String(200), nullable=True)
+  26|    leave_type = Column(String(30), nullable=True)
+  27|    leave_status = Column(String(20), nullable=False, server_default='APPROVED')
+  28|    source_leave_request_id = Column(Integer, ForeignKey("leave_requests.id", ondelete="SET NULL"), nullable=True,
+  30|    source_substitute_for_id = Column(Integer, nullable=True,
+  32|    created_at = Column(TIMESTAMP, nullable=False, server_default="now()")
+
+================================================================================
+backend/app/models/fault_code.py
+================================================================================
+   3|from app.models.base import BaseModel
+   6|class FaultCodeMapping(BaseModel):
+   8|    __tablename__ = "fault_code_mappings"
+  10|    fault_code = Column(String(100), unique=True, nullable=False, index=True, comment="故障码")
+  11|    fault_description = Column(Text, nullable=False, comment="故障描述/现象")
+  12|    device_type = Column(String(100), comment="设备类型（可选）")
+  13|    source = Column(String(20), default="system", comment="来源: system(工单自动生成)/seed(种子数据)/manual(手动)")
+
+================================================================================
+backend/app/models/fault_phenomenon_category.py
+================================================================================
+   3|from app.models.base import BaseModel
+   6|class FaultPhenomenonCategory(BaseModel):
+   8|    __tablename__ = "fault_phenomenon_categories"
+  10|    parent_id = Column(Integer, nullable=True, comment="父级ID，NULL=大类")
+  11|    name = Column(String(200), nullable=False, comment="分类名称")
+  12|    device_type = Column(String(100), comment="关联设备类型，NULL=通用")
+  13|    description = Column(Text, comment="分类描述")
+  14|    sort_order = Column(Integer, default=0, comment="排序")
+
+================================================================================
+backend/app/models/follow_up.py
+================================================================================
+   6|from app.models.base import BaseModel
+   9|class FollowUpReminder(BaseModel):
+  12|    __tablename__ = "follow_up_reminders"
+  14|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
+  15|    work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+  16|    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
+  17|    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True)
+  18|    kind = Column(String(20), nullable=False, comment="REVISIT 回访 / RATING 评价")
+  19|    status = Column(String(20), nullable=False, default="SCHEDULED", index=True, comment="SCHEDULED/SENT/CANCELLED/SKIPPED")
+  20|    scheduled_at = Column(DateTime, nullable=False, index=True, comment="计划发送时间")
+  21|    sent_at = Column(DateTime, nullable=True)
+  22|    channel_result = Column(JSONB, nullable=True, comment="短信/钉钉/站内的发送结果")
+  23|    note = Column(Text, nullable=True)
+  24|    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+================================================================================
+backend/app/models/knowledge.py
+================================================================================
+   6|from app.models.base import BaseModel
+  11|class KnowledgeStatus(str, enum.Enum):
+  20|class KnowledgeItem(BaseModel):
+  21|    """一条维修知识。embedding 是 bge-m3 向量；search_tsv 是关键词检索列；milvus_id 现为稳定点号（pg:k:{id}），兼容旧接口；source_type/source_id 追溯来源工单；extraction_meta 保存去重分数等提取过程信息。"""
+  22|    __tablename__ = "knowledge_items"
+  24|    milvus_id = Column(String(100), unique=True, index=True)  # 兼容字段：现为 pg:k:{id}，不再指向 Milvus
+  25|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True)
+  26|    search_tsv = Column(TSVECTOR, nullable=True)
+  27|    title = Column(String(300), nullable=False)
+  28|    content = Column(Text, nullable=False)
+  29|    device_type = Column(String(100))
+  30|    fault_code = Column(Text, comment="故障码，多个用逗号分隔")
+  31|    fault_tags = Column(JSONB)
+  32|    source_type = Column(String(20))
+  33|    source_id = Column(Integer)
+  34|    status = Column(SQLEnum(KnowledgeStatus), default=KnowledgeStatus.DRAFT, nullable=False)
+  35|    version = Column(Integer, default=1)
+  36|    review_comment = Column(Text, nullable=True, comment="审核备注（驳回原因/修改建议）")
+  37|    extraction_meta = Column(JSONB, nullable=True, comment="提取元数据（去重分数/关联工单/关联知识等）")
+
+================================================================================
+backend/app/models/knowledge_graph.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class KgEntity(BaseModel):
+  10|    __tablename__ = "kg_entities"
+  12|    entity_type = Column(String(40), nullable=False, index=True, comment="vehicle_model / system / part / symptom / fault_code / procedure / cause")
+  13|    name = Column(String(200), nullable=False, comment="展示名")
+  14|    canonical_key = Column(String(200), unique=True, nullable=False, index=True, comment="规范名，唯一")
+  15|    aliases = Column(JSONB, default=list, comment="同义表达列表")
+  16|    properties = Column(JSONB, default=dict, comment="实体属性")
+  23|class KgRelation(BaseModel):
+  25|    __tablename__ = "kg_relations"
+  33|    subject_id = Column(Integer, ForeignKey("kg_entities.id"), nullable=False, index=True)
+  34|    predicate = Column(String(80), nullable=False, index=True, comment="applies_to / manifests_as / caused_by / has_code / needs_part / suggests_step")
+  35|    object_id = Column(Integer, ForeignKey("kg_entities.id"), nullable=False, index=True)
+  36|    properties = Column(JSONB, default=dict)
+  37|    source_kind = Column(String(40), nullable=False, comment="OEM_MANUAL / OBD / WORK_ORDER / FAQ 等")
+  38|    source_ref = Column(String(80), nullable=False, comment="来源编号，如 chunk:12 / obd:P0300 / knowledge:3")
+  39|    confidence = Column(Float, default=1.0)
+
+================================================================================
+backend/app/models/leave_request.py
+================================================================================
+  11|from app.models.base import BaseModel
+  15|class LeaveType(str, enum.Enum):
+  27|class LeaveRequestStatus(str, enum.Enum):
+  35|class LeaveShift(str, enum.Enum):
+  42|class LeaveRequest(BaseModel):
+  44|    __tablename__ = "leave_requests"
+  46|    requester_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
+  48|    requester_name = Column(String(100), nullable=False, comment="冗余姓名，卡片展示用")
+  50|    leave_type = Column(String(30), nullable=False, default=LeaveType.ANNUAL.value,
+  52|    leave_reason = Column(Text, nullable=True, comment="请假理由（师傅填）")
+  54|    status = Column(String(20), nullable=False, default=LeaveRequestStatus.PENDING.value, index=True,
+  57|    approver_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+  59|    approver_comment = Column(Text, nullable=True,
+  62|    substitute_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+  65|    correlation_id = Column(String(100), nullable=False, unique=True, index=True,
+  68|    submitted_at = Column(TIMESTAMP, nullable=False, default=datetime.utcnow, comment="师傅提交时间")
+  69|    handled_at = Column(TIMESTAMP, nullable=True, comment="主管审批/拒绝时间")
+  78|class LeaveRequestDetail(BaseModel):
+  80|    __tablename__ = "leave_requests_details"
+  82|    leave_request_id = Column(Integer, ForeignKey("leave_requests.id", ondelete="CASCADE"), nullable=False, index=True)
+  83|    leave_date = Column(Date, nullable=False, index=True, comment="具体某一天")
+  84|    leave_shift = Column(String(20), nullable=False, default=LeaveShift.ALL_DAY.value,
+
+================================================================================
+backend/app/models/manual_code.py
+================================================================================
+  12|from app.models.base import BaseModel
+  16|class ManualCodeEntry(BaseModel):
+  17|    """从设备说明书导入的错误码条目，作为「错误码 → 故障诊断」的权威映射；embedding 写入本表供手册语义检索。"""
+  18|    __tablename__ = "manual_code_entries"
+  20|    milvus_id = Column(String(100), unique=True, index=True, comment="兼容字段：现为 pg:m:{id}，不再指向 Milvus")
+  21|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True, comment="bge-m3 1024 维向量，未同步时为空")
+  22|    manual_name = Column(String(200), nullable=False, comment="设备说明书/手册名称，如 KUKA KR210 维修手册")
+  23|    device_type = Column(String(100), comment="设备类型（机械臂/数控机床等）")
+  24|    error_code = Column(String(100), index=True, nullable=False, comment="错误码/报警码，如 SV0436 / ALM-6401")
+  25|    title = Column(String(300), nullable=False, comment="错误码标题（如：主轴过流）")
+  26|    description = Column(Text, nullable=False, comment="错误含义/触发条件（说明书原文）")
+  27|    message_text = Column(Text, comment="屏幕/日志原文（用户看到的报警原文，逐字照抄，检索锚点）")
+  28|    severity = Column(String(20), comment="报警等级: EX急停 / OH停机 / INFO提示")
+  29|    effect = Column(String(50), comment="对设备的影响（展示向）：急停 / 停机 / 仅提示")
+  30|    conditions = Column(JSONB, default=list, comment="情形数组 [{signal, cause, steps}]：按日志可观察信号拆分的原因与排查步骤")
+  31|    related_codes = Column(JSONB, default=list, comment="伴随报警交叉引用（错误码字符串数组）")
+  32|    causes = Column(Text, comment="可能原因（说明书原文）[deprecated: 结构化后由 conditions 承载，过渡期兼容]")
+  33|    solutions = Column(Text, comment="处理步骤/排查方向（说明书原文）[deprecated: 结构化后由 conditions 承载，过渡期兼容]")
+  34|    chapter = Column(String(200), comment="所属章节（出处回溯）")
+  35|    page = Column(String(50), comment="页码（出处回溯）")
+  36|    version = Column(Integer, default=1, comment="条目版本")
+
+================================================================================
+backend/app/models/notification.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class Notification(BaseModel):
+  10|    # 注意：BaseModel 的 __tablename__ 会自动生成 "notifications"
+  12|    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+  13|    type = Column(String(50), nullable=False, default="work_order")  # work_order / system
+  14|    title = Column(String(200), nullable=False)
+  15|    content = Column(Text, nullable=False)
+  16|    work_order_id = Column(Integer, nullable=True, index=True)  # 关联工单（可选）
+  17|    is_read = Column(Boolean, default=False, nullable=False, index=True)
+  18|    extra = Column(Text, nullable=True)  # JSON 字符串，存额外数据
+
+================================================================================
+backend/app/models/obd_code.py
+================================================================================
+   6|from app.models.base import BaseModel
+  10|class ObdCode(BaseModel):
+  11|    """一条 OBD 标准码。code 唯一，如 P0300；embedding / search_tsv 供精确与语义检索。"""
+  12|    __tablename__ = "obd_codes"
+  14|    code = Column(String(20), unique=True, nullable=False, index=True, comment="标准码，如 P0300")
+  15|    system = Column(String(1), comment="P/C/B/U 系统分类")
+  16|    title = Column(String(300), nullable=False, comment="中文短标题，如 多缸随机失火")
+  17|    description_zh = Column(Text, nullable=False, comment="中文含义")
+  18|    description_en = Column(Text, comment="英文含义")
+  19|    typical_causes = Column(Text, comment="常见原因")
+  20|    typical_steps = Column(Text, comment="常规排查步骤")
+  21|    standard = Column(String(80), default="SAE J2012", comment="标准出处")
+  22|    source_id = Column(Integer, ForeignKey("rag_sources.id"), nullable=True, comment="来源登记")
+  23|    status = Column(String(20), nullable=False, default="PUBLISHED", comment="DRAFT / PUBLISHED / DEPRECATED")
+  24|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True, comment="bge-m3 1024 维向量")
+  25|    search_tsv = Column(TSVECTOR, nullable=True)
+  26|    point_id = Column(String(100), unique=True, index=True, comment="稳定点号 pg:o:{id}")
+
+================================================================================
+backend/app/models/part_sku.py
+================================================================================
+   4|from app.models.base import BaseModel
+   7|class PartSku(BaseModel):
+  10|    __tablename__ = "part_skus"
+  12|    code = Column(String(50), unique=True, nullable=False, index=True, comment="SKU 编码")
+  13|    name = Column(String(200), nullable=False, comment="配件名称")
+  14|    brand = Column(String(100), comment="品牌")
+  15|    unit = Column(String(20), default="个", comment="单位")
+  16|    list_price = Column(Float, default=0.0, comment="指导价占位")
+  17|    cost_price = Column(Float, default=0.0, comment="成本价占位")
+  18|    specification = Column(String(200), comment="规格")
+  19|    is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
+
+================================================================================
+backend/app/models/payment.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class PaymentIntent(BaseModel):
+  11|    __tablename__ = "payment_intents"
+  13|    intent_no = Column(String(40), unique=True, nullable=False, index=True, comment="意向单号")
+  14|    quote_id = Column(Integer, ForeignKey("quotes.id", ondelete="SET NULL"), nullable=True, index=True)
+  15|    work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="SET NULL"), nullable=True, index=True)
+  16|    amount = Column(Float, nullable=False, default=0, comment="金额，来自报价合计")
+  17|    currency = Column(String(8), nullable=False, default="CNY")
+  18|    channel = Column(String(20), nullable=False, default="STUB", comment="固定 STUB，未接渠道")
+  19|    status = Column(String(20), nullable=False, default="CREATED", index=True, comment="CREATED/CANCELLED")
+  20|    note = Column(String(200), nullable=False, default="占位订单，未接入清算")
+
+================================================================================
+backend/app/models/progress_log.py
+================================================================================
+   6|from app.models.base import BaseModel
+   7|from app.models.work_order import WorkOrderStatus
+  10|class WorkOrderProgressLog(BaseModel):
+  12|    __tablename__ = "work_order_progress_logs"
+  14|    work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="CASCADE"),
+  16|    from_status = Column(PG_ENUM(WorkOrderStatus, name="workorderstatus"), nullable=True)
+  17|    to_status = Column(PG_ENUM(WorkOrderStatus, name="workorderstatus"), nullable=False)
+  18|    operator_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  19|    operator_name = Column(String(100), nullable=True)
+  20|    source = Column(String(30), nullable=False, server_default="WEB",
+  22|    remark = Column(Text, nullable=True)
+  23|    location = Column(String(200), nullable=True)
+  24|    attachments = Column(JSONB, nullable=True)
+  25|    created_at = Column(TIMESTAMP, nullable=False, server_default="now()")
+
+================================================================================
+backend/app/models/purchase_order.py
+================================================================================
+   6|from app.models.base import BaseModel
+   9|class PurchaseOrder(BaseModel):
+  12|    __tablename__ = "purchase_orders"
+  14|    po_no = Column(String(40), unique=True, nullable=False, index=True, comment="采购单号")
+  15|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False, index=True)
+  16|    supplier = Column(String(200), nullable=True, comment="供应商")
+  17|    status = Column(String(20), nullable=False, default="ORDERED", index=True, comment="ORDERED/PARTIAL/RECEIVED/CANCELLED")
+  18|    note = Column(Text, nullable=True)
+  19|    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  33|class PurchaseOrderLine(BaseModel):
+  35|    __tablename__ = "purchase_order_lines"
+  37|    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+  38|    spare_part_id = Column(Integer, ForeignKey("spare_parts.id", ondelete="SET NULL"), nullable=True)
+  39|    part_code = Column(String(50), nullable=False, comment="备件编码")
+  40|    part_name = Column(String(200), nullable=False, comment="备件名称")
+  41|    qty_ordered = Column(Integer, nullable=False)
+  42|    qty_received = Column(Integer, nullable=False, default=0)
+  43|    unit_price = Column(Float, nullable=False, default=0)
+
+================================================================================
+backend/app/models/quote.py
+================================================================================
+   6|from app.models.base import BaseModel
+   9|class Quote(BaseModel):
+  12|    __tablename__ = "quotes"
+  14|    quote_no = Column(String(50), unique=True, nullable=False, index=True, comment="报价单号")
+  15|    work_order_id = Column(Integer, ForeignKey("work_orders.id", ondelete="SET NULL"), nullable=True, index=True)
+  16|    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True)
+  17|    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True)
+  18|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
+  19|    status = Column(String(30), nullable=False, default="DRAFT", index=True, comment="DRAFT/STAFF_CONFIRMED/CUSTOMER_CONFIRMED/REJECTED/CANCELLED")
+  20|    customer_confirm = Column(Boolean, nullable=False, default=False, comment="车主是否已确认")
+  21|    total = Column(Float, nullable=False, default=0.0, comment="合计")
+  22|    mileage = Column(Integer, comment="生成报价时的里程 km")
+  23|    symptoms = Column(Text, comment="症状原文")
+  24|    consult_text = Column(Text, comment="问诊建议原文")
+  25|    note = Column(Text, comment="生成说明")
+  26|    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  27|    staff_confirmed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  28|    customer_confirmed_at = Column(DateTime, nullable=True)
+  42|class QuoteLine(BaseModel):
+  44|    __tablename__ = "quote_lines"
+  46|    quote_id = Column(Integer, ForeignKey("quotes.id", ondelete="CASCADE"), nullable=False, index=True)
+  47|    line_no = Column(Integer, nullable=False, default=1)
+  48|    line_type = Column(String(20), nullable=False, default="LABOR", comment="PART/LABOR/PACKAGE")
+  49|    name = Column(String(200), nullable=False)
+  50|    code = Column(String(50))
+  51|    qty = Column(Float, nullable=False, default=1)
+  52|    unit_price = Column(Float, nullable=False, default=0)
+  53|    amount = Column(Float, nullable=False, default=0)
+  54|    source = Column(String(30), comment="work_order/consult/package/manual")
+  55|    ref_id = Column(Integer, comment="来源配件、项目或套餐 id")
+
+================================================================================
+backend/app/models/rag_source.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class RagSource(BaseModel):
+  10|    __tablename__ = "rag_sources"
+  12|    source_kind = Column(String(40), nullable=False, index=True, comment="OEM_MANUAL / TECH_MANUAL / WORK_ORDER / HISTORICAL_WO / CHAT / OBD / GRAPH")
+  13|    title = Column(String(300), nullable=False, comment="来源标题，如手册名或码表名")
+  14|    publisher = Column(String(200), comment="出版社或厂商")
+  15|    version = Column(String(80), comment="版本号")
+  16|    applicability = Column(JSONB, comment="适用车型等，如 {make, model, year_from, year_to}")
+  17|    file_uri = Column(Text, comment="原文件路径或 URI，手册需保留原件")
+  18|    checksum = Column(String(64), comment="原文件校验和")
+  19|    copyright_note = Column(Text, comment="版权说明；原厂手册仅限门店内检索")
+  20|    status = Column(String(20), nullable=False, default="DRAFT", comment="DRAFT / PUBLISHED / DEPRECATED")
+  21|    ingested_at = Column(DateTime, comment="完成入库的时间")
+
+================================================================================
+backend/app/models/repair_manual.py
+================================================================================
+   7|from app.models.base import BaseModel
+  11|class RepairManual(BaseModel):
+  13|    __tablename__ = "repair_manuals"
+  15|    source_id = Column(Integer, ForeignKey("rag_sources.id"), nullable=True)
+  16|    name = Column(String(300), nullable=False, comment="手册名称")
+  17|    manual_type = Column(String(20), nullable=False, default="OEM", comment="OEM 原厂手册 / TECH 技术手册")
+  18|    make = Column(String(100), comment="厂牌")
+  19|    model = Column(String(100), comment="车型")
+  20|    year_from = Column(Integer, comment="适用起始年款")
+  21|    year_to = Column(Integer, comment="适用结束年款")
+  22|    language = Column(String(20), default="zh")
+  23|    version = Column(String(80))
+  24|    file_uri = Column(Text, comment="原文件路径，备查")
+  25|    copyright_note = Column(Text)
+  26|    status = Column(String(20), nullable=False, default="DRAFT", comment="DRAFT / PUBLISHED / DEPRECATED")
+  35|class RepairManualChunk(BaseModel):
+  37|    __tablename__ = "repair_manual_chunks"
+  39|    manual_id = Column(Integer, ForeignKey("repair_manuals.id"), nullable=False, index=True)
+  40|    chapter = Column(String(200), comment="章节，如 第 5 章 制动系统")
+  41|    section = Column(String(200), comment="小节标题")
+  42|    page_from = Column(String(50))
+  43|    page_to = Column(String(50))
+  44|    chunk_type = Column(String(40), comment="procedure / spec / wiring / maintenance / general")
+  45|    title = Column(String(300), nullable=False)
+  46|    content = Column(Text, nullable=False)
+  47|    status = Column(String(20), nullable=False, default="DRAFT")
+  48|    embedding = Column(Vector(dim=settings.VECTOR_DIM), nullable=True)
+  49|    search_tsv = Column(TSVECTOR, nullable=True)
+  50|    point_id = Column(String(100), unique=True, index=True, comment="稳定点号 pg:c:{id}")
+
+================================================================================
+backend/app/models/root_cause_category.py
+================================================================================
+   3|from app.models.base import BaseModel
+   6|class RootCauseCategory(BaseModel):
+   8|    __tablename__ = "root_cause_categories"
+  10|    parent_id = Column(Integer, nullable=True, comment="父级ID，NULL=大类")
+  11|    name = Column(String(200), nullable=False, comment="分类名称")
+  12|    description = Column(Text, comment="分类描述")
+  13|    sort_order = Column(Integer, default=0, comment="排序")
+
+================================================================================
+backend/app/models/service_catalog.py
+================================================================================
+   6|from app.models.base import BaseModel
+   9|class ServicePackage(BaseModel):
+  12|    __tablename__ = "service_packages"
+  14|    code = Column(String(50), unique=True, nullable=False, index=True, comment="套餐编码")
+  15|    name = Column(String(200), nullable=False, comment="套餐名称")
+  16|    description = Column(Text, comment="说明")
+  17|    brand = Column(String(50), comment="适用品牌，空为不限")
+  18|    series = Column(String(80), comment="适用车系，空为不限")
+  19|    mileage_from = Column(Integer, comment="里程下限 km，空为不限")
+  20|    mileage_to = Column(Integer, comment="里程上限 km，空为不限")
+  21|    symptom_keywords = Column(JSONB, comment="症状关键词")
+  22|    list_price = Column(Float, nullable=False, default=0.0, comment="套餐价")
+  23|    is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
+  30|class ServiceSku(BaseModel):
+  33|    __tablename__ = "service_skus"
+  35|    code = Column(String(50), unique=True, nullable=False, index=True, comment="项目编码")
+  36|    name = Column(String(200), nullable=False, comment="项目名称")
+  37|    labor_minutes = Column(Integer, nullable=False, default=0, comment="工时分钟")
+  38|    base_price = Column(Float, nullable=False, default=0.0, comment="基础价")
+  39|    package_id = Column(
+  46|    category = Column(String(50), comment="类别：保养/维修/检测")
+  47|    symptom_keywords = Column(JSONB, comment="症状关键词")
+  48|    brand = Column(String(50), comment="适用品牌，空为不限")
+  49|    series = Column(String(80), comment="适用车系，空为不限")
+  50|    mileage_from = Column(Integer, comment="里程下限 km")
+  51|    mileage_to = Column(Integer, comment="里程上限 km")
+  52|    is_active = Column(Boolean, nullable=False, default=True, comment="是否在售")
+
+================================================================================
+backend/app/models/spare_part.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class SparePart(BaseModel):
+   9|    """配件库存记录。stock_quantity 是仓库总库存；fitment 存放适配规则 JSON；store_id 用于历史分店数据，现网门店结存以后者分表为准。"""
+  10|    __tablename__ = "spare_parts"
+  12|    part_code = Column(String(50), unique=True, nullable=False, index=True)
+  13|    part_name = Column(String(200), nullable=False)
+  14|    specification = Column(String(200))
+  15|    unit = Column(String(20), default="个")
+  16|    stock_quantity = Column(Integer, default=0)
+  17|    safety_stock = Column(Integer, default=0)
+  18|    unit_price = Column(Float, default=0.0)
+  19|    device_type = Column(String(100))
+  20|    location = Column(String(200))
+  21|    supplier = Column(String(200))
+  22|    sku_id = Column(Integer, ForeignKey("part_skus.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联配件目录 SKU")
+  23|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="归属门店，空表示未分店")
+  24|    fitment = Column(JSONB, comment="适配规则 [{brand, series, year_from, year_to, engine}]，空字段表示该维不限")
+
+================================================================================
+backend/app/models/stock.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class StorePartStock(BaseModel):
+  11|    __tablename__ = "store_part_stocks"
+  13|        UniqueConstraint("store_id", "spare_part_id", name="uq_store_part_stock"),
+  16|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+  17|    spare_part_id = Column(Integer, ForeignKey("spare_parts.id", ondelete="CASCADE"), nullable=False, index=True)
+  18|    quantity = Column(Integer, nullable=False, default=0, comment="本店结存")
+  22|        return f"<StorePartStock(store_id={self.store_id}, spare_part_id={self.spare_part_id}, quantity={self.quantity})>"
+  25|class StockMovement(BaseModel):
+  28|    __tablename__ = "stock_movements"
+  30|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
+  31|    spare_part_id = Column(Integer, ForeignKey("spare_parts.id", ondelete="SET NULL"), nullable=True, index=True)
+  32|    part_code = Column(String(50), nullable=False)
+  33|    qty_delta = Column(Integer, nullable=False, comment="正数入库，负数出库")
+  34|    movement_type = Column(String(30), nullable=False, comment="PO_RECEIVE/IMPORT/ISSUE")
+  35|    ref_type = Column(String(30), nullable=True, comment="purchase_order/work_order/import")
+  36|    ref_id = Column(Integer, nullable=True)
+  37|    balance_after = Column(Integer, nullable=True, comment="变动后的总库存")
+  38|    store_balance_after = Column(Integer, nullable=True, comment="变动后的本店结存")
+  39|    operator_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  40|    note = Column(Text, nullable=True)
+
+================================================================================
+backend/app/models/store.py
+================================================================================
+   5|from app.models.base import BaseModel
+   8|class Store(BaseModel):
+  11|    __tablename__ = "stores"
+  13|    code = Column(String(50), unique=True, nullable=False, index=True, comment="门店编码")
+  14|    name = Column(String(200), nullable=False, comment="门店名称")
+  15|    address = Column(String(300), comment="地址")
+  16|    phone = Column(String(20), comment="联系电话")
+  17|    is_active = Column(Boolean, nullable=False, default=True, comment="是否营业")
+  26|class Bay(BaseModel):
+  29|    __tablename__ = "bays"
+  31|        UniqueConstraint("store_id", "code", name="uq_bays_store_code"),
+  34|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True, comment="所属门店")
+  35|    code = Column(String(50), nullable=False, comment="工位编码，门店内唯一")
+  36|    name = Column(String(100), nullable=False, comment="工位名称")
+  37|    bay_type = Column(String(30), default="通用", comment="工位类型：通用/机电/钣喷")
+  38|    is_active = Column(Boolean, nullable=False, default=True, comment="是否可用")
+  44|        return f"<Bay(code='{self.code}', store_id={self.store_id})>"
+
+================================================================================
+backend/app/models/sys_config.py
+================================================================================
+   3|from app.models.base import BaseModel
+   6|class SysConfig(BaseModel):
+   8|    __tablename__ = "sys_configs"
+  10|    key = Column(String(100), nullable=False, unique=True, index=True, comment="配置键")
+  11|    value = Column(Text, nullable=False, comment="配置值（字符串，按需要解析）")
+  12|    description = Column(String(500), nullable=True, comment="说明")
+
+================================================================================
+backend/app/models/user.py
+================================================================================
+   6|from app.models.base import BaseModel
+  10|class UserRole(str, __import__('enum').Enum):
+  19|class User(BaseModel):
+  20|    """登录用户。role 决定接口权限；store_id 绑定门店后，店内角色只能操作本店数据。钉钉相关字段用于免登和推送，current_workload_count 由工单流转维护。"""
+  21|    __tablename__ = "users"
+  23|    username = Column(String(50), unique=True, nullable=False, index=True)
+  24|    employee_id = Column(String(50), unique=True, nullable=True, index=True, comment="工号，唯一")
+  25|    password_hash = Column(String(255), nullable=False)
+  26|    real_name = Column(String(100), nullable=False)
+  27|    email = Column(String(200))
+  28|    phone = Column(String(20))
+  29|    role = Column(String(20), default=UserRole.TECHNICIAN.value, nullable=False)
+  30|    is_active = Column(Boolean, default=True)
+  32|    dingtalk_userid = Column(String(100), unique=True, index=True, nullable=True)
+  33|    dingtalk_name = Column(String(100), nullable=True, comment="钉钉账号昵称")
+  34|    dingtalk_union_id = Column(String(100), nullable=True, index=True, comment="钉钉 unionId（跨应用唯一，机器人识别用）")
+  35|    dingtalk_bound_at = Column(DateTime, nullable=True, comment="钉钉账号绑定时间")
+  36|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="所属门店，空表示未绑定")
+  37|    department = Column(String(200))
+  38|    title = Column(String(100))
+  39|    skills = Column(String(500), comment="旧:技能标签(逗号分隔),保留1个月")
+  40|    skills_json = Column(JSONB, comment="技能熟练度字典 {类型: 1-5}")
+  41|    current_workload_count = Column(Integer, nullable=False, default=0,
+  43|    last_online_at = Column(DateTime, nullable=True, comment="最近在线时间")
+  44|    last_login_at = Column(DateTime)
+
+================================================================================
+backend/app/models/vehicle.py
+================================================================================
+   1|"""车辆档案：车牌、VIN、品牌车系年款，车主指向客户档案而不是系统用户。"""
+   4|from app.models.base import BaseModel
+   7|class Vehicle(BaseModel):
+  10|    __tablename__ = "vehicles"
+  12|    plate = Column(String(20), unique=True, nullable=False, index=True, comment="车牌号")
+  13|    vin = Column(String(17), unique=True, nullable=True, index=True, comment="车架号 VIN，可空")
+  14|    make = Column(String(50), comment="品牌")
+  15|    model = Column(String(80), comment="车型")
+  16|    year = Column(Integer, comment="年款")
+  17|    owner_id = Column(
+  27|        return f"<Vehicle(plate='{self.plate}', vin='{self.vin}')>"
+
+================================================================================
+backend/app/models/work_order.py
+================================================================================
+   6|from app.models.base import BaseModel
+  11|class WorkOrderStatus(str, enum.Enum):
+  21|    ARCHIVING = "ARCHIVING"  # 维修完成，待归档（网页补充表单后归档）
+  37|class WorkOrder(BaseModel):
+  39|    __tablename__ = "work_orders"
+  41|    work_order_no = Column(String(50), unique=True, nullable=False, index=True)
+  42|    device_id = Column(Integer, ForeignKey("devices.id"))
+  43|    device_code = Column(String(50))  # 扫码获取的设备编码
+  44|    fault_code = Column(Text, comment="故障码，多个用逗号分隔")
+  45|    device_error_code = Column(String(200), comment="设备运行日志/屏幕报警的错误码（如 SV0436 / 6401），仅带错误码的机电设备填，多个用逗号分隔")
+  46|    log_text = Column(Text, comment="设备日志/屏幕原文（错误码录入模式粘贴，供知识抽取抠码与溯源）")
+  47|    fault_description = Column(Text, nullable=False)
+  48|    fault_category = Column(String(100), comment="故障大类")
+  49|    fault_phenomenon_type = Column(String(200), comment="故障具体现象（级联二级）")
+  50|    fault_phenomenon = Column(Text, comment="故障现象补充描述")
+  51|    fault_media = Column(JSONB, comment="移动端上报的图片/语音文件URL列表")
+  52|    attachments = Column(JSONB, comment="附件列表 [{url, name, type}]")
+  53|    root_cause_category = Column(String(100), comment="根本原因大类")
+  54|    root_cause_type = Column(String(200), comment="根本原因具体类型（级联二级）")
+  55|    root_cause = Column(Text, comment="根本原因补充说明")
+  56|    solution_steps = Column(Text)
+  57|    solution_ref_knowledge_id = Column(Integer, comment="引用的知识条目ID")
+  58|    repair_result = Column(String(20), comment="维修结果: PERMANENT_FIX / TEMPORARY_FIX / UNABLE_FIX")
+  59|    follow_up_plan = Column(Text, comment="临时措施后续计划")
+  60|    work_hours = Column(Float, comment="工时（小时）")
+  61|    used_parts = Column(JSONB)
+  62|    start_time = Column(TIMESTAMP)
+  63|    end_time = Column(TIMESTAMP)
+  64|    technician_id = Column(Integer, ForeignKey("users.id"), comment="指派的维修人员 ID")
+  65|    assignee_id = Column(Integer, ForeignKey("users.id"), comment="当前处理人 ID")
+  66|    reporter_id = Column(Integer, ForeignKey("users.id"), comment="上报人员 ID（移动端提交）")
+  67|    priority = Column(String(10), default="MEDIUM", comment="优先级: LOW/MEDIUM/HIGH/CRITICAL")
+  68|    location = Column(String(200), comment="故障设备位置")
+  69|    status = Column(SQLEnum(WorkOrderStatus), default=WorkOrderStatus.DRAFT, nullable=False)
+  70|    tags = Column(JSONB)
+  71|    confidence = Column(Float, nullable=True, comment="AI 分析置信度 (0-1)")
+  72|    analysis_result = Column(JSONB, nullable=True, comment="AI 分析结果完整记录")
+  73|    dispatch_score = Column(JSONB, nullable=True, comment="派工评分详情")
+  74|    completion_report = Column(JSONB, nullable=True, comment="维修完成报告（工时/备件/照片）")
+  75|    created_by = Column(Integer, ForeignKey("users.id"), comment="创建者 ID，仅创建者可编辑")
+  77|    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联车辆")
+  78|    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"), nullable=True, index=True, comment="关联客户")
+  79|    store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True, comment="服务门店")
+  80|    bay_id = Column(Integer, ForeignKey("bays.id", ondelete="SET NULL"), nullable=True, comment="占用工位")
+  81|    appointment_id = Column(Integer, ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, comment="来源预约")
+
+================================================================================
+backend/app/models/work_order_import.py
+================================================================================
+  11|from app.models.base import BaseModel
+  14|class WorkOrderImportBatch(BaseModel):
+  16|    __tablename__ = "work_order_import_batches"
+  18|    batch_no = Column(String(50), unique=True, nullable=False, index=True)
+  19|    status = Column(String(20), nullable=False, default="PROCESSING",
+  21|    file_count = Column(Integer, nullable=False, default=0)
+  22|    total_count = Column(Integer, nullable=False, default=0, comment="抽取成功进入待确认数")
+  23|    success_count = Column(Integer, nullable=False, default=0, comment="确认入库数")
+  24|    failed_count = Column(Integer, nullable=False, default=0, comment="解析/抽取失败数")
+  25|    report = Column(JSONB, nullable=True, comment="每份 PDF 的处理结果摘要")
+  26|    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+  32|class WorkOrderImportItem(BaseModel):
+  34|    __tablename__ = "work_order_import_items"
+  36|    batch_id = Column(Integer, ForeignKey("work_order_import_batches.id", ondelete="CASCADE"),
+  38|    file_name = Column(String(255), nullable=False)
+  39|    file_path = Column(String(500), nullable=True)
+  40|    status = Column(String(20), nullable=False, default="PENDING",
+  42|    error_message = Column(Text, nullable=True, comment="解析/抽取失败原因")
+  43|    extracted_text = Column(Text, nullable=True, comment="PDF 提取的原始文本（供人工核对）")
+  44|    extracted_data = Column(JSONB, nullable=True, comment="LLM 抽取的系统工单字段（待人工确认）")
+  45|    validate_warnings = Column(JSONB, nullable=True, comment="校验警告（设备/维修员/工单号等）")
+  46|    work_order_id = Column(Integer, ForeignKey("work_orders.id"), nullable=True,
+  48|    confirmed_at = Column(TIMESTAMP, nullable=True)
+  49|    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+================================================================================
+backend/app/domain/fitment.py FULL
+================================================================================
+"""备件适配规则。
+
+fitment 是 JSON 数组，每条规则：
+brand / series / year_from / year_to / engine。
+空字段表示这一维不限制。整条都空表示不限车型。
+没有规则的备件不参与适配查询，避免把整仓都算成适配。
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional
+
+
+_FITMENT_KEYS = ("brand", "series", "year_from", "year_to", "engine")
+_QUESTION_HINTS = ("适配", "适用")
+_ENGINE_RE = re.compile(r"\d\.\d\s*[TtLl]|[1-9]\d?[Tt]")
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+_PLATE_RE = re.compile(r"车牌[:：\s]*([A-Za-z0-9\u4e00-\u9fff]{5,8})")
+
+
+def _clean_str(value: Any) -> Optional[str]:
+    """把任意值转成去掉首尾空白的字符串；空值或全空白返回 None，避免把空串写进适配规则。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _norm(value: Any) -> str:
+    """做大小写无关的比较用归一化：转字符串、去首尾空白并 casefold。None 视为空串。"""
+    return ("" if value is None else str(value)).strip().casefold()
+
+
+def _as_int(value: Any) -> Optional[int]:
+    """把年份等字段安全转成整数；空值、空串或无法转换时返回 None，不抛异常。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def iter_rules(fitment: Any) -> List[dict]:
+    """把配件适配规则统一展开成字典列表。
+
+    单条规则可以是一个 dict，多条规则是 list[dict]；空值或其它类型返回空列表，并丢掉非字典元素。
+    """
+    if not fitment:
+        return []
+    if isinstance(fitment, dict):
+        raw = [fitment]
+    elif isinstance(fitment, list):
+        raw = fitment
+    else:
+        return []
+    return [row for row in raw if isinstance(row, dict)]
+
+
+def normalize_fitment(rules: Any) -> Optional[List[dict]]:
+    """写入前整理规则。空列表存成 None。年款起大于年款止时抛 ValueError。"""
+    if rules is None:
+        return None
+    if isinstance(rules, dict):
+        rules = [rules]
+    if not isinstance(rules, list):
+        raise ValueError("适配规则必须是数组")
+    cleaned: List[dict] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            raise ValueError("适配规则必须是对象")
+        year_from = _as_int(rule.get("year_from"))
+        year_to = _as_int(rule.get("year_to"))
+        if year_from is not None and year_to is not None and year_from > year_to:
+            raise ValueError("年款起不能大于年款止")
+        cleaned.append({
+            "brand": _clean_str(rule.get("brand")),
+            "series": _clean_str(rule.get("series")),
+            "year_from": year_from,
+            "year_to": year_to,
+            "engine": _clean_str(rule.get("engine")),
+        })
+    return cleaned or None
+
+
+def rule_matches(
+    rule: dict,
+    *,
+    brand: Any = None,
+    series: Any = None,
+    year: Any = None,
+    engine: Any = None,
+) -> bool:
+    """判断一条适配规则是否匹配给定车辆。
+
+    规则里填写了的品牌、车系、发动机必须一致（忽略大小写）；年份若设置了起止区间，车辆年份必须落在闭区间内，缺少年份则视为不匹配。规则中未填写的条件视为不限制。
+    """
+    if _norm(rule.get("brand")) and _norm(rule.get("brand")) != _norm(brand):
+        return False
+    if _norm(rule.get("series")) and _norm(rule.get("series")) != _norm(series):
+        return False
+    year_from = _as_int(rule.get("year_from"))
+    year_to = _as_int(rule.get("year_to"))
+    vehicle_year = _as_int(year)
+    if year_from is not None or year_to is not None:
+        if vehicle_year is None:
+            return False
+        if year_from is not None and vehicle_year < year_from:
+            return False
+        if year_to is not None and vehicle_year > year_to:
+            return False
+    if _norm(rule.get("engine")) and _norm(rule.get("engine")) != _norm(engine):
+        return False
+    return True
+
+
+def part_matches(fitment: Any, **vehicle) -> bool:
+    """判断配件的全部适配规则中，是否至少有一条匹配当前车辆。没有任何规则时返回 False，避免「空规则被当成适配所有车型」。"""
+    rules = iter_rules(fitment)
+    if not rules:
+        return False
+    return any(rule_matches(rule, **vehicle) for rule in rules)
+
+
+def fitment_brief(fitment: Any, limit: int = 2) -> str:
+    """把适配规则压成简短中文说明，供列表或提示展示。
+
+    默认最多展示 limit 条，每条由品牌、车系、年款区间和发动机拼接；规则条件全空时写「不限车型」。超出条数时追加「等N条」。
+    """
+    rules = iter_rules(fitment)
+    if not rules:
+        return ""
+    parts: List[str] = []
+    for rule in rules[:limit]:
+        bits = [rule.get("brand") or "", rule.get("series") or ""]
+        year_from = rule.get("year_from")
+        year_to = rule.get("year_to")
+        if year_from and year_to:
+            bits.append(f"{year_from}-{year_to}")
+        elif year_from:
+            bits.append(f"{year_from}起")
+        elif year_to:
+            bits.append(f"至{year_to}")
+        if rule.get("engine"):
+            bits.append(str(rule["engine"]))
+        text = " ".join(str(bit) for bit in bits if bit).strip()
+        parts.append(text or "不限车型")
+    text = "；".join(parts)
+    if len(rules) > limit:
+        text += f" 等{len(rules)}条"
+    return text
+
+
+def looks_like_fitment_question(text: str) -> bool:
+    """用预置关键词粗判用户问题是不是在问「这配件适不适合某车型」，供咨询链路决定是否走适配查询。"""
+    raw = text or ""
+    return any(hint in raw for hint in _QUESTION_HINTS)
+
+
+def parse_fitment_question(text: str) -> Dict[str, Any]:
+    """从「大众 速腾 2018 1.4T 适配刹车片」这类问句里抽出车型。空格分隔更稳。"""
+    raw = text or ""
+    year = None
+    year_match = _YEAR_RE.search(raw)
+    if year_match:
+        year = int(year_match.group(0))
+        raw = raw[:year_match.start()] + " " + raw[year_match.end():]
+    engine = ""
+    engine_match = _ENGINE_RE.search(raw)
+    if engine_match:
+        engine = engine_match.group(0).replace(" ", "").upper()
+        raw = raw[:engine_match.start()] + " " + raw[engine_match.end():]
+    plate = ""
+    plate_match = _PLATE_RE.search(raw)
+    if plate_match:
+        plate = plate_match.group(1).upper()
+        raw = raw[:plate_match.start()] + " " + raw[plate_match.end():]
+    for word in ("能不能", "请问", "一下", "哪些", "什么", "库存", "备件", "配件", "适配", "适用", "车型", "可以"):
+        raw = raw.replace(word, " ")
+    raw = re.sub(r"[的吗呢和与及、,，]", " ", raw)
+    tokens = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,}", raw)
+    return {
+        "brand": tokens[0] if tokens else "",
+        "series": tokens[1] if len(tokens) > 1 else "",
+        "keyword": "".join(tokens[2:]) if len(tokens) > 2 else "",
+        "year": year,
+        "engine": engine,
+        "plate": plate,
+    }
+
+
+def spec_is_empty(spec: Dict[str, Any]) -> bool:
+    """判断车型规格是否四个关键字段都空：品牌、车系、年份、发动机都没有有效值时返回 True。"""
+    return not any([
+        _norm(spec.get("brand")),
+        _norm(spec.get("series")),
+        spec.get("year") is not None,
+        _norm(spec.get("engine")),
+    ])
+
+
+def public_rule(rule: dict) -> dict:
+    """只保留对外可展示的适配字段（_FITMENT_KEYS），去掉内部多余键后再返回。"""
+    return {key: rule.get(key) for key in _FITMENT_KEYS}
+
+
+def public_fitment(fitment: Any) -> Optional[List[dict]]:
+    """把配件适配数据整理成对外可返回的规则列表；没有任何合法规则时返回 None 而不是空列表。"""
+    rules = iter_rules(fitment)
+    if not rules:
+        return None
+    return [public_rule(rule) for rule in rules]
+
